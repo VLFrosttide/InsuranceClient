@@ -34,7 +34,7 @@ const CreateWindow = () => {
     },
   });
 
-  win.loadFile("renderer/index.html");
+  win.loadFile("renderer/LoginPage/index.html");
 };
 
 app.whenReady().then(() => {
@@ -49,4 +49,8 @@ app.whenReady().then(() => {
   ];
   const menu = Menu.buildFromTemplate(MenuTemp);
   Menu.setApplicationMenu(menu);
+});
+
+ipcMain.on("LoadPage", (event, page) => {
+  win.loadFile(page);
 });

@@ -40,6 +40,7 @@ document.addEventListener("keypress", async function (e) {
     if (LoginReq.ok) {
       //Display Error msg
       console.log(LoginReq);
+      window.api.LoadNewPage("./renderer/AddInsurance/AddInsurance.html");
     } else {
       console.log("Access Denied");
       //Load Page based on user tier

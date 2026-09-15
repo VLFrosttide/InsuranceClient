@@ -7,5 +7,54 @@
     <script src="AddInsurance.js" defer></script>
     <link rel="stylesheet" href="AddInsurance.css" />
   </head>
-  <body></body>
+  <body>
+    <div id="InsuranceForm">
+      <label class="InsuranceFormLabel">ДКН</label>
+      <input id="DKNInput" class="ClearForm FormInput" type="text" />
+      <label class="InsuranceFormLabel">Полица номер</label>
+      <input
+        id="PolicyNumberInput"
+        class="NumInput FormInput ClearForm"
+        type="number"
+      />
+      <label class="InsuranceFormLabel">Бланка номер</label>
+      <input
+        id="BlancNumberInput"
+        class="NumInput FormInput ClearForm"
+        type="number"
+      />
+      <label class="InsuranceFormLabel">Срок</label>
+      <input
+        id="DurationInput"
+        class="NumInput FormInput ClearForm"
+        type="text"
+      />
+      <label class="InsuranceFormLabel">Код офис на брокер</label>
+      <input id="BrokerCodeInput" class="FormInput" type="text" />
+      <label class="InsuranceFormLabel">Клон</label>
+      <input id="BranchInput" class="FormInput" type="text" />
+      <label class="InsuranceFormLabel">Otomobil</label>
+      <select name="AutoType" id="AutoTypeInput" class="FormInput">
+        <option value="Otomobil">Otomobil</option>
+        <option value="awdawda">dddd</option>
+      </select>
+      <label class="InsuranceFormLabel">Цена</label>
+      <input id="TotalPriceInput" class="FormInput" type="number" />
+      <label class="InsuranceFormLabel">Име на клиент</label>
+      <input id="ClientNameInput" class="ClearForm FormInput" type="text" />
+      <label class="InsuranceFormLabel">Адрес на клиент</label>
+      <input id="ClientAdressInput" class="ClearForm FormInput" type="text" />
+      <label class="InsuranceFormLabel">Шаси номер</label>
+      <input id="ChassisNumberInput" class="ClearForm FormInput" type="text" />
+      <label class="InsuranceFormLabel">Марка на прев. средство</label>
+      <input id="VehicleBrandInput" class="FormInput" type="text" />
+      <label class="InsuranceFormLabel">Агент</label>
+      <input id="AgentInput" class="FormInput" type="text" />
+      <div>
+        <label class="InsuranceFormLabel">В брой</label>
+        <input id="CashInput" class="FormInput" checked type="checkbox" />
+      </div>
+      <button id="SubmitFormButton">Запиши</button>
+    </div>
+  </body>
 </html>

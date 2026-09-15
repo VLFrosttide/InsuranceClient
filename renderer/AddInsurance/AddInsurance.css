@@ -1,0 +1,7 @@
+#InsuranceForm {
+  display: flex;
+  flex-direction: column;
+}
+.InsuranceFormLabel {
+  user-select: none;
+}
