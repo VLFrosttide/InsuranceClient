@@ -19,7 +19,7 @@ let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
 const CreateWindow = () => {
   win = new BrowserWindow({
     width: 800,
-    height: 550,
+    height: 800,
     x: 490,
     y: 0,
     title: "Reroll",

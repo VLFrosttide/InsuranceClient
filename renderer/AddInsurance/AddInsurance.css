@@ -1,6 +1,7 @@
 #InsuranceForm {
   display: flex;
   flex-direction: column;
+  padding: 60px;
 }
 .InsuranceFormLabel {
   user-select: none;

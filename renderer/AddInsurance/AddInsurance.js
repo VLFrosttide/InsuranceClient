@@ -59,6 +59,7 @@ SubmitFormButton.addEventListener("click", async function (e) {
         Accept: "application/json",
       },
       body: JSON.stringify(FormObject),
+      credentials: "include",
     }
   );
   for (let j = 0; j < ClearFormArray.length; j++) {
