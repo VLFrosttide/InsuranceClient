@@ -44,12 +44,18 @@ document.addEventListener("keypress", async function (e) {
       console.log("Access Denied");
       DisplayMsg.textContent = "Access Denied";
       DisplayMsg.style.color = "red";
+      setTimeout(() => {
+        DisplayMsg.textContent = "";
+      }, 3000);
     }
     } 
     catch (error) {
         console.log("Error: ", error);
         DisplayMsg.textContent = "Server Error";
         DisplayMsg.style.color = "red";
+        setTimeout(() => {
+          DisplayMsg.textContent = "";
+        }, 3000);
     }
 
 
