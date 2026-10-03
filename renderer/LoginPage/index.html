@@ -3,21 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Document</title>
-    <script src="logic.js" defer></script>
+    <title>Insurance - Login</title>
+    <link rel="stylesheet" href="../app.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    
-    <div id="DisplayMsg"></div>
-    <div id="LoginForm">
-      <label>Username:</label>
-      <input id="UsernameInput" type="text" value="list4e" />
-      <label for="" >Password:</label>
-      <div>
-        <input id="PassInput" type="password" value="Pedese50" />
-        <div id="VisIcon"></div>
-      </div>
+    <div id="AuthCard">
+      <h1>Insurance Console</h1>
+
+      <form id="LoginForm" class="auth-form">
+        <label for="UsernameInput">Username</label>
+        <input id="UsernameInput" type="text" autocomplete="username" />
+        <label for="PassInput">Password</label>
+        <div class="row password-row">
+          <input
+            id="PassInput"
+            type="password"
+            autocomplete="current-password"
+          />
+          <div id="VisIcon" title="Show/hide password"></div>
+        </div>
+        <button id="SubmitButton" type="submit">Login</button>
+      </form>
+
+      <div id="DisplayMsg" class="msg"></div>
     </div>
+
+    <script src="../common.js" defer></script>
+    <script src="logic.js" defer></script>
   </body>
 </html>

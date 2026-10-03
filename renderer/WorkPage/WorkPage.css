@@ -1,0 +1,180 @@
+html,
+body {
+  height: 100%;
+}
+
+#App {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+#PageHeader {
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--panel-border);
+  padding: 14px 22px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+#PageHeader h1 {
+  font-size: 20px;
+  margin: 0;
+}
+#HeaderSub {
+  margin-left: 8px;
+}
+
+#Nav {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.nav-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.nav-btn {
+  color: var(--text);
+}
+
+#Content {
+  padding: 22px;
+  flex: 1;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.stat-card h3 {
+  margin: 0 0 8px 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.stat-card .big {
+  font-size: 22px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.balance-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+  max-width: 360px;
+}
+.balance-card .big {
+  font-size: 28px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.filter-row {
+  margin-bottom: 16px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.filter-row .field {
+  min-width: 180px;
+}
+
+.actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Modal */
+#ModalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+#ModalBackdrop.hidden {
+  display: none;
+}
+#Modal {
+  background: var(--bg-soft);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  width: min(560px, 90vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 20px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+#Modal h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+#ModalBody form {
+  display: flex;
+  flex-direction: column;
+}
+#ModalBody .field {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+#ModalBody field label {
+  margin-bottom: 3px;
+}
+#ModalBody form button[type="submit"] {
+  margin-top: 16px;
+  padding: 9px;
+}
+
+pre {
+  background: #1b2029;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Test toolbar */
+.test-toolbar {
+  margin-bottom: 16px;
+}
+
+/* Unread email cards */
+.email-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.email-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: var(--text);
+  text-align: left;
+  font-size: 14px;
+  cursor: pointer;
+  word-break: break-word;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.email-card:hover {
+  background: var(--bg-soft);
+  border-color: var(--accent);
+}

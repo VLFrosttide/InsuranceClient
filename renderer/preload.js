@@ -1,8 +1,8 @@
 const { ipcRenderer, contextBridge } = require("electron");
-//Example window.api.GlobalKey((event, data) => {})
-// Or window.api.GlobalKey()
+//Example window.bridge.GlobalKey((event, data) => {})
+// Or window.bridge.GlobalKey()
 
-contextBridge.exposeInMainWorld("api", {
+contextBridge.exposeInMainWorld("bridge", {
   LoadNewPage: (page) => {
     ipcRenderer.send("LoadPage", page);
   },

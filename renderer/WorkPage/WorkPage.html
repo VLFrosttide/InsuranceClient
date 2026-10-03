@@ -1,16 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-    <script src="WorkPage.js" defer></script>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Insurance - Dashboard</title>
+    <link rel="stylesheet" href="../app.css" />
     <link rel="stylesheet" href="WorkPage.css" />
-
-</head>
-<body>
-    <div id="WorkArea">
-        
+  </head>
+  <body>
+    <div id="App">
+      <header id="PageHeader">
+        <div class="row">
+          <h1 id="HeaderTitle">Dashboard</h1>
+          <span id="HeaderSub" class="muted"></span>
+          <div class="spacer"></div>
+          <button id="LogoutButton" class="secondary" type="button">
+            Logout
+          </button>
+        </div>
+        <nav id="Nav" class="row"></nav>
+      </header>
+      <main id="Content"></main>
     </div>
-</body>
+
+    <div id="ModalBackdrop" class="hidden">
+      <div id="Modal">
+        <div class="row">
+          <h2 id="ModalTitle"></h2>
+          <div class="spacer"></div>
+          <button id="ModalClose" class="secondary small" type="button">
+            Close
+          </button>
+        </div>
+        <div id="ModalBody"></div>
+      </div>
+    </div>
+
+    <script src="../common.js" defer></script>
+    <script src="WorkPage.js" defer></script>
+  </body>
 </html>

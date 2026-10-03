@@ -18,11 +18,11 @@ let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
 
 const CreateWindow = () => {
   win = new BrowserWindow({
-    width: 800,
-    height: 800,
-    x: 490,
-    y: 0,
-    title: "Reroll",
+    width: 1280,
+    height: 860,
+    x: 60,
+    y: 40,
+    title: "Insurance",
 
     webPreferences: {
       nodeIntegration: false,
@@ -30,7 +30,7 @@ const CreateWindow = () => {
       contextIsolation: true,
       preload: PreloadPath,
       contentSecurityPolicy:
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self';",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://lavender-quail-935384.hostingersite.com wss://lavender-quail-935384.hostingersite.com http://127.0.0.1:5501 http://localhost:5501 ws://127.0.0.1:5501 ws://localhost:5501; manifest-src 'self';",
     },
   });
 

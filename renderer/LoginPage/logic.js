@@ -1,64 +1,59 @@
 "use strict";
-//Starts with: npm start
 
-//#region Imports
-//#endregion
-//#region Declarations
-//#endregion
+const VisIcon = document.getElementById("VisIcon");
+const Pass = document.getElementById("PassInput");
+const UserName = document.getElementById("UsernameInput");
+const DisplayMsg = document.getElementById("DisplayMsg");
+const LoginForm = document.getElementById("LoginForm");
 
-let VisIcon = document.getElementById("VisIcon");
-let Pass = document.getElementById("PassInput");
-let UserName = document.getElementById("UsernameInput");
-let DisplayMsg = document.getElementById("DisplayMsg");
-VisIcon.addEventListener("click", function () {
-  if (PassInput.type === "password") {
-    PassInput.type = "text";
-  } else {
-    PassInput.type = "password";
+function setMessage(text, isError) {
+  if (!DisplayMsg) return;
+  DisplayMsg.textContent = text;
+  DisplayMsg.className = "msg " + (isError ? "error" : "success");
+  if (!text) DisplayMsg.className = "msg";
+}
+
+if (VisIcon) {
+  VisIcon.addEventListener("click", () => {
+    Pass.type = Pass.type === "password" ? "text" : "password";
+  });
+}
+
+async function doLogin() {
+  if (!UserName.value || !Pass.value) {
+    setMessage("Enter username and password", true);
+    return;
   }
-});
 
-document.addEventListener("keypress", async function (e) {
-  if (e.key === "Enter") {
-    console.log("Pass: ", Pass.value);
-    console.log("Username: ", UserName.value  );
-    try {
-          let LoginReq = await fetch(
-            "http://127.0.0.1:5501/logme",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json",
-              },
-              body: JSON.stringify({
-                username: UserName.value,
-                password: Pass.value,
-              }),
-            }
-          );
+  try {
+    const LoginReq = await fetch(`${API_BASE}/logme`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: UserName.value,
+        password: Pass.value,
+      }),
+    });
 
-          if (LoginReq.ok) {
-        window.api.LoadNewPage("C:/Users/shacx/Documents/GitHub/Insurance/renderer/AddInsurance/AddInsurance.html");
-    } else {
-      console.log("Access Denied");
-      DisplayMsg.textContent = "Access Denied";
-      DisplayMsg.style.color = "red";
-      setTimeout(() => {
-        DisplayMsg.textContent = "";
-      }, 3000);
-    }
-    } 
-    catch (error) {
-        console.log("Error: ", error);
-        DisplayMsg.textContent = "Server Error";
-        DisplayMsg.style.color = "red";
-        setTimeout(() => {
-          DisplayMsg.textContent = "";
-        }, 3000);
+    const data = await LoginReq.json().catch(() => ({}));
+
+    if (!LoginReq.ok) {
+      setMessage(data.error || "Access Denied", true);
+      return;
     }
 
+    localStorage.setItem("token", data.token || "");
+    localStorage.setItem("username", data.username || "");
+    localStorage.setItem("role", data.role || "");
 
-    
+    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+  } catch (error) {
+    console.error("Error: ", error);
+    setMessage("Server Error", true);
   }
+}
+
+LoginForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  doLogin();
 });
