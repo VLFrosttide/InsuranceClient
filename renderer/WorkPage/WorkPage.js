@@ -92,14 +92,39 @@ function openClaimedEmail(email) {
   window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
 }
 
+function reconcileEmailCards(serverEmails) {
+  const seen = new Set();
+  for (const email of serverEmails || []) {
+    if (email && email.messageId) {
+      seen.add(email.messageId);
+      addEmailCard(email);
+    }
+  }
+  // Drop any card the server no longer lists (claimed/completed while this
+  // client was disconnected). A card left behind here would otherwise become
+  // unclickable: the server no longer has the email to claim it.
+  for (const messageId of Array.from(emailCards.keys())) {
+    if (!seen.has(messageId)) emailCards.delete(messageId);
+  }
+  if (activeNav && activeNav.load === workerDashboard) {
+    Content.replaceChildren(
+      el("h2", t("unreadEmails")),
+      testToolbar(),
+      emailCardsContainer()
+    );
+  }
+}
+
 function setupEmailSocket() {
   if (userRole !== "2") return;
 
   emailSocket = new UnreadEmailSocket({
     new_email: (msg) => addEmailCard(msg.data),
-    list_emails: (msg) => {
-      for (const email of msg.data || []) addEmailCard(email);
+    auth_ok: () => {
+      // After (re)connecting, re-sync cards with the server's source of truth.
+      emailSocket.send({ type: "list_emails" });
     },
+    list_emails: (msg) => reconcileEmailCards(msg.data),
     claim_email: (msg) => {
       if (!pendingClaimEmail || pendingClaimEmail.messageId !== msg.messageId) {
         return;
@@ -109,6 +134,10 @@ function setupEmailSocket() {
       if (msg.ok) {
         openClaimedEmail(email);
       } else {
+        // The server rejected the claim (email already claimed/completed
+        // elsewhere or no longer present). Drop the stale card so it can't
+        // be clicked again with no effect.
+        removeEmailCard(msg.messageId || email.messageId);
         toast(t("emailClaimed"), "error");
       }
     },

@@ -181,6 +181,7 @@ const I18N = {
     "email.resetZoom": "Reset zoom",
     "email.print": "Print picture",
     "email.close": "Close",
+    "email.unclaim": "Unclaim",
   },
   bg: {
     brand: "Застрахователна конзола",
@@ -348,6 +349,7 @@ const I18N = {
     "email.resetZoom": "Нулирай мащаба",
     "email.print": "Принтирай снимка",
     "email.close": "Затвори",
+    "email.unclaim": "Освободи имейла",
   },
 };
 
@@ -525,10 +527,14 @@ class UnreadEmailSocket {
     this.ws = null;
     this.authed = false;
     this.pending = [];
+    this.reconnectDelay = 1000;
+    this.reconnectTimer = null;
+    this.manuallyClosed = false;
   }
 
   connect() {
     if (this.ws) return;
+    this.manuallyClosed = false;
 
     let ws;
     try {
@@ -536,11 +542,14 @@ class UnreadEmailSocket {
     } catch (err) {
       console.error("WebSocket error:", err);
       if (this.handlers.close) this.handlers.close(err);
+      this.scheduleReconnect();
       return;
     }
     this.ws = ws;
 
     ws.addEventListener("open", () => {
+      // Reset the backoff now that a connection succeeded.
+      this.reconnectDelay = 1000;
       ws.send(JSON.stringify({ type: "auth", token: getToken() }));
     });
 
@@ -560,10 +569,12 @@ class UnreadEmailSocket {
       }
 
       if (msg.type === "auth_error") {
-        if (this.handlers.auth_error) {
-          this.handlers.auth_error(msg);
-        } else {
-          redirectToLogin();
+        try {
+          if (this.handlers.auth_error) this.handlers.auth_error(msg);
+          else redirectToLogin();
+        } finally {
+          // The token was rejected: there is no point in retrying.
+          this.close();
         }
         return;
       }
@@ -576,11 +587,21 @@ class UnreadEmailSocket {
       this.ws = null;
       this.authed = false;
       if (this.handlers.close) this.handlers.close();
+      this.scheduleReconnect();
     });
 
     ws.addEventListener("error", () => {
       // A close event follows and resets connection state.
     });
+  }
+
+  scheduleReconnect() {
+    if (this.manuallyClosed || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, this.reconnectDelay);
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15000);
   }
 
   send(obj) {
@@ -603,6 +624,11 @@ class UnreadEmailSocket {
   }
 
   close() {
+    this.manuallyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       try {
         this.ws.close();

@@ -23,6 +23,7 @@ const DisableReturnEmailInput = document.getElementById(
 const ReplySection = document.getElementById("ReplySection");
 const ReplyInput = document.getElementById("ReplyInput");
 const ReplyButton = document.getElementById("ReplyButton");
+const UnclaimButton = document.getElementById("UnclaimButton");
 
 // File drop area
 const DropArea = document.getElementById("DropArea");
@@ -511,6 +512,7 @@ async function goBack() {
 }
 
 BackButton.addEventListener("click", goBack);
+if (UnclaimButton) UnclaimButton.addEventListener("click", goBack);
 
 ClearButton.addEventListener("click", clearForm);
 

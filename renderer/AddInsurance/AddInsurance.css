@@ -231,6 +231,14 @@ button.reply-button:disabled {
 .email-attachment .small {
   font-size: 12px;
 }
+.email-side-actions {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+}
+.email-side-actions button {
+  width: 100%;
+}
 
 /* Picture viewer (zoom + print) */
 #ImageViewer {
