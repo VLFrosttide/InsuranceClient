@@ -68,6 +68,35 @@
   margin-top: 16px;
 }
 
+/* Reply section (only visible when opened from an email card). */
+#ReplySection {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
+}
+#ReplySection.hidden {
+  display: none;
+}
+#ReplySection label {
+  display: block;
+  margin-bottom: 6px;
+}
+#ReplySection input {
+  display: block;
+}
+.reply-actions {
+  margin-top: 10px;
+}
+button.reply-button {
+  background: var(--warning);
+}
+button.reply-button:hover {
+  background: #b9891b;
+}
+button.reply-button:disabled {
+  background: #4a5563;
+}
+
 /* File drop area */
 #DropArea {
   margin-top: 18px;

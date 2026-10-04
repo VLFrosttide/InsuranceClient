@@ -48,6 +48,17 @@
             />
           </div>
           <div class="field">
+            <label for="CarNumberInput" data-i18n="add.carNumber"
+              >Номер автомобил</label
+            >
+            <input
+              id="CarNumberInput"
+              class="FormInput ClearForm"
+              type="text"
+              required
+            />
+          </div>
+          <div class="field">
             <label for="DurationInput" data-i18n="add.duration">Срок</label>
             <input
               id="DurationInput"
@@ -130,6 +141,27 @@
             Изчисти
           </button>
         </div>
+
+        <!-- Reply UI, shown only when the form was opened from an email card. -->
+        <section id="ReplySection" class="hidden">
+          <label for="ReplyInput" data-i18n="add.reply">Отговор</label>
+          <input
+            id="ReplyInput"
+            type="text"
+            data-i18n-placeholder="add.replyPlaceholder"
+            placeholder="Въведете отговора си…"
+          />
+          <div class="row reply-actions">
+            <button
+              id="ReplyButton"
+              class="reply-button"
+              type="button"
+              data-i18n="add.replyButton"
+            >
+              Изпрати отговор
+            </button>
+          </div>
+        </section>
       </form>
 
       <aside id="EmailSide" class="hidden">

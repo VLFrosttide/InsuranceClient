@@ -150,6 +150,10 @@ function openModal(title, bodyNode) {
   ModalTitle.textContent = title;
   ModalBody.replaceChildren(bodyNode);
   ModalBackdrop.classList.remove("hidden");
+  // Focus the first form control so the field is immediately targetable,
+  // avoiding the "loses focus / cannot be clicked" symptom when a form opens.
+  const focusTarget = ModalBody.querySelector("input, select, textarea");
+  if (focusTarget) focusTarget.focus();
 }
 function closeModal() {
   ModalBackdrop.classList.add("hidden");
@@ -162,9 +166,17 @@ ModalBackdrop.addEventListener("click", (e) => {
 // ---------------------------------------------------------------------------
 // Form helpers
 // ---------------------------------------------------------------------------
+let fieldIdCounter = 0;
 function field(labelText, inputNode) {
   const wrap = el("div", null, { class: "field" });
-  wrap.appendChild(el("label", labelText));
+  // Link the label to its control so clicking the caption focuses (and thus
+  // targets) the input. Without the `for`/`id` pairing a click on the label
+  // does nothing, which made fields feel untargetable.
+  const id = `fld-${++fieldIdCounter}-${Date.now()}`;
+  const label = el("label", labelText);
+  label.setAttribute("for", id);
+  inputNode.id = inputNode.id || id;
+  wrap.appendChild(label);
   wrap.appendChild(inputNode);
   return wrap;
 }
@@ -855,7 +867,21 @@ async function brokersView() {
 
 function brokerAdjust(broker, kind) {
   const form = buildForm(
-    [{ key: "amount", label: t("amount"), type: "number", value: "" }],
+    [
+      { key: "amount", label: t("amount"), type: "number", value: "" },
+      {
+        key: "currency",
+        label: t("currency"),
+        type: "select",
+        options: [
+          { label: "EUR", value: "EUR" },
+          { label: "USD", value: "USD" },
+          { label: "TRY", value: "TRY" },
+        ],
+        value: "EUR",
+      },
+      { key: "reason", label: t("reason"), value: "" },
+    ],
     async (payload) => {
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",

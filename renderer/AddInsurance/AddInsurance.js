@@ -20,6 +20,9 @@ const EmailSideBody = document.getElementById("EmailSideBody");
 const DisableReturnEmailInput = document.getElementById(
   "DisableReturnEmailInput"
 );
+const ReplySection = document.getElementById("ReplySection");
+const ReplyInput = document.getElementById("ReplyInput");
+const ReplyButton = document.getElementById("ReplyButton");
 
 // File drop area
 const DropArea = document.getElementById("DropArea");
@@ -119,6 +122,9 @@ function renderEmailSide() {
   if (!PendingEmail || !EmailSide || !EmailSideBody || !EmailSideTitle) {
     return;
   }
+
+  // The reply UI only makes sense when the form was opened from an email card.
+  if (ReplySection) ReplySection.classList.remove("hidden");
 
   EmailSideTitle.textContent = emailSubject(PendingEmail);
   EmailSideBody.replaceChildren();
@@ -518,9 +524,20 @@ InsuranceForm.addEventListener("submit", async function (e) {
     else FormObject[el.id] = el.value;
   }
 
+  const carNumber = FormObject.CarNumberInput
+    ? String(FormObject.CarNumberInput).trim()
+    : "";
+  if (!carNumber) {
+    setMessage(t("add.carNumberRequired"), true);
+    const CarNumberInputEl = document.getElementById("CarNumberInput");
+    if (CarNumberInputEl) CarNumberInputEl.focus();
+    return;
+  }
+
   const payload = {
     PolicyNumber: FormObject.PolicyNumberInput,
     BlancNumber: FormObject.BlancNumberInput,
+    CarNumber: carNumber,
     Duration: FormObject.DurationInput,
     // The branch is no longer typed on this form. It is selected at login and
     // stored in localStorage, so it is sent along with every created policy.
@@ -570,6 +587,42 @@ InsuranceForm.addEventListener("submit", async function (e) {
     SubmitFormButton.disabled = false;
   }
 });
+
+async function sendReply() {
+  if (!PendingEmail || !PendingEmail.messageId) {
+    toast(t("emailConnUnavailable"), "error");
+    return;
+  }
+
+  const text = ReplyInput ? ReplyInput.value.trim() : "";
+  if (!text) {
+    toast(t("add.replyEmpty"), "error");
+    return;
+  }
+
+  if (!confirm(t("add.replyConfirm"))) return;
+
+  if (ReplyButton) ReplyButton.disabled = true;
+  try {
+    await api("/worker/insurances/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messageId: PendingEmail.messageId,
+        bodyText: text,
+      }),
+    });
+    toast(t("add.replySent"), "success");
+    if (ReplyInput) ReplyInput.value = "";
+  } catch (error) {
+    console.error("Error sending reply:", error);
+    toast(error.message || t("serverError"), "error");
+  } finally {
+    if (ReplyButton) ReplyButton.disabled = false;
+  }
+}
+
+if (ReplyButton) ReplyButton.addEventListener("click", sendReply);
 
 renderEmailSide();
 setupEmailSocket();
