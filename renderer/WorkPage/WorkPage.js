@@ -136,6 +136,16 @@ function money(value) {
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 }
 
+function renderCashBalances(balances) {
+  const entries = Object.entries(balances || {}).filter(
+    ([, value]) => Number(value) !== 0
+  );
+  if (entries.length === 0) return money(0);
+  return entries
+    .map(([currency, value]) => `${money(value)} ${currency}`)
+    .join(" · ");
+}
+
 function openModal(title, bodyNode) {
   ModalTitle.textContent = title;
   ModalBody.replaceChildren(bodyNode);
@@ -245,17 +255,21 @@ function renderTable(items, columns, actions) {
       row.appendChild(el("td", value ?? ""));
     });
     if (actions) {
-      const td = el("td");
-      const wrap = el("div", null, { class: "row actions" });
-      actions.forEach((a) => {
-        const btn = el("button", a.label, {
-          class: `small ${a.class || "secondary"}`,
+      const rowActions =
+        typeof actions === "function" ? actions(item) : actions;
+      if (rowActions && rowActions.length) {
+        const td = el("td");
+        const wrap = el("div", null, { class: "row actions" });
+        rowActions.forEach((a) => {
+          const btn = el("button", a.label, {
+            class: `small ${a.class || "secondary"}`,
+          });
+          btn.addEventListener("click", () => a.onClick(item));
+          wrap.appendChild(btn);
         });
-        btn.addEventListener("click", () => a.onClick(item));
-        wrap.appendChild(btn);
-      });
-      td.appendChild(wrap);
-      row.appendChild(td);
+        td.appendChild(wrap);
+        row.appendChild(td);
+      }
     }
     tbody.appendChild(row);
   }
@@ -347,9 +361,9 @@ async function adminDashboard() {
   card.appendChild(
     el(
       "p",
-      `${money(cashData.currentCash)} (${cashData.transactions.length} ${t(
-        "movements"
-      )})`,
+      `${renderCashBalances(cashData.balances)} (${
+        cashData.transactions.length
+      } ${t("movements")})`,
       {
         class: "big",
       }
@@ -585,9 +599,26 @@ async function adminInsurances() {
 async function currentCashView() {
   const data = await api("/currentcash");
   const heading = el("h2", t("currentCash"));
+
   const balance = el("div", null, { class: "balance-card" });
   balance.appendChild(el("h3", t("balance")));
-  balance.appendChild(el("p", `${money(data.currentCash)}`, { class: "big" }));
+
+  // Show each currency only when its balance is above/below 0.
+  const balances = data.balances || {};
+  const nonZero = Object.entries(balances).filter(
+    ([, value]) => Number(value) !== 0
+  );
+  if (nonZero.length === 0) {
+    balance.appendChild(el("p", money(0), { class: "big" }));
+  } else {
+    const list = el("div");
+    for (const [currency, value] of nonZero) {
+      list.appendChild(
+        el("p", `${money(value)} ${currency}`, { class: "big" })
+      );
+    }
+    balance.appendChild(list);
+  }
 
   const actions = el("div", null, { class: "row" });
   const incBtn = el("button", t("increase"));
@@ -601,6 +632,17 @@ async function currentCashView() {
     const form = buildForm(
       [
         { key: "amount", label: t("amount"), type: "number", value: "" },
+        {
+          key: "currency",
+          label: t("currency"),
+          type: "select",
+          options: [
+            { label: "EUR", value: "EUR" },
+            { label: "USD", value: "USD" },
+            { label: "TRY", value: "TRY" },
+          ],
+          value: "EUR",
+        },
         { key: "reason", label: t("reason"), value: "" },
       ],
       async (payload) => {
@@ -639,15 +681,81 @@ async function currentCashView() {
     }
   });
 
-  const txTable = renderTable(data.transactions, [
-    { key: "Type", label: t("type") },
-    { key: "Amount", label: t("amount"), format: (v) => money(v) },
-    { key: "Username", label: t("user") },
-    { key: "Reason", label: t("reason") },
-    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
-  ]);
+  function openTransactionEditor(tx) {
+    const form = buildForm(
+      [
+        {
+          key: "type",
+          label: t("type"),
+          type: "select",
+          options: [
+            { label: t("increase"), value: "increase" },
+            { label: t("reduce"), value: "reduce" },
+          ],
+          value: tx.Type,
+        },
+        {
+          key: "amount",
+          label: t("amount"),
+          type: "number",
+          value: tx.Amount,
+        },
+        {
+          key: "currency",
+          label: t("currency"),
+          type: "select",
+          options: [
+            { label: "EUR", value: "EUR" },
+            { label: "USD", value: "USD" },
+            { label: "TRY", value: "TRY" },
+          ],
+          value: tx.Currency || "EUR",
+        },
+        { key: "reason", label: t("reason"), value: tx.Reason },
+      ],
+      async (payload) => {
+        await api(`/currentcash/transactions/${tx.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        toast(t("transactionUpdated"), "success");
+        closeModal();
+        currentCashView();
+      },
+      t("saveChanges")
+    );
+    openModal(`${t("editTransaction")} #${tx.id}`, form);
+  }
+
+  const txTable = renderTable(
+    data.transactions,
+    [
+      { key: "Type", label: t("type") },
+      { key: "Amount", label: t("amount"), format: (v) => money(v) },
+      { key: "Currency", label: t("currency") },
+      { key: "Username", label: t("user") },
+      { key: "Reason", label: t("reason") },
+      {
+        key: "CreatedAt",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+      },
+    ],
+    (tx) =>
+      String(tx.Username) === String(username)
+        ? [
+            {
+              label: t("edit"),
+              class: "",
+              onClick: () => openTransactionEditor(tx),
+            },
+          ]
+        : []
+  );
   const resetTable = renderTable(data.resets, [
     { key: "Username", label: t("user") },
+    { key: "Currency", label: t("currency") },
     { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
     { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
   ]);

@@ -116,6 +116,8 @@ const I18N = {
     currentCashIncreased: "Current cash increased",
     currentCashReduced: "Current cash reduced",
     currentCashReset: "Current cash reset",
+    transactionUpdated: "Transaction updated",
+    editTransaction: "Edit transaction",
     resetConfirm: "Reset current cash to 0? This will record the kept amount.",
     brokerBalanceIncreased: "Broker balance increased",
     brokerBalanceReduced: "Broker balance reduced",
@@ -273,6 +275,8 @@ const I18N = {
     currentCashIncreased: "Наличният кеш беше увеличен",
     currentCashReduced: "Наличният кеш беше намален",
     currentCashReset: "Наличният кеш беше нулиран",
+    transactionUpdated: "Транзакцията е обновена",
+    editTransaction: "Редактирай транзакция",
     resetConfirm:
       "Да се нулира ли наличният кеш? Ще бъде записана задържаната сума.",
     brokerBalanceIncreased: "Балансът на брокера беше увеличен",
