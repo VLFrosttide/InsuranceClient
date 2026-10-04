@@ -15,7 +15,6 @@ import {
 import path from "path";
 import fs from "fs";
 let win;
-let MenuTemp;
 let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
 
 const CreateWindow = () => {
@@ -41,16 +40,7 @@ const CreateWindow = () => {
 
 app.whenReady().then(() => {
   CreateWindow();
-  MenuTemp = [
-    { label: "Reload", accelerator: "Ctrl+R", role: "forceReload" },
-    {
-      label: "Dev tools",
-      role: "toggleDevTools",
-      accelerator: "Ctrl+`",
-    },
-  ];
-  const menu = Menu.buildFromTemplate(MenuTemp);
-  Menu.setApplicationMenu(menu);
+  Menu.setApplicationMenu(null);
 });
 
 ipcMain.on("LoadPage", (event, page) => {

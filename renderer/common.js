@@ -93,7 +93,9 @@ const I18N = {
     author: "Author",
     date: "Date",
     load: "Load",
-    authorDateRequired: "Author and date are required",
+    clear: "Clear",
+    searchCriteriaRequired:
+      "Enter at least one search criteria (author, date, policy number, blank number or car number)",
     blankNo: "Blank No.",
     client: "Client",
     price: "Price",
@@ -101,6 +103,7 @@ const I18N = {
     payment: "Payment",
     broker: "Broker",
     policyNumber: "Policy number",
+    carNumber: "Car number",
     test: "Test",
     exportJson: "Export JSON",
     exportCsv: "Export CSV",
@@ -261,7 +264,9 @@ const I18N = {
     author: "Автор",
     date: "Дата",
     load: "Зареди",
-    authorDateRequired: "Авторът и датата са задължителни",
+    clear: "Изчисти",
+    searchCriteriaRequired:
+      "Въведете поне един критерий за търсене (автор, дата, номер на полица, номер на бланка или номер на автомобил)",
     blankNo: "Бланка №",
     client: "Клиент",
     price: "Цена",
@@ -269,6 +274,7 @@ const I18N = {
     payment: "Плащане",
     broker: "Брокер",
     policyNumber: "Номер на полица",
+    carNumber: "Номер на автомобил",
     test: "Тест",
     exportJson: "Експорт JSON",
     exportCsv: "Експорт CSV",
@@ -437,6 +443,9 @@ function getUsername() {
 }
 function getRole() {
   return localStorage.getItem("role") || "";
+}
+function getBranch() {
+  return localStorage.getItem("branch") || "";
 }
 
 function clearSession() {

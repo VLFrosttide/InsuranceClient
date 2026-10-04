@@ -388,10 +388,11 @@ function openInsuranceEditor(insurance) {
 // Admin views
 // ---------------------------------------------------------------------------
 async function adminDashboard() {
+  const branch = getBranch();
   const [statsData, cashData, cardData, brokerData, usersData] =
     await Promise.all([
       api("/admin/stats"),
-      api("/currentcash"),
+      api(`/currentcash?branch=${encodeURIComponent(branch)}`),
       api("/cardpayments"),
       api("/brokers"),
       api("/admin/users"),
@@ -638,8 +639,16 @@ async function adminInsurances() {
 }
 
 async function currentCashView() {
-  const data = await api("/currentcash");
+  const branch = getBranch();
+  const data = await api(`/currentcash?branch=${encodeURIComponent(branch)}`);
   const heading = el("h2", t("currentCash"));
+
+  // Show which branch the cash balance belongs to.
+  if (branch) {
+    heading.appendChild(
+      el("span", ` — ${t("branch")}: ${branch}`, { class: "muted" })
+    );
+  }
 
   const balance = el("div", null, { class: "balance-card" });
   balance.appendChild(el("h3", t("balance")));
@@ -687,6 +696,8 @@ async function currentCashView() {
         { key: "reason", label: t("reason"), value: "" },
       ],
       async (payload) => {
+        // Attach the branch to the payload before sending.
+        payload.branch = branch;
         await api(`/currentcash/${kind}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -714,7 +725,11 @@ async function currentCashView() {
   resetBtn.addEventListener("click", async () => {
     if (!confirm(t("resetConfirm"))) return;
     try {
-      await api("/currentcash/reset", { method: "POST" });
+      await api("/currentcash/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch }),
+      });
       toast(t("currentCashReset"), "success");
       currentCashView();
     } catch (err) {
@@ -1059,37 +1074,68 @@ async function downloadBrokersCsv() {
 }
 
 async function adminInsurancesByDate() {
-  // Admin/worker filtered list: GET /insurances?author=X&date=YYYY-MM-DD
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=
+  // All fields are optional, but at least one must be filled in to search.
+  // PolicyNumber/BlancNumber/CarNumber match partially (substring) on the
+  // server, so a worker can search by a fragment of the number too.
   const authorInput = input("text", username);
-  const dateInput = input("date", new Date().toISOString().slice(0, 10));
+  const dateInput = input("date", "");
+  const policyNumberInput = input("text", "");
+  const blancNumberInput = input("text", "");
+  const carNumberInput = input("text", "");
   const apply = el("button", t("load"));
+  const clearBtn = el("button", t("clear"), {
+    class: "secondary",
+    type: "button",
+  });
   const form = el("div", null, { class: "row filter-row" });
   form.appendChild(field(t("author"), authorInput));
   form.appendChild(field(t("date"), dateInput));
+  form.appendChild(field(t("policyNumber"), policyNumberInput));
+  form.appendChild(field(t("blankNo"), blancNumberInput));
+  form.appendChild(field(t("carNumber"), carNumberInput));
   form.appendChild(apply);
+  form.appendChild(clearBtn);
   form.appendChild(el("div", null, { class: "spacer" }));
 
   const result = el("div");
-  apply.addEventListener("click", async () => {
-    const date = dateInput.value;
+
+  async function runSearch() {
     const author = authorInput.value.trim();
-    if (!author || !date) {
-      toast(t("authorDateRequired"), "error");
+    const date = dateInput.value;
+    const policyNumber = policyNumberInput.value.trim();
+    const blancNumber = blancNumberInput.value.trim();
+    const carNumber = carNumberInput.value.trim();
+
+    if (!author && !date && !policyNumber && !blancNumber && !carNumber) {
+      toast(t("searchCriteriaRequired"), "error");
       return;
     }
+
+    const params = new URLSearchParams();
+    if (author) params.set("author", author);
+    if (date) params.set("date", date);
+    if (policyNumber) params.set("policyNumber", policyNumber);
+    if (blancNumber) params.set("blancNumber", blancNumber);
+    if (carNumber) params.set("carNumber", carNumber);
+
     try {
-      const data = await api(
-        `/insurances?author=${encodeURIComponent(author)}&date=${date}`
-      );
+      const data = await api(`/insurances?${params.toString()}`);
       result.replaceChildren(
         renderTable(
           data.insurances,
           [
             { key: "BlancNumber", label: t("blankNo") },
             { key: "PolicyNumber", label: t("policyNumber") },
+            { key: "CarNumber", label: t("carNumber") },
             { key: "Price", label: t("price"), format: (v) => money(v) },
             { key: "CurrencyType", label: t("currency") },
             { key: "PaymentType", label: t("payment") },
+            {
+              key: "CreationDate",
+              label: t("created"),
+              format: (v) => formatDateTime(v),
+            },
           ],
           [
             {
@@ -1103,6 +1149,31 @@ async function adminInsurancesByDate() {
     } catch (err) {
       toast(err.message, "error");
     }
+  }
+
+  apply.addEventListener("click", runSearch);
+  // Pressing Enter in any filter field triggers the search too.
+  [
+    authorInput,
+    dateInput,
+    policyNumberInput,
+    blancNumberInput,
+    carNumberInput,
+  ].forEach((inp) => {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runSearch();
+      }
+    });
+  });
+  clearBtn.addEventListener("click", () => {
+    authorInput.value = "";
+    dateInput.value = "";
+    policyNumberInput.value = "";
+    blancNumberInput.value = "";
+    carNumberInput.value = "";
+    result.replaceChildren();
   });
 
   Content.replaceChildren(el("h2", t("nav.insurancesByDate")), form, result);
