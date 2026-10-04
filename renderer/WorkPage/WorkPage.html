@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="bg">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,10 +11,16 @@
     <div id="App">
       <header id="PageHeader">
         <div class="row">
-          <h1 id="HeaderTitle">Dashboard</h1>
+          <h1 id="HeaderTitle" data-i18n="nav.dashboard">Dashboard</h1>
           <span id="HeaderSub" class="muted"></span>
           <div class="spacer"></div>
-          <button id="LogoutButton" class="secondary" type="button">
+          <button id="LangButton" class="secondary" type="button">EN</button>
+          <button
+            id="LogoutButton"
+            class="secondary"
+            type="button"
+            data-i18n="logout"
+          >
             Logout
           </button>
         </div>
@@ -28,7 +34,12 @@
         <div class="row">
           <h2 id="ModalTitle"></h2>
           <div class="spacer"></div>
-          <button id="ModalClose" class="secondary small" type="button">
+          <button
+            id="ModalClose"
+            class="secondary small"
+            type="button"
+            data-i18n="close"
+          >
             Close
           </button>
         </div>

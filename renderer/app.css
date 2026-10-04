@@ -141,6 +141,8 @@ h3 {
   z-index: 9999;
   font-size: 13px;
   max-width: 80vw;
+  /* A visible toast must never intercept clicks/typing on underlying inputs. */
+  pointer-events: none;
 }
 .toast.success {
   border-left-color: var(--success);

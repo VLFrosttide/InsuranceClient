@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="bg">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,10 +10,17 @@
   <body>
     <header id="PageHeader">
       <div class="row">
-        <button id="BackButton" class="secondary" type="button">
+        <button
+          id="BackButton"
+          class="secondary"
+          type="button"
+          data-i18n="add.back"
+        >
           ← Dashboard
         </button>
-        <h1>Add Insurance</h1>
+        <h1 data-i18n="add.title">Add Insurance</h1>
+        <div class="spacer"></div>
+        <button id="LangButton" class="secondary" type="button">BG</button>
       </div>
     </header>
 
@@ -21,11 +28,9 @@
       <form id="InsuranceForm" autocomplete="off">
         <div class="form-grid">
           <div class="field">
-            <label for="DKNInput">ДКН</label>
-            <input id="DKNInput" class="ClearForm FormInput" type="text" />
-          </div>
-          <div class="field">
-            <label for="PolicyNumberInput">Полица номер</label>
+            <label for="PolicyNumberInput" data-i18n="add.policyNumber"
+              >Полица номер</label
+            >
             <input
               id="PolicyNumberInput"
               class="NumInput FormInput ClearForm"
@@ -33,7 +38,9 @@
             />
           </div>
           <div class="field">
-            <label for="BlancNumberInput">Бланка номер</label>
+            <label for="BlancNumberInput" data-i18n="add.blancNumber"
+              >Бланка номер</label
+            >
             <input
               id="BlancNumberInput"
               class="NumInput FormInput ClearForm"
@@ -41,7 +48,7 @@
             />
           </div>
           <div class="field">
-            <label for="DurationInput">Срок</label>
+            <label for="DurationInput" data-i18n="add.duration">Срок</label>
             <input
               id="DurationInput"
               class="NumInput FormInput ClearForm"
@@ -50,26 +57,21 @@
             />
           </div>
           <div class="field">
-            <label for="BrokerCodeInput">Код офис на брокер</label>
-            <input id="BrokerCodeInput" class="FormInput" type="text" />
-          </div>
-          <div class="field">
-            <label for="BranchInput">Клон</label>
-            <input
-              id="BranchInput"
-              class="FormInput"
-              type="text"
-              placeholder="ГКПП Лесово"
-            />
-          </div>
-          <div class="field">
-            <label for="AutoTypeInput">Otomobil</label>
+            <label for="AutoTypeInput" data-i18n="add.vehicleType"
+              >Otomobil</label
+            >
             <select name="AutoType" id="AutoTypeInput" class="FormInput">
               <option value="Otomobil">Otomobil</option>
             </select>
           </div>
           <div class="field">
-            <label for="TotalPriceInput">Цена</label>
+            <label for="StartDateInput" data-i18n="add.startDate"
+              >Начална дата</label
+            >
+            <input id="StartDateInput" class="FormInput" type="date" />
+          </div>
+          <div class="field">
+            <label for="TotalPriceInput" data-i18n="add.price">Цена</label>
             <input
               id="TotalPriceInput"
               class="FormInput"
@@ -78,57 +80,53 @@
             />
           </div>
           <div class="field">
-            <label for="CurrencyInput">Валута</label>
+            <label for="CurrencyInput" data-i18n="add.currency">Валута</label>
             <select name="Currency" id="CurrencyInput" class="FormInput">
               <option value="EUR">EUR</option>
               <option value="USD">USD</option>
               <option value="TRY">TRY</option>
             </select>
           </div>
-          <div class="field">
-            <label for="ClientNameInput">Име на клиент</label>
-            <input
-              id="ClientNameInput"
-              class="ClearForm FormInput"
-              type="text"
-            />
-          </div>
-          <div class="field">
-            <label for="ClientAdressInput">Адрес на клиент</label>
-            <input
-              id="ClientAdressInput"
-              class="ClearForm FormInput"
-              type="text"
-            />
-          </div>
-          <div class="field">
-            <label for="ChassisNumberInput">Шаси номер</label>
-            <input
-              id="ChassisNumberInput"
-              class="ClearForm FormInput"
-              type="text"
-            />
-          </div>
-          <div class="field">
-            <label for="VehicleBrandInput">Марка на прев. средство</label>
-            <input id="VehicleBrandInput" class="FormInput" type="text" />
-          </div>
-          <div class="field">
-            <label for="AgentInput">Агент</label>
-            <input id="AgentInput" class="FormInput" type="text" />
-          </div>
           <div class="field checkbox-field">
             <label>
               <input id="CashInput" class="FormInput" checked type="checkbox" />
-              В брой
+              <span data-i18n="add.cash">В брой</span>
             </label>
           </div>
         </div>
 
+        <!-- Drop area for files that will be attached to the return email. -->
+        <div id="DropArea" tabindex="0" role="button">
+          <div class="drop-title" data-i18n="add.dropArea">
+            Пуснете файлове тук
+          </div>
+          <div class="drop-hint" data-i18n="add.dropAreaHint">
+            или щракнете, за да изберете файлове
+          </div>
+          <ul id="DroppedFiles"></ul>
+        </div>
+        <input id="FileInput" type="file" multiple hidden />
+
+        <div class="test-checkbox-field">
+          <label>
+            <input id="DisableReturnEmailInput" type="checkbox" />
+            <span data-i18n="add.testDisableEmail"
+              >Тест (изключи обратния имейл)</span
+            >
+          </label>
+        </div>
+
         <div id="DisplayMsg"></div>
         <div class="row actions-row">
-          <button id="SubmitFormButton" type="submit">Запиши</button>
-          <button id="ClearButton" class="secondary" type="button">
+          <button id="SubmitFormButton" type="submit" data-i18n="add.submit">
+            Запиши
+          </button>
+          <button
+            id="ClearButton"
+            class="secondary"
+            type="button"
+            data-i18n="add.clear"
+          >
             Изчисти
           </button>
         </div>
@@ -138,6 +136,22 @@
         <h2 id="EmailSideTitle"></h2>
         <div id="EmailSideBody"></div>
       </aside>
+    </div>
+
+    <!-- Zoomable / printable picture viewer. -->
+    <div id="ImageViewer" class="hidden">
+      <div class="viewer-toolbar">
+        <button id="ViewerZoomOut" class="secondary" type="button">−</button>
+        <button id="ViewerZoomIn" class="secondary" type="button">+</button>
+        <button id="ViewerResetZoom" class="secondary" type="button">
+          100%
+        </button>
+        <button id="ViewerPrint" type="button">🖨</button>
+        <button id="ViewerClose" class="secondary" type="button">✕</button>
+      </div>
+      <div class="viewer-stage">
+        <img id="ViewerImage" alt="" />
+      </div>
     </div>
 
     <script src="../common.js" defer></script>

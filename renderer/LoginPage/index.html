@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="bg">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,22 +9,37 @@
   </head>
   <body>
     <div id="AuthCard">
-      <h1>Insurance Console</h1>
+      <h1 data-i18n="brand">Insurance Console</h1>
 
       <form id="LoginForm" class="auth-form">
-        <label for="UsernameInput">Username</label>
+        <select id="BranchInput" class="FormInput">
+          <label for="BranchInput" data-i18n="branch">Branch</label>
+          <option value="ГКПП Капитан Андреево">ГКПП Капитан Андреево</option>
+          <option value="ГКПП Лесово" selected>ГКПП Лесово</option>
+          <option value="Офис Харманли">Офис Харманли</option>
+        </select>
+        <label for="UsernameInput" data-i18n="username">Username</label>
         <input id="UsernameInput" type="text" autocomplete="username" />
-        <label for="PassInput">Password</label>
+        <label for="PassInput" data-i18n="password">Password</label>
         <div class="row password-row">
           <input
             id="PassInput"
             type="password"
             autocomplete="current-password"
           />
-          <div id="VisIcon" title="Show/hide password"></div>
+          <div
+            id="VisIcon"
+            data-i18n-title="showHidePassword"
+            title="Show/hide password"
+          ></div>
         </div>
-        <button id="SubmitButton" type="submit">Login</button>
+        <button id="SubmitButton" type="submit" data-i18n="login">Login</button>
       </form>
+
+      <div class="row lang-row">
+        <div class="spacer"></div>
+        <button id="LangButton" class="secondary" type="button">EN</button>
+      </div>
 
       <div id="DisplayMsg" class="msg"></div>
     </div>

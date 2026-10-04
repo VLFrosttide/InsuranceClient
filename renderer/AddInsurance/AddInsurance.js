@@ -5,46 +5,93 @@ if (!requireLogin()) {
 }
 
 const DurationOptions = ["1 ден", "15 дена", "3 месеца", "1 година"];
-const BranchOptions = [
-  "ГКПП Капитан Андреево",
-  "ГКПП Лесово",
-  "ГКПП Малко Търново",
-];
 
 const DurationInput = document.getElementById("DurationInput");
-const BranchInput = document.getElementById("BranchInput");
+const StartDateInput = document.getElementById("StartDateInput");
 const InsuranceForm = document.getElementById("InsuranceForm");
 const SubmitFormButton = document.getElementById("SubmitFormButton");
 const ClearButton = document.getElementById("ClearButton");
 const BackButton = document.getElementById("BackButton");
+const LangButton = document.getElementById("LangButton");
 const DisplayMsg = document.getElementById("DisplayMsg");
 const EmailSide = document.getElementById("EmailSide");
 const EmailSideTitle = document.getElementById("EmailSideTitle");
 const EmailSideBody = document.getElementById("EmailSideBody");
+const DisableReturnEmailInput = document.getElementById(
+  "DisableReturnEmailInput"
+);
+
+// File drop area
+const DropArea = document.getElementById("DropArea");
+const FileInput = document.getElementById("FileInput");
+const DroppedFiles = document.getElementById("DroppedFiles");
+
+// Image viewer
+const ImageViewer = document.getElementById("ImageViewer");
+const ViewerImage = document.getElementById("ViewerImage");
+const ViewerZoomIn = document.getElementById("ViewerZoomIn");
+const ViewerZoomOut = document.getElementById("ViewerZoomOut");
+const ViewerResetZoom = document.getElementById("ViewerResetZoom");
+const ViewerPrint = document.getElementById("ViewerPrint");
+const ViewerClose = document.getElementById("ViewerClose");
 
 const FormInputArray = Array.from(document.getElementsByClassName("FormInput"));
 const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 
 let LM = 0;
-let LN = 0;
+let droppedFiles = []; // { filename, mimeType, size, base64 }
+let viewerScale = 1;
 
+// Scroll-to-cycle helpers only take effect while the input is focused so that
+// normal page scrolling is never hijacked.
 DurationInput.addEventListener("wheel", (e) => {
+  if (document.activeElement !== DurationInput) return;
   e.preventDefault();
   LM += e.deltaY > 0 ? 1 : -1;
   LM = (LM + DurationOptions.length) % DurationOptions.length;
   DurationInput.value = DurationOptions[LM];
 });
 
-BranchInput.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  LN += e.deltaY > 0 ? 1 : -1;
-  LN = (LN + BranchOptions.length) % BranchOptions.length;
-  BranchInput.value = BranchOptions[LN];
-});
+// Make the whole date field open the calendar on click, not just the small
+// icon on the right. Clicking the input (or its label) triggers the native
+// date picker if the browser supports showPicker(); otherwise a normal focus
+// still lets the user type a date.
+function openDatePicker(input) {
+  if (!input) input = StartDateInput;
+  if (!input) return;
+  try {
+    if (typeof input.showPicker === "function") input.showPicker();
+    else input.focus();
+  } catch {
+    input.focus();
+  }
+}
 
+if (StartDateInput) {
+  StartDateInput.addEventListener("click", () =>
+    openDatePicker(StartDateInput)
+  );
+  const startLabel = document.querySelector('label[for="StartDateInput"]');
+  if (startLabel) {
+    startLabel.addEventListener("click", (e) => {
+      e.preventDefault();
+      openDatePicker(StartDateInput);
+    });
+  }
+}
 // Seed sensible defaults.
 DurationInput.value = DurationOptions[1];
-BranchInput.value = BranchOptions[1];
+
+// Language toggle.
+function syncLangButton() {
+  if (!LangButton) return;
+  LangButton.textContent = getLang() === "bg" ? "EN" : "BG";
+}
+LangButton.addEventListener("click", () => {
+  toggleLang();
+  syncLangButton();
+});
+syncLangButton();
 
 // ---------------------------------------------------------------------------
 // Pending unread email (set by the dashboard before navigating here)
@@ -60,7 +107,7 @@ try {
 let emailSocket = null;
 
 function emailSubject(email) {
-  return email.subject || email.from || "(no subject)";
+  return email.subject || email.from || t("email.noSubject");
 }
 
 function clearPendingEmail() {
@@ -77,18 +124,18 @@ function renderEmailSide() {
   EmailSideBody.replaceChildren();
 
   const meta = el("div", null, { class: "email-meta" });
-  meta.appendChild(el("div", `From: ${PendingEmail.from || "?"}`));
-  meta.appendChild(el("div", `Date: ${PendingEmail.date || "?"}`));
+  meta.appendChild(el("div", `${t("email.from")} ${PendingEmail.from || "?"}`));
+  meta.appendChild(el("div", `${t("email.date")} ${PendingEmail.date || "?"}`));
   EmailSideBody.appendChild(meta);
 
-  const body = el("pre", PendingEmail.body || "(empty body)", {
+  const body = el("pre", PendingEmail.body || t("email.emptyBody"), {
     class: "email-body",
   });
   EmailSideBody.appendChild(body);
 
   const attachments = PendingEmail.attachments || [];
   if (attachments.length) {
-    const heading = el("h3", "Attached pictures");
+    const heading = el("h3", t("email.attachments"));
     EmailSideBody.appendChild(heading);
     const gallery = el("div", null, { class: "email-attachments" });
     for (const att of attachments) {
@@ -99,12 +146,20 @@ function renderEmailSide() {
         att.mimeType.startsWith("image/")
       ) {
         const img = el("img");
-        img.alt = att.filename || "attachment";
+        img.alt = att.filename || t("email.attachment");
         img.src = `data:${att.mimeType};base64,${att.base64}`;
+        trackCtrlCursor(img);
+        img.addEventListener("click", (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            openImageExternal(img.src);
+          } else {
+            openImageViewer(img.src, att.filename || "");
+          }
+        });
         wrap.appendChild(img);
       } else {
         wrap.appendChild(
-          el("span", att.filename || "attachment", { class: "muted" })
+          el("span", att.filename || t("email.attachment"), { class: "muted" })
         );
       }
       if (att.filename)
@@ -113,7 +168,9 @@ function renderEmailSide() {
     }
     EmailSideBody.appendChild(gallery);
   } else {
-    EmailSideBody.appendChild(el("p", "No attachments.", { class: "muted" }));
+    EmailSideBody.appendChild(
+      el("p", t("email.noAttachments"), { class: "muted" })
+    );
   }
 
   EmailSide.classList.remove("hidden");
@@ -163,6 +220,259 @@ function completeEmail() {
 }
 
 // ---------------------------------------------------------------------------
+// File drop area
+// ---------------------------------------------------------------------------
+function fileSizeLabel(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderDroppedFiles() {
+  if (!DroppedFiles) return;
+  DroppedFiles.replaceChildren();
+
+  for (let i = 0; i < droppedFiles.length; i++) {
+    const f = droppedFiles[i];
+    const li = el("li");
+
+    const isImage =
+      typeof f.mimeType === "string" &&
+      f.mimeType.startsWith("image/") &&
+      f.base64;
+
+    if (isImage) {
+      const src = `data:${f.mimeType};base64,${f.base64}`;
+      const thumb = el("img", null, { class: "file-thumb" });
+      thumb.alt = f.filename;
+      thumb.src = src;
+      trackCtrlCursor(thumb);
+      thumb.addEventListener("click", (e) => {
+        if (e.ctrlKey || e.metaKey) {
+          openImageExternal(src);
+        } else {
+          openImageViewer(src, f.filename);
+        }
+      });
+      li.appendChild(thumb);
+    }
+
+    li.appendChild(el("span", f.filename, { class: "file-name" }));
+    li.appendChild(el("span", fileSizeLabel(f.size), { class: "file-size" }));
+
+    const removeBtn = el("button", t("add.removeFile"), {
+      class: "secondary",
+      type: "button",
+    });
+    removeBtn.addEventListener("click", () => {
+      droppedFiles.splice(i, 1);
+      renderDroppedFiles();
+    });
+    li.appendChild(removeBtn);
+
+    DroppedFiles.appendChild(li);
+  }
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || "";
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFiles(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    try {
+      const base64 = await readFileAsBase64(file);
+      droppedFiles.push({
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        base64,
+      });
+    } catch (err) {
+      console.error("Failed to read dropped file:", err);
+    }
+  }
+  renderDroppedFiles();
+}
+
+if (DropArea && FileInput) {
+  DropArea.addEventListener("click", () => FileInput.click());
+  DropArea.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      FileInput.click();
+    }
+  });
+
+  FileInput.addEventListener("change", () => {
+    addFiles(FileInput.files);
+    FileInput.value = "";
+  });
+
+  ["dragenter", "dragover"].forEach((type) => {
+    DropArea.addEventListener(type, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      DropArea.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((type) => {
+    DropArea.addEventListener(type, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      DropArea.classList.remove("dragover");
+    });
+  });
+  DropArea.addEventListener("drop", (e) => {
+    addFiles(e.dataTransfer ? e.dataTransfer.files : []);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Zoomable / printable picture viewer
+// ---------------------------------------------------------------------------
+// Open an image with the OS default viewer (outside Electron) via the preload
+// bridge. Falls back to a new browser tab when the bridge is unavailable.
+function openImageExternal(src) {
+  if (!src) return;
+  if (window.bridge && typeof window.bridge.OpenImageExternal === "function") {
+    window.bridge.OpenImageExternal(src);
+    return;
+  }
+  const w = window.open("", "_blank");
+  if (!w) {
+    toast(t("email.print"), "info");
+    return;
+  }
+  const html = `<html><head><title></title></head>
+    <body style="margin:0;display:flex;align-items:center;justify-content:center;">
+      <img src="${src}" style="max-width:100%;max-height:100%;" />
+    </body></html>`;
+  w.document.write(html);
+  w.document.close();
+}
+
+function openImageViewer(src, title) {
+  if (!ViewerImage || !ImageViewer) return;
+  viewerScale = 1;
+  ViewerImage.src = src;
+  ViewerImage.alt = title || "";
+  ViewerImage.style.transform = `scale(${viewerScale})`;
+  ImageViewer.classList.remove("hidden");
+}
+
+function closeImageViewer() {
+  if (!ImageViewer) return;
+  ImageViewer.classList.add("hidden");
+  ViewerImage.src = "";
+}
+
+function applyViewerScale() {
+  if (!ViewerImage) return;
+  ViewerImage.style.transform = `scale(${viewerScale})`;
+}
+
+function zoomViewer(delta) {
+  viewerScale = Math.max(0.1, Math.min(8, viewerScale + delta));
+  applyViewerScale();
+}
+
+function printViewerImage() {
+  if (!ViewerImage || !ViewerImage.src) return;
+  if (window.bridge && typeof window.bridge.PrintImage === "function") {
+    window.bridge.PrintImage(ViewerImage.src);
+  } else {
+    // Fallback for a plain browser context (no Electron bridge).
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast(t("email.print"), "info");
+      return;
+    }
+    const html = `<html><head><title>${ViewerImage.alt || ""}</title></head>
+      <body style="margin:0;display:flex;align-items:center;justify-content:center;">
+        <img src="${ViewerImage.src}" style="max-width:100%;max-height:100%;" />
+      </body></html>`;
+    w.document.write(html);
+    w.document.close();
+  }
+}
+
+if (ViewerZoomIn)
+  ViewerZoomIn.addEventListener("click", () => zoomViewer(0.25));
+if (ViewerZoomOut)
+  ViewerZoomOut.addEventListener("click", () => zoomViewer(-0.25));
+if (ViewerResetZoom)
+  ViewerResetZoom.addEventListener("click", () => {
+    viewerScale = 1;
+    applyViewerScale();
+  });
+if (ViewerPrint) ViewerPrint.addEventListener("click", printViewerImage);
+if (ViewerClose) ViewerClose.addEventListener("click", closeImageViewer);
+if (ImageViewer) {
+  ImageViewer.addEventListener("click", (e) => {
+    if (e.target === ImageViewer) closeImageViewer();
+  });
+}
+if (ViewerImage) {
+  ViewerImage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomViewer(e.deltaY < 0 ? 0.25 : -0.25);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl-hover cursor helpers
+// ---------------------------------------------------------------------------
+// Images that open externally when Ctrl/Cmd is held show a pointer cursor while
+// the key is down; otherwise they keep their zoom-in cursor.
+const CtrlCursorImages = new Set();
+let CtrlHeld = false;
+
+function refreshCtrlCursors() {
+  for (const img of CtrlCursorImages) {
+    img.style.cursor = CtrlHeld ? "pointer" : "zoom-in";
+  }
+}
+
+function trackCtrlCursor(img) {
+  CtrlCursorImages.add(img);
+  img.addEventListener("mouseenter", (e) => {
+    CtrlHeld = e.ctrlKey || e.metaKey;
+    img.style.cursor = CtrlHeld ? "pointer" : "zoom-in";
+  });
+  img.addEventListener("mouseleave", () => {
+    img.style.cursor = "zoom-in";
+  });
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Control" || e.key === "Meta") {
+    CtrlHeld = true;
+    refreshCtrlCursors();
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Control" || e.key === "Meta") {
+    CtrlHeld = false;
+    refreshCtrlCursors();
+  }
+});
+window.addEventListener("blur", () => {
+  CtrlHeld = false;
+  refreshCtrlCursors();
+});
+
+// ---------------------------------------------------------------------------
 // Form helpers
 // ---------------------------------------------------------------------------
 function setMessage(text, isError) {
@@ -177,7 +487,10 @@ function clearForm() {
     el.value = "";
   }
   DurationInput.value = DurationOptions[1];
-  BranchInput.value = BranchOptions[1];
+  if (StartDateInput) StartDateInput.value = "";
+  droppedFiles = [];
+  renderDroppedFiles();
+  if (DisableReturnEmailInput) DisableReturnEmailInput.checked = false;
   setMessage("", false);
 }
 
@@ -206,20 +519,33 @@ InsuranceForm.addEventListener("submit", async function (e) {
   }
 
   const payload = {
-    DKN: FormObject.DKNInput,
     PolicyNumber: FormObject.PolicyNumberInput,
     BlancNumber: FormObject.BlancNumberInput,
     Duration: FormObject.DurationInput,
-    BrokerCode: FormObject.BrokerCodeInput,
-    Branch: FormObject.BranchInput,
+    // The branch is no longer typed on this form. It is selected at login and
+    // stored in localStorage, so it is sent along with every created policy.
+    Branch: localStorage.getItem("branch") || "",
     Otomobil: FormObject.AutoTypeInput,
+    StartDate: FormObject.StartDateInput || "",
     Price: FormObject.TotalPriceInput,
     CurrencyType: FormObject.CurrencyInput,
-    ClientName: FormObject.ClientNameInput,
-    ClientAdress: FormObject.ClientAdressInput,
-    ChassisNumber: FormObject.ChassisNumberInput,
-    VehicleBrand: FormObject.VehicleBrandInput,
     Cash: FormObject.CashInput === true,
+
+    // Broker is not typed on this form. When the form was opened from an unread
+    // email, the sender's address is sent so the server can resolve the broker.
+    EmailFrom: PendingEmail ? PendingEmail.from || "" : "",
+
+    // Return-email handling: the original Gmail message ID (when this form was
+    // opened from an unread email), the files dropped by the worker, and the
+    // test checkbox that disables sending the reply.
+    MessageId: PendingEmail ? PendingEmail.messageId || null : null,
+    DisableReturnEmail:
+      (DisableReturnEmailInput && DisableReturnEmailInput.checked) || false,
+    Attachments: droppedFiles.map((f) => ({
+      filename: f.filename,
+      mimeType: f.mimeType,
+      base64: f.base64,
+    })),
   };
 
   SubmitFormButton.disabled = true;
@@ -229,8 +555,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    toast("Insurance saved", "success");
-    setMessage("Insurance saved", false);
+    toast(t("add.saved"), "success");
+    setMessage(t("add.saved"), false);
 
     // The form is complete: mark the email handled and remove it everywhere.
     completeEmail();
@@ -239,7 +565,7 @@ InsuranceForm.addEventListener("submit", async function (e) {
     clearForm();
   } catch (error) {
     console.error("Error saving insurance:", error);
-    setMessage(error.message || "Server Error", true);
+    setMessage(error.message || t("serverError"), true);
   } finally {
     SubmitFormButton.disabled = false;
   }

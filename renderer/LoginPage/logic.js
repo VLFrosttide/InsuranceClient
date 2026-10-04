@@ -3,8 +3,10 @@
 const VisIcon = document.getElementById("VisIcon");
 const Pass = document.getElementById("PassInput");
 const UserName = document.getElementById("UsernameInput");
+const BranchInput = document.getElementById("BranchInput");
 const DisplayMsg = document.getElementById("DisplayMsg");
 const LoginForm = document.getElementById("LoginForm");
+const LangButton = document.getElementById("LangButton");
 
 function setMessage(text, isError) {
   if (!DisplayMsg) return;
@@ -19,9 +21,21 @@ if (VisIcon) {
   });
 }
 
+function syncLangButton() {
+  if (!LangButton) return;
+  LangButton.textContent = getLang() === "bg" ? "EN" : "BG";
+}
+if (LangButton) {
+  LangButton.addEventListener("click", () => {
+    toggleLang();
+    syncLangButton();
+  });
+}
+syncLangButton();
+
 async function doLogin() {
   if (!UserName.value || !Pass.value) {
-    setMessage("Enter username and password", true);
+    setMessage(t("enterCredentials"), true);
     return;
   }
 
@@ -38,18 +52,21 @@ async function doLogin() {
     const data = await LoginReq.json().catch(() => ({}));
 
     if (!LoginReq.ok) {
-      setMessage(data.error || "Access Denied", true);
+      setMessage(data.error || t("accessDenied"), true);
       return;
     }
 
     localStorage.setItem("token", data.token || "");
     localStorage.setItem("username", data.username || "");
     localStorage.setItem("role", data.role || "");
+    // The branch is selected at login and attached to every insurance the
+    // worker creates (the add-insurance form no longer has a branch field).
+    localStorage.setItem("branch", BranchInput ? BranchInput.value : "");
 
     window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
   } catch (error) {
     console.error("Error: ", error);
-    setMessage("Server Error", true);
+    setMessage(t("serverError"), true);
   }
 }
 

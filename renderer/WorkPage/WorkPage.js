@@ -5,6 +5,7 @@ const Nav = document.getElementById("Nav");
 const HeaderTitle = document.getElementById("HeaderTitle");
 const HeaderSub = document.getElementById("HeaderSub");
 const LogoutButton = document.getElementById("LogoutButton");
+const LangButton = document.getElementById("LangButton");
 const ModalBackdrop = document.getElementById("ModalBackdrop");
 const Modal = document.getElementById("Modal");
 const ModalTitle = document.getElementById("ModalTitle");
@@ -26,13 +27,13 @@ let emailSocket = null;
 let pendingClaimEmail = null;
 
 function emailTitle(email) {
-  return email.subject || email.from || "(no subject)";
+  return email.subject || email.from || t("email.noSubject");
 }
 
 function emailCardsContainer() {
   const container = el("div", null, { id: "EmailCards", class: "email-cards" });
   if (emailCards.size === 0) {
-    container.appendChild(el("p", "No unread emails.", { class: "muted" }));
+    container.appendChild(el("p", t("noUnreadEmails"), { class: "muted" }));
     return container;
   }
   for (const [, entry] of emailCards) container.appendChild(entry.node);
@@ -53,7 +54,7 @@ function addEmailCard(email) {
   // If the dashboard is the active view, re-render it in place.
   if (activeNav && activeNav.load === workerDashboard) {
     Content.replaceChildren(
-      el("h2", "Unread emails"),
+      el("h2", t("unreadEmails")),
       testToolbar(),
       emailCardsContainer()
     );
@@ -64,7 +65,7 @@ function removeEmailCard(messageId) {
   if (!messageId || !emailCards.delete(messageId)) return;
   if (activeNav && activeNav.load === workerDashboard) {
     Content.replaceChildren(
-      el("h2", "Unread emails"),
+      el("h2", t("unreadEmails")),
       testToolbar(),
       emailCardsContainer()
     );
@@ -73,7 +74,7 @@ function removeEmailCard(messageId) {
 
 function openEmailInNewForm(email) {
   if (!emailSocket) {
-    toast("Email connection unavailable", "error");
+    toast(t("emailConnUnavailable"), "error");
     return;
   }
 
@@ -108,7 +109,7 @@ function setupEmailSocket() {
       if (msg.ok) {
         openClaimedEmail(email);
       } else {
-        toast("This email was already opened by another worker", "error");
+        toast(t("emailClaimed"), "error");
       }
     },
     email_claimed: (msg) => removeEmailCard(msg.messageId),
@@ -195,7 +196,7 @@ function buildForm(spec, onSubmit, submitLabel) {
     values[s.key] = control;
     form.appendChild(field(s.label, control));
   }
-  const submit = el("button", submitLabel || "Save", { type: "submit" });
+  const submit = el("button", submitLabel || t("save"), { type: "submit" });
   form.appendChild(submit);
 
   form.addEventListener("submit", async (e) => {
@@ -225,13 +226,13 @@ function buildForm(spec, onSubmit, submitLabel) {
 // ---------------------------------------------------------------------------
 function renderTable(items, columns, actions) {
   if (!items || items.length === 0) {
-    return el("p", "No data.", { class: "muted" });
+    return el("p", t("noData"), { class: "muted" });
   }
   const table = el("table");
   const thead = el("thead");
   const headRow = el("tr");
   columns.forEach((c) => headRow.appendChild(el("th", c.label)));
-  if (actions) headRow.appendChild(el("th", "Actions"));
+  if (actions) headRow.appendChild(el("th", t("actions")));
   thead.appendChild(headRow);
   table.appendChild(thead);
 
@@ -267,16 +268,15 @@ function renderTable(items, columns, actions) {
 // ---------------------------------------------------------------------------
 function openInsuranceEditor(insurance) {
   const spec = [
-    { key: "DKN", label: "ДКН", value: insurance.DKN },
     {
       key: "PolicyNumber",
-      label: "Полица номер",
+      label: t("add.policyNumber"),
       value: insurance.PolicyNumber,
     },
-    { key: "Price", label: "Цена", type: "number", value: insurance.Price },
+    { key: "Price", label: t("price"), type: "number", value: insurance.Price },
     {
       key: "CurrencyType",
-      label: "Валута",
+      label: t("currency"),
       type: "select",
       options: [
         { label: "EUR", value: "EUR" },
@@ -286,35 +286,29 @@ function openInsuranceEditor(insurance) {
       value: insurance.CurrencyType || "EUR",
     },
     {
-      key: "BrokerCode",
-      label: "Код офис на брокер",
-      value: insurance.BrokerCode,
+      key: "Duration",
+      label: t("add.duration"),
+      type: "number",
+      value: insurance.Duration,
     },
-    { key: "Branch", label: "Клон", value: insurance.Branch },
-    { key: "Otomobil", label: "Otomobil", value: insurance.Otomobil },
+    { key: "Branch", label: t("add.branch"), value: insurance.Branch },
+    { key: "Otomobil", label: t("add.vehicleType"), value: insurance.Otomobil },
+    {
+      key: "StartDate",
+      label: t("add.startDate"),
+      type: "date",
+      value: insurance.StartDate,
+    },
     {
       key: "PaymentType",
-      label: "Начин на плащане",
+      label: t("paymentType"),
       type: "select",
       options: [
-        { label: "Card", value: "Card" },
-        { label: "Cash", value: "Cash" },
+        { label: t("payment.Card"), value: "Card" },
+        { label: t("payment.Cash"), value: "Cash" },
       ],
       value: insurance.PaymentType || "Card",
     },
-    { key: "ClientName", label: "Име на клиент", value: insurance.ClientName },
-    {
-      key: "ClientAdress",
-      label: "Адрес на клиент",
-      value: insurance.ClientAdress,
-    },
-    {
-      key: "ChassisNumber",
-      label: "Шаси номер",
-      value: insurance.ChassisNumber,
-    },
-    { key: "VehicleBrand", label: "Марка", value: insurance.VehicleBrand },
-    { key: "Broker", label: "Broker (username)", value: insurance.Broker },
   ];
 
   const form = buildForm(
@@ -325,14 +319,14 @@ function openInsuranceEditor(insurance) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      toast("Insurance updated", "success");
+      toast(t("insuranceUpdated"), "success");
       closeModal();
       return data;
     },
-    "Save changes"
+    t("saveChanges")
   );
 
-  openModal(`Edit insurance ${insurance.BlancNumber}`, form);
+  openModal(`${t("editInsurance")} ${insurance.BlancNumber}`, form);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,13 +343,13 @@ async function adminDashboard() {
     ]);
   const s = statsData.stats || {};
   const card = el("div", null, { class: "stat-card" });
-  card.appendChild(el("h3", "Current cash"));
+  card.appendChild(el("h3", t("currentCash")));
   card.appendChild(
     el(
       "p",
-      `${money(cashData.currentCash)} (${
-        cashData.transactions.length
-      } movements)`,
+      `${money(cashData.currentCash)} (${cashData.transactions.length} ${t(
+        "movements"
+      )})`,
       {
         class: "big",
       }
@@ -363,23 +357,23 @@ async function adminDashboard() {
   );
 
   const cardCard = el("div", null, { class: "stat-card" });
-  cardCard.appendChild(el("h3", "Card balance"));
+  cardCard.appendChild(el("h3", t("cardBalance")));
   cardCard.appendChild(el("p", money(cardData.cardBalance), { class: "big" }));
 
   const userCard = el("div", null, { class: "stat-card" });
-  userCard.appendChild(el("h3", "Users"));
+  userCard.appendChild(el("h3", t("users")));
   userCard.appendChild(
     el(
       "p",
-      `Admins ${s.admins ?? 0} · Workers ${s.workers ?? 0} · Clients ${
-        s.clients ?? 0
-      }`,
+      `${t("admins")} ${s.admins ?? 0} · ${t("workers")} ${
+        s.workers ?? 0
+      } · ${t("clients")} ${s.clients ?? 0}`,
       { class: "big" }
     )
   );
 
   const brokerCard = el("div", null, { class: "stat-card" });
-  brokerCard.appendChild(el("h3", "Brokers"));
+  brokerCard.appendChild(el("h3", t("brokers")));
   brokerCard.appendChild(
     el("p", String(brokerData.brokers.length), { class: "big" })
   );
@@ -390,54 +384,54 @@ async function adminDashboard() {
   grid.appendChild(cardCard);
   grid.appendChild(userCard);
   grid.appendChild(brokerCard);
-  Content.replaceChildren(el("h2", "Overview"), grid);
+  Content.replaceChildren(el("h2", t("overview")), grid);
 }
 
 async function adminUsers() {
   const data = await api("/admin/users");
   const roleOptions = [
-    { label: "Admin", value: 1 },
-    { label: "Worker", value: 2 },
-    { label: "Client", value: 3 },
+    { label: t("role.1"), value: 1 },
+    { label: t("role.2"), value: 2 },
+    { label: t("role.3"), value: 3 },
   ];
 
   const toolbar = el("div", null, { class: "row" });
-  const addUserBtn = el("button", "New user");
+  const addUserBtn = el("button", t("newUser"));
   addUserBtn.addEventListener("click", () => registerUserForm());
   toolbar.appendChild(addUserBtn);
 
   const table = renderTable(
     data.users,
     [
-      { key: "Username", label: "Username" },
-      { key: "Role", label: "Role", format: (v) => ROLE_LABELS[v] || v },
-      { key: "Balance", label: "Balance", format: (v) => money(v) },
-      { key: "PayoutPercentage", label: "Payout %" },
-      { key: "Status", label: "Status" },
+      { key: "Username", label: t("username") },
+      { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
+      { key: "Balance", label: t("balance"), format: (v) => money(v) },
+      { key: "PayoutPercentage", label: t("payoutPct") },
+      { key: "Status", label: t("status") },
     ],
     [
       {
-        label: "Edit",
+        label: t("edit"),
         class: "",
         onClick: (u) => {
           const form = buildForm(
             [
               {
                 key: "role",
-                label: "Role",
+                label: t("role"),
                 type: "select",
                 options: roleOptions,
                 value: u.Role,
               },
               {
                 key: "balance",
-                label: "Balance",
+                label: t("balance"),
                 type: "number",
                 value: u.Balance,
               },
               {
                 key: "payoutPercentage",
-                label: "Payout %",
+                label: t("payoutPct"),
                 type: "number",
                 value: u.PayoutPercentage,
               },
@@ -448,28 +442,28 @@ async function adminUsers() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              toast("User updated", "success");
+              toast(t("userUpdated"), "success");
               closeModal();
               adminUsers();
             },
-            "Save"
+            t("save")
           );
-          openModal(`Edit ${u.Username}`, form);
+          openModal(`${t("edit")} ${u.Username}`, form);
         },
       },
       {
-        label: "Promote",
+        label: t("promote"),
         class: "secondary",
         onClick: (u) => {
           const form = buildForm(
             [
               {
                 key: "role",
-                label: "New role",
+                label: t("newRole"),
                 type: "select",
                 options: [
-                  { label: "Worker", value: 2 },
-                  { label: "Client", value: 3 },
+                  { label: t("role.2"), value: 2 },
+                  { label: t("role.3"), value: 3 },
                 ],
                 value: 2,
               },
@@ -480,22 +474,22 @@ async function adminUsers() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
               });
-              toast("User role updated", "success");
+              toast(t("userRoleUpdated"), "success");
               closeModal();
               adminUsers();
             },
-            "Promote"
+            t("promote")
           );
-          openModal(`Promote ${u.Username}`, form);
+          openModal(`${t("promote")} ${u.Username}`, form);
         },
       },
       {
-        label: "Suspend",
+        label: t("suspend"),
         class: "secondary",
         onClick: async (u) => {
           try {
             await api(`/admin/users/${u.Username}/suspend`, { method: "POST" });
-            toast("User suspended", "success");
+            toast(t("userSuspended"), "success");
             adminUsers();
           } catch (err) {
             toast(err.message, "error");
@@ -503,13 +497,13 @@ async function adminUsers() {
         },
       },
       {
-        label: "Delete",
+        label: t("delete"),
         class: "danger",
         onClick: async (u) => {
-          if (!confirm(`Delete user "${u.Username}"?`)) return;
+          if (!confirm(`${t("deleteConfirm")} "${u.Username}"?`)) return;
           try {
             await api(`/admin/users/${u.Username}/delete`, { method: "POST" });
-            toast("User deleted", "success");
+            toast(t("userDeleted"), "success");
             adminUsers();
           } catch (err) {
             toast(err.message, "error");
@@ -518,22 +512,22 @@ async function adminUsers() {
       },
     ]
   );
-  Content.replaceChildren(el("h2", "Users"), toolbar, table);
+  Content.replaceChildren(el("h2", t("users")), toolbar, table);
 }
 
 function registerUserForm() {
   const form = buildForm(
     [
-      { key: "username", label: "Username", value: "" },
-      { key: "password", label: "Password", type: "password", value: "" },
+      { key: "username", label: t("username"), value: "" },
+      { key: "password", label: t("password"), type: "password", value: "" },
       {
         key: "role",
-        label: "Role",
+        label: t("role"),
         type: "select",
         options: [
-          { label: "Admin", value: 1 },
-          { label: "Worker", value: 2 },
-          { label: "Client", value: 3 },
+          { label: t("role.1"), value: 1 },
+          { label: t("role.2"), value: 2 },
+          { label: t("role.3"), value: 3 },
         ],
         value: 3,
       },
@@ -550,18 +544,18 @@ function registerUserForm() {
       const data = await res.json().catch(() => ({}));
       if (res.status === 401) {
         redirectToLogin();
-        throw new Error(data.error || "Session expired");
+        throw new Error(data.error || t("sessionExpired"));
       }
       if (!res.ok) {
-        throw new Error(data.error || "Registration failed");
+        throw new Error(data.error || t("registrationFailed"));
       }
-      toast(`User "${data.username}" created`, "success");
+      toast(t("userCreated").replace("{u}", data.username), "success");
       closeModal();
       adminUsers();
     },
-    "Create user"
+    t("createUser")
   );
-  openModal("New user", form);
+  openModal(t("newUser"), form);
 }
 
 async function adminInsurances() {
@@ -569,36 +563,36 @@ async function adminInsurances() {
   const table = renderTable(
     data.insurances,
     [
-      { key: "BlancNumber", label: "Blank No." },
-      { key: "Author", label: "Author" },
-      { key: "ClientName", label: "Client" },
-      { key: "Price", label: "Price", format: (v) => money(v) },
-      { key: "CurrencyType", label: "Currency" },
-      { key: "PaymentType", label: "Payment" },
-      { key: "Broker", label: "Broker" },
+      { key: "BlancNumber", label: t("blankNo") },
+      { key: "Author", label: t("author") },
+      { key: "PolicyNumber", label: t("policyNumber") },
+      { key: "Price", label: t("price"), format: (v) => money(v) },
+      { key: "CurrencyType", label: t("currency") },
+      { key: "PaymentType", label: t("payment") },
+      { key: "Broker", label: t("broker") },
     ],
     [
       {
-        label: "Edit",
+        label: t("edit"),
         class: "",
         onClick: (i) => openInsuranceEditor(i),
       },
     ]
   );
-  Content.replaceChildren(el("h2", "All insurances"), table);
+  Content.replaceChildren(el("h2", t("allInsurances")), table);
 }
 
 async function currentCashView() {
   const data = await api("/currentcash");
-  const heading = el("h2", "Current cash");
+  const heading = el("h2", t("currentCash"));
   const balance = el("div", null, { class: "balance-card" });
-  balance.appendChild(el("h3", "Balance"));
+  balance.appendChild(el("h3", t("balance")));
   balance.appendChild(el("p", `${money(data.currentCash)}`, { class: "big" }));
 
   const actions = el("div", null, { class: "row" });
-  const incBtn = el("button", "Increase");
-  const redBtn = el("button", "Reduce", { class: "secondary" });
-  const resetBtn = el("button", "Reset to 0", { class: "danger" });
+  const incBtn = el("button", t("increase"));
+  const redBtn = el("button", t("reduce"), { class: "secondary" });
+  const resetBtn = el("button", t("resetTo0"), { class: "danger" });
   actions.appendChild(incBtn);
   actions.appendChild(redBtn);
   actions.appendChild(resetBtn);
@@ -606,8 +600,8 @@ async function currentCashView() {
   function cashForm(kind, title) {
     const form = buildForm(
       [
-        { key: "amount", label: "Amount", type: "number", value: "" },
-        { key: "reason", label: "Reason", value: "" },
+        { key: "amount", label: t("amount"), type: "number", value: "" },
+        { key: "reason", label: t("reason"), value: "" },
       ],
       async (payload) => {
         await api(`/currentcash/${kind}`, {
@@ -616,28 +610,29 @@ async function currentCashView() {
           body: JSON.stringify(payload),
         });
         toast(
-          `Current cash ${kind === "increase" ? "increased" : "reduced"}`,
+          kind === "increase"
+            ? t("currentCashIncreased")
+            : t("currentCashReduced"),
           "success"
         );
         closeModal();
         currentCashView();
       },
-      kind === "increase" ? "Increase" : "Reduce"
+      kind === "increase" ? t("increase") : t("reduce")
     );
     openModal(title, form);
   }
   incBtn.addEventListener("click", () =>
-    cashForm("increase", "Increase current cash")
+    cashForm("increase", t("currentCashIncreased"))
   );
   redBtn.addEventListener("click", () =>
-    cashForm("reduce", "Reduce current cash")
+    cashForm("reduce", t("currentCashReduced"))
   );
   resetBtn.addEventListener("click", async () => {
-    if (!confirm("Reset current cash to 0? This will record the kept amount."))
-      return;
+    if (!confirm(t("resetConfirm"))) return;
     try {
       await api("/currentcash/reset", { method: "POST" });
-      toast("Current cash reset", "success");
+      toast(t("currentCashReset"), "success");
       currentCashView();
     } catch (err) {
       toast(err.message, "error");
@@ -645,25 +640,25 @@ async function currentCashView() {
   });
 
   const txTable = renderTable(data.transactions, [
-    { key: "Type", label: "Type" },
-    { key: "Amount", label: "Amount", format: (v) => money(v) },
-    { key: "Username", label: "User" },
-    { key: "Reason", label: "Reason" },
-    { key: "CreatedAt", label: "Created" },
+    { key: "Type", label: t("type") },
+    { key: "Amount", label: t("amount"), format: (v) => money(v) },
+    { key: "Username", label: t("user") },
+    { key: "Reason", label: t("reason") },
+    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
   ]);
   const resetTable = renderTable(data.resets, [
-    { key: "Username", label: "User" },
-    { key: "KeptAmount", label: "Kept", format: (v) => money(v) },
-    { key: "CreatedAt", label: "Created" },
+    { key: "Username", label: t("user") },
+    { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
+    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
   ]);
 
   Content.replaceChildren(
     heading,
     balance,
     actions,
-    el("h3", "Transactions"),
+    el("h3", t("transactions")),
     txTable,
-    el("h3", "Resets"),
+    el("h3", t("resets")),
     resetTable
   );
 }
@@ -671,9 +666,9 @@ async function currentCashView() {
 async function cardView() {
   const data = await api("/cardpayments");
   const card = el("div", null, { class: "balance-card" });
-  card.appendChild(el("h3", "Card balance"));
+  card.appendChild(el("h3", t("cardBalance")));
   card.appendChild(el("p", money(data.cardBalance), { class: "big" }));
-  Content.replaceChildren(el("h2", "Card payments"), card);
+  Content.replaceChildren(el("h2", t("cardPayments")), card);
 }
 
 async function brokersView() {
@@ -682,14 +677,17 @@ async function brokersView() {
 
   const toolbar = el("div", null, { class: "row" });
   if (isAdmin) {
-    const addBtn = el("button", "New broker");
+    const addBtn = el("button", t("newBroker"));
     addBtn.addEventListener("click", () => brokerCreateForm());
     toolbar.appendChild(addBtn);
-    const expJson = el("button", "Export JSON", { class: "secondary" });
-    const expCsv = el("button", "Export CSV", { class: "secondary" });
+    const expJson = el("button", t("exportJson"), { class: "secondary" });
+    const expCsv = el("button", t("exportCsv"), { class: "secondary" });
     expJson.addEventListener("click", async () => {
       const d = await api("/brokers/export?format=json");
-      openModal("Brokers (JSON)", el("pre", JSON.stringify(d, null, 2)));
+      openModal(
+        `${t("brokers")} (JSON)`,
+        el("pre", JSON.stringify(d, null, 2))
+      );
     });
     expCsv.addEventListener("click", async () => downloadBrokersCsv());
     toolbar.appendChild(expJson);
@@ -700,39 +698,39 @@ async function brokersView() {
     data.brokers,
     [
       { key: "id", label: "ID" },
-      { key: "Name", label: "Name" },
-      { key: "CashBalance", label: "Balance", format: (v) => money(v) },
-      { key: "Percentage", label: "Percentage" },
-      { key: "PolicyRangeStart", label: "Range start" },
-      { key: "PolicyRangeEnd", label: "Range end" },
-      { key: "InactivePolicies", label: "Inactive" },
+      { key: "Name", label: t("name") },
+      { key: "CashBalance", label: t("balance"), format: (v) => money(v) },
+      { key: "Percentage", label: t("percentage") },
+      { key: "PolicyRangeStart", label: t("rangeStart") },
+      { key: "PolicyRangeEnd", label: t("rangeEnd") },
+      { key: "InactivePolicies", label: t("inactive") },
     ],
     [
       {
-        label: "Increase",
+        label: t("increase"),
         class: "",
         onClick: (b) => brokerAdjust(b, "increase"),
       },
       {
-        label: "Reduce",
+        label: t("reduce"),
         class: "secondary",
         onClick: (b) => brokerAdjust(b, "reduce"),
       },
       ...(isAdmin
         ? [
             {
-              label: "Edit",
+              label: t("edit"),
               class: "secondary",
               onClick: (b) => brokerEditForm(b),
             },
             {
-              label: "Delete",
+              label: t("delete"),
               class: "danger",
               onClick: async (b) => {
-                if (!confirm(`Delete broker "${b.Name}"?`)) return;
+                if (!confirm(`${t("deleteConfirm")} "${b.Name}"?`)) return;
                 try {
                   await api(`/brokers/${b.id}`, { method: "DELETE" });
-                  toast("Broker deleted", "success");
+                  toast(t("brokerDeleted"), "success");
                   brokersView();
                 } catch (err) {
                   toast(err.message, "error");
@@ -744,12 +742,12 @@ async function brokersView() {
     ]
   );
 
-  Content.replaceChildren(el("h2", "Brokers"), toolbar, table);
+  Content.replaceChildren(el("h2", t("brokers")), toolbar, table);
 }
 
 function brokerAdjust(broker, kind) {
   const form = buildForm(
-    [{ key: "amount", label: "Amount", type: "number", value: "" }],
+    [{ key: "amount", label: t("amount"), type: "number", value: "" }],
     async (payload) => {
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",
@@ -757,16 +755,18 @@ function brokerAdjust(broker, kind) {
         body: JSON.stringify(payload),
       });
       toast(
-        `Broker balance ${kind === "increase" ? "increased" : "reduced"}`,
+        kind === "increase"
+          ? t("brokerBalanceIncreased")
+          : t("brokerBalanceReduced"),
         "success"
       );
       closeModal();
       brokersView();
     },
-    kind === "increase" ? "Increase" : "Reduce"
+    kind === "increase" ? t("increase") : t("reduce")
   );
   openModal(
-    `${kind === "increase" ? "Increase" : "Reduce"} ${broker.Name}`,
+    `${kind === "increase" ? t("increase") : t("reduce")} ${broker.Name}`,
     form
   );
 }
@@ -774,24 +774,24 @@ function brokerAdjust(broker, kind) {
 function brokerCreateForm() {
   const form = buildForm(
     [
-      { key: "Name", label: "Name", value: "" },
-      { key: "CashBalance", label: "Cash balance", type: "number", value: 0 },
-      { key: "Percentage", label: "Percentage", type: "number", value: 0 },
+      { key: "Name", label: t("name"), value: "" },
+      { key: "CashBalance", label: t("balance"), type: "number", value: 0 },
+      { key: "Percentage", label: t("percentage"), type: "number", value: 0 },
       {
         key: "PolicyRangeStart",
-        label: "Policy range start",
+        label: t("rangeStart"),
         type: "number",
         value: "",
       },
       {
         key: "PolicyRangeEnd",
-        label: "Policy range end",
+        label: t("rangeEnd"),
         type: "number",
         value: "",
       },
       {
         key: "InactivePolicies",
-        label: "Inactive policies",
+        label: t("inactive"),
         type: "number",
         value: 0,
       },
@@ -807,46 +807,46 @@ function brokerCreateForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      toast("Broker created", "success");
+      toast(t("brokerCreated"), "success");
       closeModal();
       brokersView();
     },
-    "Create broker"
+    t("createUser")
   );
-  openModal("New broker", form);
+  openModal(t("newBroker"), form);
 }
 
 function brokerEditForm(broker) {
   const form = buildForm(
     [
-      { key: "Name", label: "Name", value: broker.Name },
+      { key: "Name", label: t("name"), value: broker.Name },
       {
         key: "CashBalance",
-        label: "Cash balance",
+        label: t("balance"),
         type: "number",
         value: broker.CashBalance,
       },
       {
         key: "Percentage",
-        label: "Percentage",
+        label: t("percentage"),
         type: "number",
         value: broker.Percentage,
       },
       {
         key: "PolicyRangeStart",
-        label: "Policy range start",
+        label: t("rangeStart"),
         type: "number",
         value: broker.PolicyRangeStart,
       },
       {
         key: "PolicyRangeEnd",
-        label: "Policy range end",
+        label: t("rangeEnd"),
         type: "number",
         value: broker.PolicyRangeEnd,
       },
       {
         key: "InactivePolicies",
-        label: "Inactive policies",
+        label: t("inactive"),
         type: "number",
         value: broker.InactivePolicies,
       },
@@ -866,13 +866,13 @@ function brokerEditForm(broker) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      toast("Broker updated", "success");
+      toast(t("brokerUpdated"), "success");
       closeModal();
       brokersView();
     },
-    "Save"
+    t("save")
   );
-  openModal(`Edit ${broker.Name}`, form);
+  openModal(`${t("edit")} ${broker.Name}`, form);
 }
 
 async function downloadBrokersCsv() {
@@ -880,7 +880,7 @@ async function downloadBrokersCsv() {
     headers: { Authorization: `Bearer ${getToken()}` },
   });
   if (!res.ok) {
-    toast("Export failed", "error");
+    toast(t("exportFailed"), "error");
     return;
   }
   const text = await res.text();
@@ -899,10 +899,10 @@ async function adminInsurancesByDate() {
   // Admin/worker filtered list: GET /insurances?author=X&date=YYYY-MM-DD
   const authorInput = input("text", username);
   const dateInput = input("date", new Date().toISOString().slice(0, 10));
-  const apply = el("button", "Load");
+  const apply = el("button", t("load"));
   const form = el("div", null, { class: "row filter-row" });
-  form.appendChild(field("Author", authorInput));
-  form.appendChild(field("Date", dateInput));
+  form.appendChild(field(t("author"), authorInput));
+  form.appendChild(field(t("date"), dateInput));
   form.appendChild(apply);
   form.appendChild(el("div", null, { class: "spacer" }));
 
@@ -911,7 +911,7 @@ async function adminInsurancesByDate() {
     const date = dateInput.value;
     const author = authorInput.value.trim();
     if (!author || !date) {
-      toast("Author and date are required", "error");
+      toast(t("authorDateRequired"), "error");
       return;
     }
     try {
@@ -922,15 +922,15 @@ async function adminInsurancesByDate() {
         renderTable(
           data.insurances,
           [
-            { key: "BlancNumber", label: "Blank No." },
-            { key: "ClientName", label: "Client" },
-            { key: "Price", label: "Price", format: (v) => money(v) },
-            { key: "CurrencyType", label: "Currency" },
-            { key: "PaymentType", label: "Payment" },
+            { key: "BlancNumber", label: t("blankNo") },
+            { key: "PolicyNumber", label: t("policyNumber") },
+            { key: "Price", label: t("price"), format: (v) => money(v) },
+            { key: "CurrencyType", label: t("currency") },
+            { key: "PaymentType", label: t("payment") },
           ],
           [
             {
-              label: "Edit",
+              label: t("edit"),
               class: "",
               onClick: (i) => openInsuranceEditor(i),
             },
@@ -942,7 +942,7 @@ async function adminInsurancesByDate() {
     }
   });
 
-  Content.replaceChildren(el("h2", "Insurances by author/date"), form, result);
+  Content.replaceChildren(el("h2", t("nav.insurancesByDate")), form, result);
 }
 
 // ---------------------------------------------------------------------------
@@ -967,19 +967,14 @@ async function testCreateDummyInsurances(count = 3) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        DKN: `TEST${i + 1}${Date.now() % 10000}`,
         PolicyNumber: `BG/TEST/${suffix}`,
         BlancNumber: blancNumber,
         Duration: "1 година",
-        BrokerCode: "2.1",
         Branch: "ГКПП Лесово",
         Otomobil: "Otomobil",
+        StartDate: new Date().toISOString().slice(0, 10),
         Price: String(100 + i * 25),
         CurrencyType: "EUR",
-        ClientName: `Dummy Client ${i + 1}`,
-        ClientAdress: `Dummy Address ${i + 1}`,
-        ChassisNumber: `CHASSIS-${suffix}`,
-        VehicleBrand: "Toyota",
         Cash: i % 2 === 0,
       }),
     });
@@ -999,7 +994,7 @@ async function runTest() {
 
 function testToolbar() {
   const toolbar = el("div", null, { class: "row test-toolbar" });
-  const testBtn = el("button", "Test", { type: "button" });
+  const testBtn = el("button", t("test"), { type: "button" });
   testBtn.addEventListener("click", async () => {
     testBtn.disabled = true;
     try {
@@ -1016,7 +1011,7 @@ function testToolbar() {
 
 async function workerDashboard() {
   Content.replaceChildren(
-    el("h2", "Unread emails"),
+    el("h2", t("unreadEmails")),
     testToolbar(),
     emailCardsContainer()
   );
@@ -1027,20 +1022,20 @@ async function workerClients() {
   const table = renderTable(
     data.clients,
     [
-      { key: "Username", label: "Username" },
-      { key: "Balance", label: "Balance", format: (v) => money(v) },
-      { key: "PayoutPercentage", label: "Payout %" },
+      { key: "Username", label: t("username") },
+      { key: "Balance", label: t("balance"), format: (v) => money(v) },
+      { key: "PayoutPercentage", label: t("payoutPct") },
     ],
     [
       {
-        label: "Set balance",
+        label: t("setBalance"),
         class: "",
         onClick: (c) => {
           const form = buildForm(
             [
               {
                 key: "balance",
-                label: "Balance",
+                label: t("balance"),
                 type: "number",
                 value: c.Balance,
               },
@@ -1054,18 +1049,18 @@ async function workerClients() {
                   balance: payload.balance,
                 }),
               });
-              toast("Balance updated", "success");
+              toast(t("balanceUpdated"), "success");
               closeModal();
               workerClients();
             },
-            "Save"
+            t("save")
           );
-          openModal(`Set balance for ${c.Username}`, form);
+          openModal(`${t("setBalanceFor")} ${c.Username}`, form);
         },
       },
     ]
   );
-  Content.replaceChildren(el("h2", "Clients"), table);
+  Content.replaceChildren(el("h2", t("clients")), table);
 }
 
 async function workerMyInsurances() {
@@ -1080,33 +1075,35 @@ async function clientProfile() {
   const p = data.profile || {};
   const card = el("div", null, { class: "stat-grid" });
   const c1 = el("div", null, { class: "stat-card" });
-  c1.appendChild(el("h3", "Username"));
+  c1.appendChild(el("h3", t("username")));
   c1.appendChild(el("p", p.Username || username, { class: "big" }));
   const c2 = el("div", null, { class: "stat-card" });
-  c2.appendChild(el("h3", "Balance"));
+  c2.appendChild(el("h3", t("balance")));
   c2.appendChild(el("p", money(p.Balance), { class: "big" }));
   const c3 = el("div", null, { class: "stat-card" });
-  c3.appendChild(el("h3", "Payout %"));
+  c3.appendChild(el("h3", t("payoutPct")));
   c3.appendChild(el("p", p.PayoutPercentage ?? "n/a", { class: "big" }));
   card.appendChild(c1);
   card.appendChild(c2);
   card.appendChild(c3);
-  Content.replaceChildren(el("h2", "My Profile"), card);
+  Content.replaceChildren(el("h2", t("myProfile")), card);
 }
 
 async function clientInsurances() {
   const data = await api("/client/insurances");
   const table = renderTable(data.insurances, [
-    { key: "BlancNumber", label: "Blank No." },
-    { key: "DKN", label: "ДКН" },
-    { key: "PolicyNumber", label: "Policy number" },
-    { key: "ClientName", label: "Client" },
-    { key: "Price", label: "Price", format: (v) => money(v) },
-    { key: "CurrencyType", label: "Currency" },
-    { key: "PaymentType", label: "Payment" },
-    { key: "CreationDate", label: "Created" },
+    { key: "BlancNumber", label: t("blankNo") },
+    { key: "PolicyNumber", label: t("policyNumber") },
+    { key: "Price", label: t("price"), format: (v) => money(v) },
+    { key: "CurrencyType", label: t("currency") },
+    { key: "PaymentType", label: t("payment") },
+    {
+      key: "CreationDate",
+      label: t("created"),
+      format: (v) => formatDateTime(v),
+    },
   ]);
-  Content.replaceChildren(el("h2", "My Insurances"), table);
+  Content.replaceChildren(el("h2", t("myInsurances")), table);
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,38 +1111,37 @@ async function clientInsurances() {
 // ---------------------------------------------------------------------------
 const NAV_DEFS = {
   1: [
-    { label: "Dashboard", load: adminDashboard },
-    { label: "Users", load: adminUsers },
-    { label: "Insurances", load: adminInsurances },
-    { label: "Insurances by date", load: adminInsurancesByDate },
-    { label: "Current cash", load: currentCashView },
-    { label: "Card", load: cardView },
-    { label: "Brokers", load: brokersView },
+    { key: "nav.dashboard", load: adminDashboard },
+    { key: "nav.users", load: adminUsers },
+    { key: "nav.insurances", load: adminInsurances },
+    { key: "nav.insurancesByDate", load: adminInsurancesByDate },
+    { key: "nav.currentCash", load: currentCashView },
+    { key: "nav.card", load: cardView },
+    { key: "nav.brokers", load: brokersView },
   ],
   2: [
-    { label: "Dashboard", load: workerDashboard },
-    { label: "My insurances", load: workerMyInsurances },
-    { label: "Current cash", load: currentCashView },
-    { label: "Card", load: cardView },
-    { label: "Brokers", load: brokersView },
+    { key: "nav.dashboard", load: workerDashboard },
+    { key: "nav.myInsurances", load: workerMyInsurances },
+    { key: "nav.currentCash", load: currentCashView },
+    { key: "nav.card", load: cardView },
+    { key: "nav.brokers", load: brokersView },
   ],
   3: [
-    { label: "Profile", load: clientProfile },
-    { label: "My insurances", load: clientInsurances },
+    { key: "nav.profile", load: clientProfile },
+    { key: "nav.myInsurances", load: clientInsurances },
   ],
 };
 
 let activeNav = null;
 
 function renderHeader() {
-  HeaderTitle.textContent = "Dashboard";
-  HeaderSub.textContent = `${username} · ${ROLE_LABELS[userRole] || "User"}`;
+  HeaderTitle.textContent = t("nav.dashboard");
+  HeaderSub.textContent = `${username} · ${roleLabel(userRole)}`;
   Nav.replaceChildren();
 
   const defs = NAV_DEFS[userRole] || [];
   defs.forEach((d) => {
-    const btn = el("button", d.label, { class: "secondary nav-btn" });
-    console.log("Button: ", btn);
+    const btn = el("button", t(d.key), { class: "secondary nav-btn" });
     btn.addEventListener("click", () => {
       activeNav = d;
       btn.classList.add("active");
@@ -1158,7 +1154,7 @@ function renderHeader() {
   });
 
   if (userRole === "2") {
-    const addBtn = el("button", "+ Add Insurance");
+    const addBtn = el("button", t("addInsurance"));
     addBtn.addEventListener("click", () =>
       window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html")
     );
@@ -1167,7 +1163,7 @@ function renderHeader() {
 }
 
 async function runLoader(load) {
-  Content.replaceChildren(el("p", "Loading…", { class: "muted" }));
+  Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
     await load();
   } catch (err) {
@@ -1175,6 +1171,11 @@ async function runLoader(load) {
       el("p", `Error: ${err.message}`, { class: "muted" })
     );
   }
+}
+
+function syncLangButton() {
+  if (!LangButton) return;
+  LangButton.textContent = getLang() === "bg" ? "EN" : "BG";
 }
 
 async function init() {
@@ -1195,5 +1196,16 @@ LogoutButton.addEventListener("click", () => {
   clearSession();
   window.bridge.LoadNewPage("renderer/LoginPage/index.html");
 });
+
+// Language toggle re-renders header + current view labels.
+if (LangButton) {
+  LangButton.addEventListener("click", () => {
+    toggleLang();
+    syncLangButton();
+    renderHeader();
+    if (activeNav) runLoader(activeNav.load);
+  });
+}
+syncLangButton();
 
 init();
