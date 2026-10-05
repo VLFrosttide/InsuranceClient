@@ -275,7 +275,7 @@ function buildForm(spec, onSubmit, submitLabel) {
 // ---------------------------------------------------------------------------
 // Table helper (with optional per-row action buttons)
 // ---------------------------------------------------------------------------
-function renderTable(items, columns, actions) {
+function renderTable(items, columns, actions, rowClass) {
   if (!items || items.length === 0) {
     return el("p", t("noData"), { class: "muted" });
   }
@@ -289,12 +289,14 @@ function renderTable(items, columns, actions) {
 
   const tbody = el("tbody");
   for (const item of items) {
-    const row = el("tr");
+    const extraClass = typeof rowClass === "function" ? rowClass(item) : "";
+    const row = el("tr", null, extraClass ? { class: extraClass } : null);
     columns.forEach((c) => {
       let value = item[c.key];
       if (c.format) value = c.format(value, item);
       row.appendChild(el("td", value ?? ""));
     });
+
     if (actions) {
       const rowActions =
         typeof actions === "function" ? actions(item) : actions;
@@ -385,8 +387,75 @@ function openInsuranceEditor(insurance) {
 }
 
 // ---------------------------------------------------------------------------
+// Annulment modal (admins + workers)
+// ---------------------------------------------------------------------------
+const ANNUL_FEES = { broker: 8, worker: 1, none: 0 };
+
+function openAnnulForm(insurance, onDone) {
+  const price = Number(insurance.Price) || 0;
+
+  const reasonSelect = select(
+    [
+      { label: t("annul.broker"), value: "broker" },
+      { label: t("annul.worker"), value: "worker" },
+      { label: t("annul.none"), value: "none" },
+    ],
+    "broker"
+  );
+
+  const feeLine = el("p", "", { class: "muted" });
+  const refundLine = el("p", "", { class: "big" });
+
+  function updatePreview() {
+    const reason = reasonSelect.value;
+    const fee = ANNUL_FEES[reason] ?? 0;
+    const refund = Math.max(0, Math.round((price - fee) * 100) / 100);
+    feeLine.textContent = `${t("annulFee")}: ${money(fee)} ${
+      insurance.CurrencyType || ""
+    }`;
+    refundLine.textContent = `${t("annulRefund")}: ${money(refund)} ${
+      insurance.CurrencyType || ""
+    }`;
+  }
+  reasonSelect.addEventListener("change", updatePreview);
+  updatePreview();
+
+  const form = el("form");
+  form.appendChild(field(t("annulReason"), reasonSelect));
+  form.appendChild(el("p", t("annulFeeNote"), { class: "muted" }));
+  form.appendChild(feeLine);
+  form.appendChild(refundLine);
+
+  const submit = el("button", t("annulSubmit"), { class: "danger" });
+  submit.type = "submit";
+  form.appendChild(submit);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    submit.disabled = true;
+    try {
+      const data = await api(`/insurances/${insurance.BlancNumber}/annul`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reasonSelect.value }),
+      });
+      toast(t("insuranceAnnulled"), "success");
+      closeModal();
+      if (onDone) onDone(data);
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  openModal(`${t("annulConfirmTitle")} ${insurance.BlancNumber}`, form);
+}
+
+// ---------------------------------------------------------------------------
 // Admin views
 // ---------------------------------------------------------------------------
+
 async function adminDashboard() {
   const branch = getBranch();
   const [statsData, cashData, cardData, brokerData, usersData] =
@@ -616,26 +685,50 @@ function registerUserForm() {
 
 async function adminInsurances() {
   const data = await api("/admin/insurances");
-  const table = renderTable(
-    data.insurances,
-    [
-      { key: "BlancNumber", label: t("blankNo") },
-      { key: "Author", label: t("author") },
-      { key: "PolicyNumber", label: t("policyNumber") },
-      { key: "Price", label: t("price"), format: (v) => money(v) },
-      { key: "CurrencyType", label: t("currency") },
-      { key: "PaymentType", label: t("payment") },
-      { key: "Broker", label: t("broker") },
-    ],
-    [
-      {
-        label: t("edit"),
-        class: "",
-        onClick: (i) => openInsuranceEditor(i),
-      },
-    ]
-  );
-  Content.replaceChildren(el("h2", t("allInsurances")), table);
+
+  function render() {
+    const table = renderTable(
+      data.insurances,
+      [
+        { key: "BlancNumber", label: t("blankNo") },
+        { key: "Author", label: t("author") },
+        { key: "PolicyNumber", label: t("policyNumber") },
+        { key: "Price", label: t("price"), format: (v) => money(v) },
+        { key: "CurrencyType", label: t("currency") },
+        { key: "PaymentType", label: t("payment") },
+        { key: "Broker", label: t("broker") },
+        {
+          key: "Annulled",
+          label: t("status"),
+          format: (v) => (v ? t("annulled") : ""),
+        },
+      ],
+      (i) => [
+        {
+          label: t("edit"),
+          class: "",
+          onClick: () => openInsuranceEditor(i),
+        },
+        ...(!i.Annulled
+          ? [
+              {
+                label: t("annul"),
+                class: "danger",
+                onClick: () =>
+                  openAnnulForm(i, () => {
+                    i.Annulled = 1;
+                    render();
+                  }),
+              },
+            ]
+          : []),
+      ],
+      (i) => (i.Annulled ? "row-annulled" : "")
+    );
+    Content.replaceChildren(el("h2", t("allInsurances")), table);
+  }
+
+  render();
 }
 
 async function currentCashView() {
@@ -1136,14 +1229,33 @@ async function adminInsurancesByDate() {
               label: t("created"),
               format: (v) => formatDateTime(v),
             },
+            {
+              key: "Annulled",
+              label: t("status"),
+              format: (v) => (v ? t("annulled") : ""),
+            },
           ],
-          [
+          (i) => [
             {
               label: t("edit"),
               class: "",
-              onClick: (i) => openInsuranceEditor(i),
+              onClick: () => openInsuranceEditor(i),
             },
-          ]
+            ...(!i.Annulled
+              ? [
+                  {
+                    label: t("annul"),
+                    class: "danger",
+                    onClick: () =>
+                      openAnnulForm(i, () => {
+                        i.Annulled = 1;
+                        runSearch();
+                      }),
+                  },
+                ]
+              : []),
+          ],
+          (i) => (i.Annulled ? "row-annulled" : "")
         )
       );
     } catch (err) {
@@ -1325,18 +1437,28 @@ async function clientProfile() {
 
 async function clientInsurances() {
   const data = await api("/client/insurances");
-  const table = renderTable(data.insurances, [
-    { key: "BlancNumber", label: t("blankNo") },
-    { key: "PolicyNumber", label: t("policyNumber") },
-    { key: "Price", label: t("price"), format: (v) => money(v) },
-    { key: "CurrencyType", label: t("currency") },
-    { key: "PaymentType", label: t("payment") },
-    {
-      key: "CreationDate",
-      label: t("created"),
-      format: (v) => formatDateTime(v),
-    },
-  ]);
+  const table = renderTable(
+    data.insurances,
+    [
+      { key: "BlancNumber", label: t("blankNo") },
+      { key: "PolicyNumber", label: t("policyNumber") },
+      { key: "Price", label: t("price"), format: (v) => money(v) },
+      { key: "CurrencyType", label: t("currency") },
+      { key: "PaymentType", label: t("payment") },
+      {
+        key: "CreationDate",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+      },
+      {
+        key: "Annulled",
+        label: t("status"),
+        format: (v) => (v ? t("annulled") : ""),
+      },
+    ],
+    null,
+    (i) => (i.Annulled ? "row-annulled" : "")
+  );
   Content.replaceChildren(el("h2", t("myInsurances")), table);
 }
 

@@ -4,8 +4,7 @@ if (!requireLogin()) {
   throw new Error("Not logged in");
 }
 
-const DurationOptions = ["1 ден", "15 дена", "3 месеца", "1 година"];
-
+const DurationOptions = ["15 дена", "1 месец", "3 месеца"];
 const DurationInput = document.getElementById("DurationInput");
 const StartDateInput = document.getElementById("StartDateInput");
 const InsuranceForm = document.getElementById("InsuranceForm");

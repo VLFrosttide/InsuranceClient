@@ -144,7 +144,22 @@ const I18N = {
     "payment.Cash": "Cash",
     "payment.Card": "Card",
 
+    annul: "Annul",
+    annulled: "Annulled",
+    annulReason: "Annul reason",
+    "annul.broker": "Broker fault",
+    "annul.worker": "Worker fault",
+    "annul.none": "No fault",
+    annulFee: "Fee",
+    annulRefund: "Refund",
+    annulFeeNote: "A fee is deducted from the refund depending on the reason.",
+    annulConfirmTitle: "Annul insurance",
+    annulSubmit: "Annul insurance",
+    insuranceAnnulled: "Insurance annulled",
+    alreadyAnnulled: "Already annulled",
+
     "add.back": "← Dashboard",
+
     "add.title": "Add Insurance",
     "add.policyNumber": "Policy number",
     "add.blancNumber": "Blank number",
