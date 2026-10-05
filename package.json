@@ -1,19 +1,58 @@
 {
-  "name": "electrontemplate",
+  "name": "insurance-client",
+  "productName": "Insurance",
   "version": "1.0.0",
-  "description": "",
+  "description": "Insurance client",
   "license": "ISC",
   "author": "Frosttide",
   "type": "module",
   "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VLFrosttide/InsuranceClient.git"
+  },
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "release": "electron-builder --publish always"
+  },
+  "build": {
+    "appId": "com.frosttide.insuranceclient",
+    "productName": "Insurance",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "renderer/**/*",
+      "Icons/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "VLFrosttide",
+        "repo": "InsuranceClient"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "Icons/Vis.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
   },
   "devDependencies": {
     "electron": "latest",
     "electron-builder": "latest"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

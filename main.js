@@ -14,6 +14,8 @@ import {
 } from "electron";
 import path from "path";
 import fs from "fs";
+import electronUpdater from "electron-updater";
+const { autoUpdater } = electronUpdater;
 let win;
 let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
 
@@ -38,9 +40,40 @@ const CreateWindow = () => {
   win.loadFile("renderer/LoginPage/index.html");
 };
 
+// Auto-update from GitHub Releases. Only runs in the packaged app.
+const SetupAutoUpdater = () => {
+  if (!app.isPackaged) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("error", (err) => {
+    console.error("Auto-update error:", err);
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update available",
+      message: `Version ${info.version} has been downloaded.`,
+      detail: "Restart the application to apply the update.",
+    });
+    if (choice === 0) autoUpdater.quitAndInstall();
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  // Re-check every hour while the app stays open.
+  setInterval(check, 60 * 60 * 1000);
+};
+
 app.whenReady().then(() => {
   CreateWindow();
   Menu.setApplicationMenu(null);
+  SetupAutoUpdater();
 });
 
 ipcMain.on("LoadPage", (event, page) => {
