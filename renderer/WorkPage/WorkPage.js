@@ -160,6 +160,17 @@ function fetchUnreadEmails() {
   emailSocket.send({ type: "list_emails" });
 }
 
+// ---------------------------------------------------------------------------
+// Fetch broker pricing on page load (for clients/brokers)
+// ---------------------------------------------------------------------------
+async function initializeBrokerPricing() {
+  try {
+    await fetchBrokerPricing();
+  } catch (err) {
+    console.warn("Failed to initialize broker pricing:", err);
+  }
+}
+
 function money(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
@@ -1538,6 +1549,7 @@ async function init() {
   renderHeader();
   setupEmailSocket();
   fetchUnreadEmails();
+  initializeBrokerPricing();
 
   const defs = NAV_DEFS[userRole] || [];
   if (defs.length) {

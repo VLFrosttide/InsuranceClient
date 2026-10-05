@@ -479,6 +479,51 @@ window.addEventListener("blur", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Auto-fill price based on insurance type and duration
+// ---------------------------------------------------------------------------
+function autofillPrice() {
+  const autoTypeInput = document.getElementById("AutoTypeInput");
+  const durationInput = document.getElementById("DurationInput");
+  const priceInput = document.getElementById("TotalPriceInput");
+
+  if (!autoTypeInput || !durationInput || !priceInput) return;
+
+  const insuranceType = autoTypeInput.value;
+  const durationText = durationInput.value;
+
+  // Map duration text to days: "15 дена" -> 15, "1 месец" -> 30, "3 месеца" -> 90
+  let duration = null;
+  if (durationText.includes("15")) duration = 15;
+  else if (durationText.includes("месец")) duration = 30;
+  else if (durationText.includes("месеца")) duration = 90;
+
+  // Map insurance type: "Otomobil" -> "Auto", etc.
+  let mappedType = null;
+  if (insuranceType === "Otomobil") mappedType = "Auto";
+  else if (insuranceType === "Motor") mappedType = "Motor";
+  else if (insuranceType === "Bus") mappedType = "Bus";
+  else if (insuranceType === "Trailer") mappedType = "Trailer";
+
+  // Look up price from cached pricing
+  if (mappedType && duration) {
+    const price = getInsurancePrice(mappedType, duration);
+    if (price !== null) {
+      priceInput.value = price;
+    }
+  }
+}
+
+// Attach auto-fill listeners to duration and vehicle type inputs
+if (DurationInput) {
+  DurationInput.addEventListener("change", autofillPrice);
+}
+
+const AutoTypeInput = document.getElementById("AutoTypeInput");
+if (AutoTypeInput) {
+  AutoTypeInput.addEventListener("change", autofillPrice);
+}
+
+// ---------------------------------------------------------------------------
 // Form helpers
 // ---------------------------------------------------------------------------
 function setMessage(text, isError) {

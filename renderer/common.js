@@ -463,6 +463,59 @@ function getBranch() {
   return localStorage.getItem("branch") || "";
 }
 
+function getPricingCache() {
+  try {
+    const cached = localStorage.getItem("brokerPricing");
+    return cached ? JSON.parse(cached) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setPricingCache(pricing) {
+  if (pricing) {
+    localStorage.setItem("brokerPricing", JSON.stringify(pricing));
+  }
+}
+
+/**
+ * Fetch broker pricing from server and cache it locally.
+ * Call this on login to update the pricing cache.
+ *
+ * @returns {Promise<object|null>} Pricing object {Auto: {15: price, ...}, ...}
+ */
+async function fetchBrokerPricing() {
+  try {
+    const data = await api("/tariffs/my-pricing");
+    if (data && data.pricing) {
+      setPricingCache(data.pricing);
+      return data.pricing;
+    }
+  } catch (err) {
+    console.warn("Failed to fetch broker pricing:", err);
+  }
+  return null;
+}
+
+/**
+ * Get a specific insurance price for the given type and duration.
+ *
+ * @param {string} insuranceType - e.g., "Auto", "Motor", "Bus", "Trailer"
+ * @param {number} duration - days: 15, 30, 90
+ * @returns {number|null} Price or null if not found
+ */
+function getInsurancePrice(insuranceType, duration) {
+  const pricing = getPricingCache();
+  if (
+    !pricing ||
+    !pricing[insuranceType] ||
+    pricing[insuranceType][duration] === undefined
+  ) {
+    return null;
+  }
+  return pricing[insuranceType][duration];
+}
+
 function clearSession() {
   localStorage.removeItem("token");
   localStorage.removeItem("username");
