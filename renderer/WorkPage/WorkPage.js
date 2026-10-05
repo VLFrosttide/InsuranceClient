@@ -512,24 +512,43 @@ async function adminDashboard() {
 
     for (const branchName of branchNames) {
       const branchCard = el("div", null, { class: "stat-card" });
-      branchCard.appendChild(el("h4", branchName));
+      // Always show a branch label, even when the server has records with a
+      // blank/missing branch (e.g. legacy data from before branch tracking),
+      // so money is never shown without saying which branch holds it.
+      branchCard.appendChild(el("h4", branchName || t("unknownBranch")));
 
       // Insurance count for today
-      const insuranceCount = branchCounts[branchName] || 0;
+      const insuranceCount = branchCounts[branchName || "Unknown"] || 0;
       branchCard.appendChild(
         el("p", `${t("nav.insurances")}: ${insuranceCount}`, {
           class: "muted",
         })
       );
 
-      // Current cash balance
+      // Current cash balance (only non-zero currencies, same as the
+      // Current Cash tab).
       const balances = branches[branchName] || {};
-      const balanceText = Object.entries(balances)
-        .map(([curr, val]) => `${money(val)} ${curr}`)
-        .join(" · ");
       branchCard.appendChild(
-        el("p", balanceText || money(0), { class: "big" })
+        el("p", renderCashBalances(balances), { class: "big" })
       );
+
+      // Jump straight into the Current Cash tab, pre-filtered to this
+      // branch, so the balance can be increased/reduced/reset from here.
+      const manageBtn = el("button", t("manage"), {
+        class: "secondary small",
+      });
+      manageBtn.addEventListener("click", () => {
+        const defs = NAV_DEFS[userRole] || [];
+        const idx = defs.findIndex((d) => d.load === currentCashView);
+        if (idx !== -1) {
+          activeNav = defs[idx];
+          Array.from(Nav.children).forEach((btn, i) =>
+            btn.classList.toggle("active", i === idx)
+          );
+        }
+        runLoader(() => currentCashView(branchName));
+      });
+      branchCard.appendChild(manageBtn);
 
       branchGrid.appendChild(branchCard);
     }
@@ -753,16 +772,43 @@ async function adminInsurances() {
   render();
 }
 
-async function currentCashView() {
-  const branch = getBranch();
+async function currentCashView(overrideBranch) {
+  // Admins can inspect/manage any branch's cash (not just the branch they
+  // logged in with); workers are always scoped to their own login branch.
+  const isAdmin = userRole === "1";
+  let branch = overrideBranch || getBranch();
+
+  let allBranchNames = [];
+  if (isAdmin) {
+    const branchesData = await api("/currentcash/branches");
+    allBranchNames = Object.keys(branchesData.branches || {}).sort();
+    // If the admin's own login branch has no record yet, default to the
+    // first known branch so the view is never blank.
+    if (!branch && allBranchNames.length) branch = allBranchNames[0];
+  }
+
   const data = await api(`/currentcash?branch=${encodeURIComponent(branch)}`);
   const heading = el("h2", t("currentCash"));
 
-  // Show which branch the cash balance belongs to.
-  if (branch) {
-    heading.appendChild(
-      el("span", ` — ${t("branch")}: ${branch}`, { class: "muted" })
+  // Always show which branch the cash balance belongs to — never display a
+  // balance without saying which branch holds it.
+  heading.appendChild(
+    el("span", ` — ${t("branch")}: ${branch || t("unknownBranch")}`, {
+      class: "muted",
+    })
+  );
+
+  // Admins get a dropdown to switch between branches without needing to log
+  // out/in with a different branch selected.
+  if (isAdmin && allBranchNames.length > 1) {
+    const branchSelect = select(
+      allBranchNames.map((b) => ({ label: b, value: b })),
+      branch
     );
+    branchSelect.addEventListener("change", () => {
+      currentCashView(branchSelect.value);
+    });
+    heading.appendChild(branchSelect);
   }
 
   const balance = el("div", null, { class: "balance-card" });
@@ -825,7 +871,7 @@ async function currentCashView() {
           "success"
         );
         closeModal();
-        currentCashView();
+        currentCashView(branch);
       },
       kind === "increase" ? t("increase") : t("reduce")
     );
@@ -846,7 +892,7 @@ async function currentCashView() {
         body: JSON.stringify({ branch }),
       });
       toast(t("currentCashReset"), "success");
-      currentCashView();
+      currentCashView(branch);
     } catch (err) {
       toast(err.message, "error");
     }
@@ -892,7 +938,7 @@ async function currentCashView() {
         });
         toast(t("transactionUpdated"), "success");
         closeModal();
-        currentCashView();
+        currentCashView(branch);
       },
       t("saveChanges")
     );

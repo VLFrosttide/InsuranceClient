@@ -44,6 +44,8 @@ const I18N = {
     noData: "No data.",
     actions: "Actions",
     overview: "Overview",
+    unknownBranch: "Unknown branch",
+    manage: "Manage",
     noUnreadEmails: "No unread emails.",
     unreadEmails: "Unread emails",
 
@@ -240,6 +242,8 @@ const I18N = {
     noData: "Няма данни.",
     actions: "Действия",
     overview: "Общ преглед",
+    unknownBranch: "Неизвестен клон",
+    manage: "Управление",
     noUnreadEmails: "Няма нови имейли.",
     unreadEmails: "Непрочетени имейли",
 
