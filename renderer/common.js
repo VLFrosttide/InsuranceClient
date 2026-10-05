@@ -141,6 +141,10 @@ const I18N = {
     paymentType: "Payment method",
     "payment.Cash": "Cash",
     "payment.Card": "Card",
+    clearBalance: "Clear balance",
+    clearCardBalanceConfirm:
+      "Clear the card balance to 0? This will record the kept amount.",
+    cardBalanceCleared: "Card balance cleared",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -334,6 +338,10 @@ const I18N = {
     paymentType: "Начин на плащане",
     "payment.Cash": "В брой",
     "payment.Card": "С карта",
+    clearBalance: "Изчисти баланса",
+    clearCardBalanceConfirm:
+      "Да се нулира ли балансът на картата? Ще бъде записана задържаната сума.",
+    cardBalanceCleared: "Балансът на картата е изчистен",
     "add.back": "← Табло",
     "add.title": "Нова застраховка",
     "add.policyNumber": "Полица номер",

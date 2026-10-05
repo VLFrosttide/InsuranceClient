@@ -947,7 +947,38 @@ async function cardView() {
   const card = el("div", null, { class: "balance-card" });
   card.appendChild(el("h3", t("cardBalance")));
   card.appendChild(el("p", money(data.cardBalance), { class: "big" }));
-  Content.replaceChildren(el("h2", t("cardPayments")), card);
+
+  const children = [el("h2", t("cardPayments")), card];
+
+  // Clearing the card balance is a destructive, admin-only action.
+  if (userRole === "1") {
+    const actions = el("div", null, { class: "row" });
+    const clearBtn = el("button", t("clearBalance"), { class: "danger" });
+    clearBtn.addEventListener("click", async () => {
+      if (!confirm(t("clearCardBalanceConfirm"))) return;
+      try {
+        await api("/cardpayments/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        toast(t("cardBalanceCleared"), "success");
+        cardView();
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+    actions.appendChild(clearBtn);
+    children.push(actions);
+  }
+
+  const resetTable = renderTable(data.resets, [
+    { key: "Username", label: t("user") },
+    { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
+    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
+  ]);
+  children.push(el("h3", t("resets")), resetTable);
+
+  Content.replaceChildren(...children);
 }
 
 async function brokersView() {
