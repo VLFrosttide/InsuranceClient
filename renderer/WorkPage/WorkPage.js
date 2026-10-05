@@ -468,83 +468,66 @@ function openAnnulForm(insurance, onDone) {
 // ---------------------------------------------------------------------------
 
 async function adminDashboard() {
-  const branch = getBranch();
-  const [statsData, cashData, cardData, brokerData, usersData, branchesData] =
-    await Promise.all([
-      api("/admin/stats"),
-      api(`/currentcash?branch=${encodeURIComponent(branch)}`),
-      api("/cardpayments"),
-      api("/brokers"),
-      api("/admin/users"),
-      api("/currentcash/branches"),
-    ]);
-  const s = statsData.stats || {};
-  const card = el("div", null, { class: "stat-card" });
-  card.appendChild(el("h3", t("currentCash")));
-  card.appendChild(
-    el(
-      "p",
-      `${renderCashBalances(cashData.balances)} (${
-        cashData.transactions.length
-      } ${t("movements")})`,
-      {
-        class: "big",
-      }
-    )
-  );
+  // Fetch all insurances and branch cash data
+  const [insuranceData, branchesData] = await Promise.all([
+    api("/admin/insurances"),
+    api("/currentcash/branches"),
+  ]);
 
-  const cardCard = el("div", null, { class: "stat-card" });
-  cardCard.appendChild(el("h3", t("cardBalance")));
-  cardCard.appendChild(el("p", money(cardData.cardBalance), { class: "big" }));
-
-  const userCard = el("div", null, { class: "stat-card" });
-  userCard.appendChild(el("h3", t("users")));
-  userCard.appendChild(
-    el(
-      "p",
-      `${t("admins")} ${s.admins ?? 0} · ${t("workers")} ${
-        s.workers ?? 0
-      } · ${t("clients")} ${s.clients ?? 0}`,
-      { class: "big" }
-    )
-  );
-
-  const brokerCard = el("div", null, { class: "stat-card" });
-  brokerCard.appendChild(el("h3", t("brokers")));
-  brokerCard.appendChild(
-    el("p", String(brokerData.brokers.length), { class: "big" })
-  );
-
-  // Build branch cash cards for all branches with currency
-  const branchesSection = el("div", null, null);
+  const insurances = insuranceData.insurances || [];
   const branches = branchesData.branches || {};
-  const branchCount = Object.keys(branches).length;
 
-  if (branchCount > 0) {
-    branchesSection.appendChild(
-      el("h2", `${t("currentCash")} ${t("byBranch") || "by Branch"}`)
-    );
+  // Get today's date in YYYY-MM-DD format
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Count insurances by branch for today
+  const branchCounts = {};
+  for (const insurance of insurances) {
+    const creationDate = insurance.CreationDate
+      ? insurance.CreationDate.slice(0, 10)
+      : null;
+    if (creationDate === today) {
+      const branch = insurance.Branch || "Unknown";
+      branchCounts[branch] = (branchCounts[branch] || 0) + 1;
+    }
+  }
+
+  // Build branch cards with insurance count and cash balance
+  const branchesSection = el("div", null, null);
+  const branchNames = Object.keys(branches).sort();
+
+  if (branchNames.length > 0) {
     const branchGrid = el("div", null, { class: "stat-grid" });
 
-    for (const [branchName, balances] of Object.entries(branches)) {
+    for (const branchName of branchNames) {
       const branchCard = el("div", null, { class: "stat-card" });
       branchCard.appendChild(el("h4", branchName));
+
+      // Insurance count for today
+      const insuranceCount = branchCounts[branchName] || 0;
+      branchCard.appendChild(
+        el("p", `${t("nav.insurances")}: ${insuranceCount}`, {
+          class: "muted",
+        })
+      );
+
+      // Current cash balance
+      const balances = branches[branchName] || {};
       const balanceText = Object.entries(balances)
         .map(([curr, val]) => `${money(val)} ${curr}`)
         .join(" · ");
-      branchCard.appendChild(el("p", balanceText, { class: "big" }));
+      branchCard.appendChild(
+        el("p", balanceText || money(0), { class: "big" })
+      );
+
       branchGrid.appendChild(branchCard);
     }
     branchesSection.appendChild(branchGrid);
+  } else {
+    branchesSection.appendChild(el("p", t("noData"), { class: "muted" }));
   }
 
-  // Build a fresh grid.
-  const grid = el("div", null, { class: "stat-grid" });
-  grid.appendChild(card);
-  grid.appendChild(cardCard);
-  grid.appendChild(userCard);
-  grid.appendChild(brokerCard);
-  Content.replaceChildren(el("h2", t("overview")), grid, branchesSection);
+  Content.replaceChildren(el("h2", t("overview")), branchesSection);
 }
 
 async function adminUsers() {
@@ -989,13 +972,8 @@ async function brokersView() {
   const table = renderTable(
     data.brokers,
     [
-      { key: "id", label: "ID" },
       { key: "Name", label: t("name") },
       { key: "CashBalance", label: t("balance"), format: (v) => money(v) },
-      { key: "Percentage", label: t("percentage") },
-      { key: "PolicyRangeStart", label: t("rangeStart") },
-      { key: "PolicyRangeEnd", label: t("rangeEnd") },
-      { key: "InactivePolicies", label: t("inactive") },
     ],
     [
       {
