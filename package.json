@@ -1,7 +1,7 @@
 {
   "name": "insurance-client",
   "productName": "Insurance",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Insurance client",
   "license": "ISC",
   "author": "Frosttide",
@@ -39,7 +39,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "Icons/Vis.png"
+      "icon": "Icons/frosttide23.ico"
     },
     "nsis": {
       "oneClick": true,
