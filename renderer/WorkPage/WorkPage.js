@@ -469,13 +469,14 @@ function openAnnulForm(insurance, onDone) {
 
 async function adminDashboard() {
   const branch = getBranch();
-  const [statsData, cashData, cardData, brokerData, usersData] =
+  const [statsData, cashData, cardData, brokerData, usersData, branchesData] =
     await Promise.all([
       api("/admin/stats"),
       api(`/currentcash?branch=${encodeURIComponent(branch)}`),
       api("/cardpayments"),
       api("/brokers"),
       api("/admin/users"),
+      api("/currentcash/branches"),
     ]);
   const s = statsData.stats || {};
   const card = el("div", null, { class: "stat-card" });
@@ -514,13 +515,36 @@ async function adminDashboard() {
     el("p", String(brokerData.brokers.length), { class: "big" })
   );
 
+  // Build branch cash cards for all branches with currency
+  const branchesSection = el("div", null, null);
+  const branches = branchesData.branches || {};
+  const branchCount = Object.keys(branches).length;
+
+  if (branchCount > 0) {
+    branchesSection.appendChild(
+      el("h2", `${t("currentCash")} ${t("byBranch") || "by Branch"}`)
+    );
+    const branchGrid = el("div", null, { class: "stat-grid" });
+
+    for (const [branchName, balances] of Object.entries(branches)) {
+      const branchCard = el("div", null, { class: "stat-card" });
+      branchCard.appendChild(el("h4", branchName));
+      const balanceText = Object.entries(balances)
+        .map(([curr, val]) => `${money(val)} ${curr}`)
+        .join(" · ");
+      branchCard.appendChild(el("p", balanceText, { class: "big" }));
+      branchGrid.appendChild(branchCard);
+    }
+    branchesSection.appendChild(branchGrid);
+  }
+
   // Build a fresh grid.
   const grid = el("div", null, { class: "stat-grid" });
   grid.appendChild(card);
   grid.appendChild(cardCard);
   grid.appendChild(userCard);
   grid.appendChild(brokerCard);
-  Content.replaceChildren(el("h2", t("overview")), grid);
+  Content.replaceChildren(el("h2", t("overview")), grid, branchesSection);
 }
 
 async function adminUsers() {
@@ -987,6 +1011,11 @@ async function brokersView() {
       ...(isAdmin
         ? [
             {
+              label: t("viewPricing"),
+              class: "secondary",
+              onClick: (b) => brokerPricingEditor(b),
+            },
+            {
               label: t("edit"),
               class: "secondary",
               onClick: (b) => brokerEditForm(b),
@@ -1155,6 +1184,115 @@ function brokerEditForm(broker) {
     t("save")
   );
   openModal(`${t("edit")} ${broker.Name}`, form);
+}
+
+async function brokerPricingEditor(broker) {
+  try {
+    // Fetch broker pricing from the server
+    const data = await api(`/brokers/${broker.id}/pricing`);
+    const pricing = data.pricing || {};
+
+    // Build a table-like display for editing prices
+    const container = el("div", null, { class: "pricing-editor" });
+
+    // Get all vehicle types and durations from the pricing data
+    const vehicleTypes = Object.keys(pricing).sort();
+    const durations = new Set();
+    for (const type of vehicleTypes) {
+      Object.keys(pricing[type] || {}).forEach((d) => durations.add(Number(d)));
+    }
+    const durationArray = Array.from(durations).sort((a, b) => a - b);
+
+    if (vehicleTypes.length === 0 || durationArray.length === 0) {
+      container.appendChild(el("p", t("noData"), { class: "muted" }));
+      openModal(`${t("editPricing")} - ${broker.Name}`, container);
+      return;
+    }
+
+    // Create a form with input fields for each price
+    const form = el("form");
+    const priceInputs = {}; // Store references to price inputs
+
+    // Create table header
+    const table = el("table", null, { class: "pricing-table" });
+    const thead = el("thead");
+    const headerRow = el("tr");
+    headerRow.appendChild(el("th", t("vehicleType")));
+    durationArray.forEach((d) => {
+      headerRow.appendChild(
+        el("th", `${d} ${t("days")}`, { class: "text-center" })
+      );
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = el("tbody");
+    vehicleTypes.forEach((vehicleType) => {
+      const row = el("tr");
+      const typeCell = el("td", vehicleType);
+      row.appendChild(typeCell);
+
+      durationArray.forEach((duration) => {
+        const currentPrice = (pricing[vehicleType] || {})[duration] || 0;
+        const inputField = input("number", currentPrice, "0.00");
+        inputField.step = "0.01";
+        inputField.min = "0";
+        const key = `${vehicleType}_${duration}`;
+        priceInputs[key] = inputField;
+
+        const cell = el("td", null, { class: "text-center" });
+        cell.appendChild(inputField);
+        row.appendChild(cell);
+      });
+
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    form.appendChild(table);
+
+    // Submit button
+    const submitBtn = el("button", t("save"), { type: "submit" });
+    form.appendChild(submitBtn);
+
+    // Handle form submission
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+
+      try {
+        // Reconstruct pricing object from inputs
+        const updatedPricing = {};
+        for (const vehicleType of vehicleTypes) {
+          updatedPricing[vehicleType] = {};
+          durationArray.forEach((duration) => {
+            const key = `${vehicleType}_${duration}`;
+            const inputValue = priceInputs[key].value;
+            updatedPricing[vehicleType][duration] = Number(inputValue) || 0;
+          });
+        }
+
+        // Send to server
+        await api(`/brokers/${broker.id}/pricing`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pricing: updatedPricing }),
+        });
+
+        toast(t("pricingUpdated"), "success");
+        closeModal();
+        brokersView();
+      } catch (err) {
+        toast(err.message, "error");
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    container.appendChild(form);
+    openModal(`${t("editPricing")} - ${broker.Name}`, container);
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 async function downloadBrokersCsv() {

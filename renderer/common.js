@@ -200,6 +200,14 @@ const I18N = {
     "email.print": "Print picture",
     "email.close": "Close",
     "email.unclaim": "Unclaim",
+
+    pricing: "Pricing",
+    viewPricing: "View/Edit Pricing",
+    editPricing: "Edit Pricing",
+    vehicleType: "Vehicle Type",
+    duration: "Duration",
+    days: "days",
+    pricingUpdated: "Pricing updated",
   },
   bg: {
     brand: "Застрахователна конзола",
@@ -371,6 +379,14 @@ const I18N = {
     "email.print": "Принтирай снимка",
     "email.close": "Затвори",
     "email.unclaim": "Освободи имейла",
+
+    pricing: "Цени",
+    viewPricing: "Преглед/редактиране на цени",
+    editPricing: "Редактирай цени",
+    vehicleType: "Вид превозно средство",
+    duration: "Период",
+    days: "дни",
+    pricingUpdated: "Цените са обновени",
   },
 };
 
