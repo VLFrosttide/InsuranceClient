@@ -478,6 +478,17 @@ function openAnnulForm(insurance, onDone) {
 // Admin views
 // ---------------------------------------------------------------------------
 
+// The fixed set of real branches (mirrors the login page's branch dropdown).
+// Used so the Overview always shows a card for every known branch — even
+// when it has no current-cash record yet (shown as 0) — while never
+// displaying a blank/unknown "branch" that legacy or malformed records may
+// carry.
+const KNOWN_BRANCHES = [
+  "ГКПП Капитан Андреево",
+  "ГКПП Лесово",
+  "Офис Харманли",
+];
+
 async function adminDashboard() {
   // Fetch all insurances and branch cash data
   const [insuranceData, branchesData] = await Promise.all([
@@ -498,27 +509,34 @@ async function adminDashboard() {
       ? insurance.CreationDate.slice(0, 10)
       : null;
     if (creationDate === today) {
-      const branch = insurance.Branch || "Unknown";
+      const branch = insurance.Branch;
+      if (!branch) continue; // skip legacy/blank branch entries
       branchCounts[branch] = (branchCounts[branch] || 0) + 1;
     }
   }
 
-  // Build branch cards with insurance count and cash balance
+  // Build branch cards with insurance count and cash balance. Always show
+  // every known branch (defaulting to 0 when there is no data for it yet),
+  // plus any other non-blank branch name the server knows about. Blank or
+  // missing branch names (e.g. legacy data from before branch tracking) are
+  // intentionally dropped instead of shown as "Unknown branch", so no card
+  // ever displays money without a real branch to attribute it to.
   const branchesSection = el("div", null, null);
-  const branchNames = Object.keys(branches).sort();
+  const branchNames = Array.from(
+    new Set([...KNOWN_BRANCHES, ...Object.keys(branches)])
+  )
+    .filter((name) => name)
+    .sort();
 
   if (branchNames.length > 0) {
     const branchGrid = el("div", null, { class: "stat-grid" });
 
     for (const branchName of branchNames) {
       const branchCard = el("div", null, { class: "stat-card" });
-      // Always show a branch label, even when the server has records with a
-      // blank/missing branch (e.g. legacy data from before branch tracking),
-      // so money is never shown without saying which branch holds it.
-      branchCard.appendChild(el("h4", branchName || t("unknownBranch")));
+      branchCard.appendChild(el("h4", branchName));
 
-      // Insurance count for today
-      const insuranceCount = branchCounts[branchName || "Unknown"] || 0;
+      // Insurance count for today (0 when the branch has no data yet).
+      const insuranceCount = branchCounts[branchName] || 0;
       branchCard.appendChild(
         el("p", `${t("nav.insurances")}: ${insuranceCount}`, {
           class: "muted",
@@ -526,7 +544,8 @@ async function adminDashboard() {
       );
 
       // Current cash balance (only non-zero currencies, same as the
-      // Current Cash tab).
+      // Current Cash tab). Branches with no current-cash record yet render
+      // as 0.
       const balances = branches[branchName] || {};
       branchCard.appendChild(
         el("p", renderCashBalances(balances), { class: "big" })
