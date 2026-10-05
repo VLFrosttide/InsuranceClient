@@ -61,7 +61,6 @@ const I18N = {
     "role.2": "Worker",
     "role.3": "Client",
     role: "Role",
-    payoutPct: "Payout %",
     status: "Status",
 
     newUser: "New user",
@@ -134,7 +133,6 @@ const I18N = {
     emailClaimed: "This email was already opened by another worker",
     emailConnUnavailable: "Email connection unavailable",
     name: "Name",
-    percentage: "Percentage",
     rangeStart: "Range start",
     rangeEnd: "Range end",
     inactive: "Inactive",
@@ -255,7 +253,6 @@ const I18N = {
     "role.2": "Служител",
     "role.3": "Клиент",
     role: "Роля",
-    payoutPct: "% Изплащане",
     status: "Статус",
 
     newUser: "Нов потребител",
@@ -329,7 +326,6 @@ const I18N = {
     emailClaimed: "Този имейл вече е отворен от друг служител",
     emailConnUnavailable: "Връзката с имейл е недостъпна",
     name: "Име",
-    percentage: "Процент",
     rangeStart: "Начало на диапазон",
     rangeEnd: "Край на диапазон",
     inactive: "Неактивни",

@@ -560,7 +560,6 @@ async function adminUsers() {
       { key: "Username", label: t("username") },
       { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
       { key: "Balance", label: t("balance"), format: (v) => money(v) },
-      { key: "PayoutPercentage", label: t("payoutPct") },
       { key: "Status", label: t("status") },
     ],
     [
@@ -582,12 +581,6 @@ async function adminUsers() {
                 label: t("balance"),
                 type: "number",
                 value: u.Balance,
-              },
-              {
-                key: "payoutPercentage",
-                label: t("payoutPct"),
-                type: "number",
-                value: u.PayoutPercentage,
               },
             ],
             async (payload) => {
@@ -1075,7 +1068,6 @@ function brokerCreateForm() {
     [
       { key: "Name", label: t("name"), value: "" },
       { key: "CashBalance", label: t("balance"), type: "number", value: 0 },
-      { key: "Percentage", label: t("percentage"), type: "number", value: 0 },
       {
         key: "PolicyRangeStart",
         label: t("rangeStart"),
@@ -1124,12 +1116,6 @@ function brokerEditForm(broker) {
         label: t("balance"),
         type: "number",
         value: broker.CashBalance,
-      },
-      {
-        key: "Percentage",
-        label: t("percentage"),
-        type: "number",
-        value: broker.Percentage,
       },
       {
         key: "PolicyRangeStart",
@@ -1511,7 +1497,6 @@ async function workerClients() {
     [
       { key: "Username", label: t("username") },
       { key: "Balance", label: t("balance"), format: (v) => money(v) },
-      { key: "PayoutPercentage", label: t("payoutPct") },
     ],
     [
       {
@@ -1567,12 +1552,8 @@ async function clientProfile() {
   const c2 = el("div", null, { class: "stat-card" });
   c2.appendChild(el("h3", t("balance")));
   c2.appendChild(el("p", money(p.Balance), { class: "big" }));
-  const c3 = el("div", null, { class: "stat-card" });
-  c3.appendChild(el("h3", t("payoutPct")));
-  c3.appendChild(el("p", p.PayoutPercentage ?? "n/a", { class: "big" }));
   card.appendChild(c1);
   card.appendChild(c2);
-  card.appendChild(c3);
   Content.replaceChildren(el("h2", t("myProfile")), card);
 }
 
