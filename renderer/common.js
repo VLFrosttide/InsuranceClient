@@ -639,7 +639,9 @@ class UnreadEmailSocket {
     ws.addEventListener("open", () => {
       // Reset the backoff now that a connection succeeded.
       this.reconnectDelay = 1000;
-      ws.send(JSON.stringify({ type: "auth", token: getToken() }));
+      ws.send(
+        JSON.stringify({ type: "auth", token: getToken(), branch: getBranch() })
+      );
     });
 
     ws.addEventListener("message", (event) => {
