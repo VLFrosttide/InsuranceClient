@@ -181,3 +181,19 @@ h3 {
 .spacer {
   flex: 1;
 }
+
+/* Clickable text button (e.g. broker name in the Brokers table) */
+button.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+button.link-button:hover {
+  opacity: 0.75;
+}

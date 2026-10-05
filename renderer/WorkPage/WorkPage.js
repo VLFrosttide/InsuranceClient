@@ -305,6 +305,17 @@ function renderTable(items, columns, actions, rowClass) {
     columns.forEach((c) => {
       let value = item[c.key];
       if (c.format) value = c.format(value, item);
+      if (typeof c.onClick === "function") {
+        const link = el("button", value ?? "", {
+          class: "link-button",
+          type: "button",
+        });
+        link.addEventListener("click", () => c.onClick(item));
+        const linkCell = el("td");
+        linkCell.appendChild(link);
+        row.appendChild(linkCell);
+        return;
+      }
       row.appendChild(el("td", value ?? ""));
     });
 
@@ -972,7 +983,11 @@ async function brokersView() {
   const table = renderTable(
     data.brokers,
     [
-      { key: "Name", label: t("name") },
+      {
+        key: "Name",
+        label: t("name"),
+        onClick: (b) => brokerPricingEditor(b),
+      },
       { key: "CashBalance", label: t("balance"), format: (v) => money(v) },
     ],
     [
@@ -988,11 +1003,6 @@ async function brokersView() {
       },
       ...(isAdmin
         ? [
-            {
-              label: t("viewPricing"),
-              class: "secondary",
-              onClick: (b) => brokerPricingEditor(b),
-            },
             {
               label: t("edit"),
               class: "secondary",
@@ -1169,6 +1179,8 @@ async function brokerPricingEditor(broker) {
     // Fetch broker pricing from the server
     const data = await api(`/brokers/${broker.id}/pricing`);
     const pricing = data.pricing || {};
+    const canEdit = userRole === "1";
+    const modalTitle = `${t("pricing")} - ${broker.Name}`;
 
     // Build a table-like display for editing prices
     const container = el("div", null, { class: "pricing-editor" });
@@ -1183,7 +1195,7 @@ async function brokerPricingEditor(broker) {
 
     if (vehicleTypes.length === 0 || durationArray.length === 0) {
       container.appendChild(el("p", t("noData"), { class: "muted" }));
-      openModal(`${t("editPricing")} - ${broker.Name}`, container);
+      openModal(modalTitle, container);
       return;
     }
 
@@ -1211,15 +1223,17 @@ async function brokerPricingEditor(broker) {
       row.appendChild(typeCell);
 
       durationArray.forEach((duration) => {
-        const currentPrice = (pricing[vehicleType] || {})[duration] || 0;
-        const inputField = input("number", currentPrice, "0.00");
-        inputField.step = "0.01";
-        inputField.min = "0";
-        const key = `${vehicleType}_${duration}`;
-        priceInputs[key] = inputField;
-
+        const rawPrice = (pricing[vehicleType] || {})[duration];
         const cell = el("td", null, { class: "text-center" });
-        cell.appendChild(inputField);
+        if (canEdit) {
+          const inputField = input("number", rawPrice ?? 0, "0.00");
+          inputField.step = "0.01";
+          inputField.min = "0";
+          priceInputs[`${vehicleType}_${duration}`] = inputField;
+          cell.appendChild(inputField);
+        } else {
+          cell.textContent = rawPrice === undefined ? "-" : money(rawPrice);
+        }
         row.appendChild(cell);
       });
 
@@ -1230,7 +1244,7 @@ async function brokerPricingEditor(broker) {
 
     // Submit button
     const submitBtn = el("button", t("save"), { type: "submit" });
-    form.appendChild(submitBtn);
+    if (canEdit) form.appendChild(submitBtn);
 
     // Handle form submission
     form.addEventListener("submit", async (e) => {
@@ -1267,7 +1281,7 @@ async function brokerPricingEditor(broker) {
     });
 
     container.appendChild(form);
-    openModal(`${t("editPricing")} - ${broker.Name}`, container);
+    openModal(modalTitle, container);
   } catch (err) {
     toast(err.message, "error");
   }
