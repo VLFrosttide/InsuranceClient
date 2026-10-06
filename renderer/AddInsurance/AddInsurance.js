@@ -461,6 +461,18 @@ function trackCtrlCursor(img) {
   });
 }
 
+// Escape hotkey: hide the image viewer window if it is open.
+window.addEventListener("keydown", (e) => {
+  if (
+    e.key === "Escape" &&
+    ImageViewer &&
+    !ImageViewer.classList.contains("hidden")
+  ) {
+    e.preventDefault();
+    closeImageViewer();
+  }
+});
+
 window.addEventListener("keydown", (e) => {
   if (e.key === "Control" || e.key === "Meta") {
     CtrlHeld = true;

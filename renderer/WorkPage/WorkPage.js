@@ -205,6 +205,13 @@ ModalClose.addEventListener("click", closeModal);
 ModalBackdrop.addEventListener("click", (e) => {
   if (e.target === ModalBackdrop) closeModal();
 });
+// Escape hotkey: hide the open window (e.g. broker pricing editor).
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (ModalBackdrop.classList.contains("hidden")) return;
+  e.preventDefault();
+  closeModal();
+});
 
 // ---------------------------------------------------------------------------
 // Form helpers
