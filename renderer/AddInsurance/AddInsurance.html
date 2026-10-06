@@ -60,12 +60,11 @@
           </div>
           <div class="field">
             <label for="DurationInput" data-i18n="add.duration">Срок</label>
-            <input
-              id="DurationInput"
-              class="NumInput FormInput ClearForm"
-              type="text"
-              placeholder="15"
-            />
+            <select id="DurationInput" class="FormInput">
+              <option value="15 дена">15 дена</option>
+              <option value="1 месец" selected>1 месец</option>
+              <option value="3 месеца">3 месеца</option>
+            </select>
           </div>
           <div class="field">
             <label for="AutoTypeInput" data-i18n="add.vehicleType"

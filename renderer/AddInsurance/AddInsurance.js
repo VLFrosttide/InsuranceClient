@@ -41,19 +41,26 @@ const ViewerClose = document.getElementById("ViewerClose");
 const FormInputArray = Array.from(document.getElementsByClassName("FormInput"));
 const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 
-let LM = 0;
 let droppedFiles = []; // { filename, mimeType, size, base64 }
 let viewerScale = 1;
 
-// Scroll-to-cycle helpers only take effect while the input is focused so that
-// normal page scrolling is never hijacked.
-DurationInput.addEventListener("wheel", (e) => {
-  if (document.activeElement !== DurationInput) return;
-  e.preventDefault();
-  LM += e.deltaY > 0 ? 1 : -1;
-  LM = (LM + DurationOptions.length) % DurationOptions.length;
-  DurationInput.value = DurationOptions[LM];
-});
+// Scroll-to-cycle for the duration dropdown. Only active while the select is
+// focused so normal page scrolling is never hijacked. A "change" event is
+// dispatched so the price auto-calculates like a normal selection.
+DurationInput.addEventListener(
+  "wheel",
+  (e) => {
+    if (document.activeElement !== DurationInput) return;
+    e.preventDefault();
+    const count = DurationInput.options.length;
+    if (!count) return;
+    const step = e.deltaY > 0 ? 1 : -1;
+    DurationInput.selectedIndex =
+      (DurationInput.selectedIndex + step + count) % count;
+    DurationInput.dispatchEvent(new Event("change", { bubbles: true }));
+  },
+  { passive: false }
+);
 
 // Make the whole date field open the calendar on click, not just the small
 // icon on the right. Clicking the input (or its label) triggers the native
@@ -556,6 +563,39 @@ if (TotalPriceInput) {
 }
 syncCardFeeState();
 
+// Pricing used for this form. Insurances created from an email card use the
+// broker's pricing (resolved from the sender address); walk-ins use the
+// branch pricing. Loaded from the server, with the locally cached pricing as
+// a fallback when the request fails.
+let policyPricing = null;
+
+function lookupPrice(insuranceType, duration) {
+  if (
+    policyPricing &&
+    policyPricing[insuranceType] &&
+    policyPricing[insuranceType][duration] !== undefined
+  ) {
+    return policyPricing[insuranceType][duration];
+  }
+  return null;
+}
+
+async function loadPolicyPricing() {
+  const params = new URLSearchParams();
+  const from = PendingEmail && PendingEmail.from ? PendingEmail.from : "";
+  if (from) params.set("from", from);
+  const branch = localStorage.getItem("branch") || "";
+  if (branch) params.set("branch", branch);
+  try {
+    const data = await api(`/tariffs/policy-pricing?${params.toString()}`);
+    policyPricing = (data && data.pricing) || {};
+  } catch (err) {
+    console.warn("Failed to load policy pricing:", err);
+    policyPricing = getPricingCache() || {};
+  }
+  autofillPrice();
+}
+
 function autofillPrice() {
   const autoTypeInput = document.getElementById("AutoTypeInput");
   const durationInput = document.getElementById("DurationInput");
@@ -582,7 +622,7 @@ function autofillPrice() {
 
   // Look up price from cached pricing
   if (mappedType && duration) {
-    const price = getInsurancePrice(mappedType, duration);
+    const price = lookupPrice(mappedType, duration);
     if (price !== null) {
       basePrice = Number(price) || 0;
       priceInput.value = round2(basePrice + currentFees());
@@ -599,6 +639,10 @@ const AutoTypeInput = document.getElementById("AutoTypeInput");
 if (AutoTypeInput) {
   AutoTypeInput.addEventListener("change", autofillPrice);
 }
+
+// Initial calculation once pricing is loaded (duration + vehicle type already
+// have default selections).
+loadPolicyPricing();
 
 // ---------------------------------------------------------------------------
 // Form helpers
@@ -624,6 +668,9 @@ function clearForm() {
   basePrice = 0;
   syncCardFeeState();
   setMessage("", false);
+  // The email (if any) may have just been completed; reload the matching
+  // pricing and recalculate the default price.
+  loadPolicyPricing();
 }
 
 async function goBack() {
