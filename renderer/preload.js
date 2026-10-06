@@ -12,5 +12,8 @@ contextBridge.exposeInMainWorld("bridge", {
   OpenImageExternal: (dataUrl) => {
     ipcRenderer.send("OpenImageExternal", dataUrl);
   },
+  ReadTestReport: () => {
+    return ipcRenderer.invoke("ReadTestReport");
+  },
 });
 // GetIconPath: (callback) => ipcRenderer.on("GetIconPath", callback),

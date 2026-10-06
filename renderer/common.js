@@ -40,6 +40,8 @@ const I18N = {
     "reconcile.dropHint2": "or click to choose a file",
     "reconcile.noFile": "No file selected",
     "reconcile.run": "Reconcile",
+    "reconcile.testButton": "Run sample report",
+    "reconcile.testFileMissing": "Sample report not found in the Test folder",
     "reconcile.dbDate": "Check database insurances created on",
     "reconcile.dbDateHint":
       "Used to find insurances that exist in the database but are missing from the file. Clear it to skip that check.",
@@ -275,6 +277,8 @@ const I18N = {
     "reconcile.dropHint2": "или щракнете, за да изберете файл",
     "reconcile.noFile": "Няма избран файл",
     "reconcile.run": "Сверка",
+    "reconcile.testButton": "Стартирай примерен отчет",
+    "reconcile.testFileMissing": "Примерният отчет не е намерен в папка Test",
     "reconcile.dbDate": "Провери застраховки в базата, създадени на",
     "reconcile.dbDateHint":
       "Използва се за откриване на застраховки, които са в базата, но липсват във файла. Изчистете, за да пропуснете проверката.",

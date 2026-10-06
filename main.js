@@ -94,6 +94,30 @@ ipcMain.on("LoadPage", (event, page) => {
   win.loadFile(page);
 });
 
+// Read the sample daily-report file bundled in the repo's "Test" folder so the
+// admin "Reconcile daily report" view can run its test button against real
+// report data. Only files already inside that folder are readable (the caller
+// passes no path), so this cannot be abused to read arbitrary files.
+ipcMain.handle("ReadTestReport", async () => {
+  const dir = path.join(app.getAppPath(), "Test");
+  let filePath = null;
+  try {
+    const entries = fs.readdirSync(dir);
+    const report = entries.find((n) => /\.(xlsx|xlsm)$/i.test(n));
+    if (report) filePath = path.join(dir, report);
+  } catch {
+    filePath = null;
+  }
+  if (!filePath) return { ok: false };
+
+  try {
+    const data = await fs.promises.readFile(filePath);
+    return { ok: true, name: path.basename(filePath), data: data.toString("base64") };
+  } catch {
+    return { ok: false };
+  }
+});
+
 // Print an image (data URL) by loading it in a hidden window and invoking the
 // system print dialog. Used by the "printable picture" feature.
 ipcMain.on("PrintImage", (event, dataUrl) => {
