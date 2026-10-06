@@ -1676,6 +1676,498 @@ async function adminInsurancesByDate() {
 }
 
 // ---------------------------------------------------------------------------
+// Reconcile daily report (admin)
+//
+// Reads an .xlsx daily report and compares each row with the insurance table:
+//   [НОМЕР НА ПОЛИЦА] -> PolicyNumber
+//   [НОМЕР НА СТИКЕР] -> BlancNumber
+//   [ВАЛИДЕН ОТ]      -> StartDate
+//   [ВАЛИДЕН ДО]      -> StartDate + Duration (days)
+//   [ДКН]             -> CarNumber
+// ---------------------------------------------------------------------------
+const RECON_CYR_TO_LAT = {
+  А: "A",
+  В: "B",
+  Е: "E",
+  К: "K",
+  М: "M",
+  Н: "H",
+  О: "O",
+  Р: "P",
+  С: "C",
+  Т: "T",
+  У: "Y",
+  Х: "X",
+};
+
+// Trim, upper-case, drop whitespace and map Cyrillic look-alike letters to
+// Latin so "СА 1234 АВ" and "CA1234AB" compare as equal.
+function reconNormText(value) {
+  if (value === undefined || value === null) return "";
+  return String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/[АВЕКМНОРСТУХ]/g, (ch) => RECON_CYR_TO_LAT[ch]);
+}
+
+// Identifier (policy / sticker number): numeric ones ignore leading zeros,
+// which Excel drops from numeric cells.
+function reconNormId(value) {
+  const s = reconNormText(value);
+  return /^\d+$/.test(s) ? s.replace(/^0+(?=\d)/, "") : s;
+}
+
+function reconNormCar(value) {
+  return reconNormText(value).replace(/[-_.]/g, "");
+}
+
+function reconHeaderKey(value) {
+  return reconNormText(String(value ?? "").replace(/[^\p{L}\p{N}]/gu, ""));
+}
+
+const RECON_COLUMNS = [
+  { key: "policy", header: "НОМЕР НА ПОЛИЦА", label: "reconcile.col.policy" },
+  { key: "blank", header: "НОМЕР НА СТИКЕР", label: "reconcile.col.blank" },
+  { key: "from", header: "ВАЛИДЕН ОТ", label: "reconcile.col.from" },
+  { key: "to", header: "ВАЛИДЕН ДО", label: "reconcile.col.to" },
+  { key: "car", header: "ДКН", label: "reconcile.col.car" },
+];
+
+function reconPad(n) {
+  return String(n).padStart(2, "0");
+}
+
+function reconYmd(y, m, d) {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== m - 1 ||
+    dt.getUTCDate() !== d
+  ) {
+    return "";
+  }
+  return `${y}-${reconPad(m)}-${reconPad(d)}`;
+}
+
+// Parse a cell from the file (Excel serial number or text) to "YYYY-MM-DD".
+function reconFileDate(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value === "number") {
+    if (!(value > 0 && value < 2958466)) return "";
+    const dt = new Date(Math.floor(value - 25569) * 86400000);
+    return reconYmd(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+  }
+  const s = String(value).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return reconYmd(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
+  if (m) {
+    let y = +m[3];
+    if (y < 100) y += 2000;
+    return reconYmd(y, +m[2], +m[1]);
+  }
+  return "";
+}
+
+// Normalise a date coming from the server to a local "YYYY-MM-DD".
+function reconDbDate(value) {
+  if (!value) return "";
+  const s = String(value).trim();
+  const m =
+    s.match(/^(\d{4})-(\d{2})-(\d{2})$/) ||
+    s.match(/^(\d{4})-(\d{2})-(\d{2}) \d/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${reconPad(d.getMonth() + 1)}-${reconPad(
+    d.getDate()
+  )}`;
+}
+
+function reconAddDays(ymd, days) {
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m || !Number.isFinite(days)) return "";
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + days));
+  return reconYmd(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+}
+
+function reconShowDate(ymd) {
+  const m = (ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : "";
+}
+
+function reconCellText(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+// Locate the header row and map each required column to its index.
+function reconFindColumns(rows) {
+  const limit = Math.min(rows.length, 50);
+  let best = null;
+  for (let r = 0; r < limit; r++) {
+    const cells = rows[r] || [];
+    const found = {};
+    cells.forEach((cell, idx) => {
+      const key = reconHeaderKey(cell);
+      for (const col of RECON_COLUMNS) {
+        if (
+          found[col.key] === undefined &&
+          key === reconHeaderKey(col.header)
+        ) {
+          found[col.key] = idx;
+        }
+      }
+    });
+    const count = Object.keys(found).length;
+    if (!best || count > best.count) best = { row: r, found, count };
+    if (count === RECON_COLUMNS.length) break;
+  }
+  if (!best || best.count === 0) return { missing: RECON_COLUMNS };
+  const missing = RECON_COLUMNS.filter((c) => best.found[c.key] === undefined);
+  return { headerRow: best.row, index: best.found, missing };
+}
+
+function reconParseFileRows(rows, headerRow, index) {
+  const out = [];
+  for (let r = headerRow + 1; r < rows.length; r++) {
+    const cells = rows[r] || [];
+    const raw = {};
+    for (const col of RECON_COLUMNS) raw[col.key] = cells[index[col.key]];
+    const empty = RECON_COLUMNS.every(
+      (col) => reconCellText(raw[col.key]) === ""
+    );
+    if (empty) continue;
+    out.push({
+      rowNo: r + 1,
+      policy: reconCellText(raw.policy),
+      blank: reconCellText(raw.blank),
+      car: reconCellText(raw.car),
+      fromRaw: reconCellText(raw.from),
+      toRaw: reconCellText(raw.to),
+      fromKey: reconFileDate(raw.from),
+      toKey: reconFileDate(raw.to),
+    });
+  }
+  return out;
+}
+
+function reconDbValues(ins) {
+  const start = reconDbDate(ins.StartDate);
+  const duration = Number(ins.Duration);
+  const end =
+    start && ins.Duration !== null && ins.Duration !== undefined
+      ? reconAddDays(start, duration)
+      : "";
+  return {
+    policy: reconCellText(ins.PolicyNumber),
+    blank: reconCellText(ins.BlancNumber),
+    car: reconCellText(ins.CarNumber),
+    fromKey: start,
+    toKey: end,
+  };
+}
+
+// Compare one file row with one insurance, returning per-field results.
+function reconCompareRow(fileRow, ins) {
+  const db = reconDbValues(ins);
+  const fields = {
+    policy: {
+      file: fileRow.policy,
+      db: db.policy,
+      mismatch: reconNormId(fileRow.policy) !== reconNormId(db.policy),
+    },
+    blank: {
+      file: fileRow.blank,
+      db: db.blank,
+      mismatch: reconNormId(fileRow.blank) !== reconNormId(db.blank),
+    },
+    from: {
+      file: fileRow.fromKey ? reconShowDate(fileRow.fromKey) : fileRow.fromRaw,
+      db: reconShowDate(db.fromKey),
+      mismatch: !fileRow.fromKey || fileRow.fromKey !== db.fromKey,
+    },
+    to: {
+      file: fileRow.toKey ? reconShowDate(fileRow.toKey) : fileRow.toRaw,
+      db: reconShowDate(db.toKey),
+      mismatch: !fileRow.toKey || fileRow.toKey !== db.toKey,
+    },
+    car: {
+      file: fileRow.car,
+      db: db.car,
+      mismatch: reconNormCar(fileRow.car) !== reconNormCar(db.car),
+    },
+  };
+  const count = Object.values(fields).filter((f) => f.mismatch).length;
+  return { fields, count };
+}
+
+async function reconcileReport(rows, dbDate) {
+  const cols = reconFindColumns(rows);
+  if (cols.missing.length) {
+    throw new Error(
+      `${t("reconcile.columnsNotFound")}: ${cols.missing
+        .map((c) => `[${c.header}]`)
+        .join(", ")}`
+    );
+  }
+  const fileRows = reconParseFileRows(rows, cols.headerRow, cols.index);
+
+  const data = await api("/admin/insurances");
+  const insurances = data.insurances || [];
+
+  const byPolicy = new Map();
+  const byBlank = new Map();
+  const addTo = (map, key, ins) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(ins);
+  };
+  for (const ins of insurances) {
+    addTo(byPolicy, reconNormId(ins.PolicyNumber), ins);
+    addTo(byBlank, reconNormId(ins.BlancNumber), ins);
+  }
+
+  const matchedInsurances = new Set();
+  const missingFromDb = [];
+  const mismatches = [];
+  let matched = 0;
+
+  for (const fileRow of fileRows) {
+    const candidates = new Set([
+      ...(byPolicy.get(reconNormId(fileRow.policy)) || []),
+      ...(byBlank.get(reconNormId(fileRow.blank)) || []),
+    ]);
+
+    if (candidates.size === 0) {
+      missingFromDb.push(fileRow);
+      continue;
+    }
+
+    let best = null;
+    for (const ins of candidates) {
+      const cmp = reconCompareRow(fileRow, ins);
+      if (!best || cmp.count < best.cmp.count) best = { ins, cmp };
+    }
+    matchedInsurances.add(best.ins);
+    if (best.cmp.count === 0) matched++;
+    else mismatches.push({ rowNo: fileRow.rowNo, ...best.cmp.fields });
+  }
+
+  const missingFromFile = dbDate
+    ? insurances.filter(
+        (ins) =>
+          !matchedInsurances.has(ins) &&
+          reconDbDate(ins.CreationDate) === dbDate
+      )
+    : [];
+
+  return {
+    fileRowCount: fileRows.length,
+    matched,
+    missingFromDb,
+    missingFromFile,
+    mismatches,
+    dbDate,
+  };
+}
+
+function reconRenderResults(result) {
+  const wrap = el("div", null, { class: "recon-results" });
+
+  const stats = el("div", null, { class: "stat-grid" });
+  const addStat = (label, value, cls) => {
+    const card = el("div", null, { class: `stat-card ${cls || ""}` });
+    card.appendChild(el("h3", label));
+    card.appendChild(el("p", String(value), { class: "big" }));
+    stats.appendChild(card);
+  };
+  addStat(t("reconcile.fileRows"), result.fileRowCount);
+  addStat(t("reconcile.matched"), result.matched);
+  addStat(
+    t("reconcile.missingFromDb"),
+    result.missingFromDb.length,
+    result.missingFromDb.length ? "recon-bad" : ""
+  );
+  addStat(
+    t("reconcile.missingFromFile"),
+    result.missingFromFile.length,
+    result.missingFromFile.length ? "recon-bad" : ""
+  );
+  addStat(
+    t("reconcile.mismatches"),
+    result.mismatches.length,
+    result.mismatches.length ? "recon-bad" : ""
+  );
+  wrap.appendChild(stats);
+
+  // --- Missing rows (with the side they are missing from) -----------------
+  const missingItems = [
+    ...result.missingFromDb.map((r) => ({
+      source: t("reconcile.database"),
+      rowNo: r.rowNo,
+      policy: r.policy,
+      blank: r.blank,
+      from: r.fromKey ? reconShowDate(r.fromKey) : r.fromRaw,
+      to: r.toKey ? reconShowDate(r.toKey) : r.toRaw,
+      car: r.car,
+    })),
+    ...result.missingFromFile.map((ins) => {
+      const db = reconDbValues(ins);
+      return {
+        source: t("reconcile.file"),
+        rowNo: "",
+        policy: db.policy,
+        blank: db.blank,
+        from: reconShowDate(db.fromKey),
+        to: reconShowDate(db.toKey),
+        car: db.car,
+      };
+    }),
+  ];
+
+  wrap.appendChild(el("h3", `${t("reconcile.missingFrom")}…`));
+  wrap.appendChild(
+    renderTable(missingItems, [
+      { key: "source", label: t("reconcile.missingFrom") },
+      { key: "rowNo", label: t("reconcile.row") },
+      ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
+    ])
+  );
+
+  // --- Partial data mismatches (mismatching cells in dark red) ------------
+  const mismatchCol = (col) => ({
+    key: col.key,
+    label: t(col.label),
+    format: (v) =>
+      v.mismatch
+        ? `${t("reconcile.fileValue")}: ${v.file || "—"}\n${t(
+            "reconcile.dbValue"
+          )}: ${v.db || "—"}`
+        : v.file,
+    cellClass: (item) => (item[col.key].mismatch ? "cell-mismatch" : ""),
+  });
+
+  wrap.appendChild(el("h3", t("reconcile.mismatches")));
+  wrap.appendChild(
+    renderTable(result.mismatches, [
+      { key: "rowNo", label: t("reconcile.row") },
+      ...RECON_COLUMNS.map(mismatchCol),
+    ])
+  );
+
+  if (
+    !missingItems.length &&
+    !result.mismatches.length &&
+    result.fileRowCount > 0
+  ) {
+    wrap.appendChild(el("p", t("reconcile.allGood"), { class: "muted" }));
+  }
+  return wrap;
+}
+
+async function reconcileView() {
+  let selectedFile = null;
+
+  const fileInput = el("input", null, { type: "file" });
+  fileInput.accept =
+    ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  fileInput.classList.add("hidden");
+
+  const dropZone = el("div", null, { class: "drop-zone", tabindex: "0" });
+  dropZone.appendChild(el("strong", t("reconcile.dropHint")));
+  dropZone.appendChild(
+    el("span", t("reconcile.dropHint2"), { class: "muted" })
+  );
+  const fileName = el("span", t("reconcile.noFile"), { class: "muted" });
+  dropZone.appendChild(fileName);
+
+  const setFile = (file) => {
+    if (!file) return;
+    if (!/\.xlsx$/i.test(file.name)) {
+      toast(t("reconcile.invalidFile"), "error");
+      return;
+    }
+    selectedFile = file;
+    fileName.textContent = file.name;
+    dropZone.classList.add("has-file");
+  };
+
+  dropZone.addEventListener("click", () => fileInput.click());
+  dropZone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fileInput.click();
+    }
+  });
+  fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+  ["dragenter", "dragover"].forEach((evt) =>
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropZone.classList.add("drag-over");
+    })
+  );
+  ["dragleave", "drop"].forEach((evt) =>
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("drag-over");
+    })
+  );
+  dropZone.addEventListener("drop", (e) => {
+    setFile(e.dataTransfer && e.dataTransfer.files[0]);
+  });
+
+  const today = new Date();
+  const dateInput = input(
+    "date",
+    `${today.getFullYear()}-${reconPad(today.getMonth() + 1)}-${reconPad(
+      today.getDate()
+    )}`
+  );
+  const dateField = field(t("reconcile.dbDate"), dateInput);
+
+  const runBtn = el("button", t("reconcile.run"), { type: "button" });
+  const controls = el("div", null, { class: "row filter-row" });
+  controls.appendChild(dateField);
+  controls.appendChild(runBtn);
+
+  const result = el("div");
+
+  runBtn.addEventListener("click", async () => {
+    if (!selectedFile) {
+      toast(t("reconcile.noFile"), "error");
+      return;
+    }
+    runBtn.disabled = true;
+    result.replaceChildren(el("p", t("loading"), { class: "muted" }));
+    try {
+      const sheetRows = await readXlsxFirstSheet(
+        await selectedFile.arrayBuffer()
+      );
+      const report = await reconcileReport(sheetRows, dateInput.value);
+      result.replaceChildren(reconRenderResults(report));
+    } catch (err) {
+      result.replaceChildren();
+      toast(err.message, "error");
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+
+  Content.replaceChildren(
+    el("h2", t("reconcile.title")),
+    dropZone,
+    fileInput,
+    controls,
+    el("p", `${t("reconcile.dbDateHint")} ${t("reconcile.endNote")}`, {
+      class: "muted",
+    }),
+    result
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Worker views
 // ---------------------------------------------------------------------------
 async function testSimulateEmail() {
@@ -1853,6 +2345,7 @@ const NAV_DEFS = {
     { key: "nav.currentCash", load: currentCashView },
     { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
+    { key: "nav.reconcile", load: reconcileView },
   ],
   2: [
     { key: "nav.dashboard", load: workerDashboard },
