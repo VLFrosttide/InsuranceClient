@@ -35,7 +35,8 @@
       {
         "provider": "github",
         "owner": "VLFrosttide",
-        "repo": "InsuranceClient"
+        "repo": "InsuranceClient",
+        "releaseType": "release"
       }
     ],
     "win": {
