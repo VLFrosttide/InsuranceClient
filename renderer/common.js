@@ -510,12 +510,20 @@ function setPricingCache(pricing) {
  */
 async function fetchBrokerPricing() {
   try {
-    const data = await api("/tariffs/my-pricing");
+    const branch = getBranch();
+    const query = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+    const data = await api(`/tariffs/my-pricing${query}`);
     if (data && data.pricing) {
       setPricingCache(data.pricing);
       return data.pricing;
     }
   } catch (err) {
+    if (err && err.status === 404) {
+      // This user has no broker/pricing assigned on the server. Drop any stale
+      // cache so old prices are never applied.
+      localStorage.removeItem("brokerPricing");
+      return null;
+    }
     console.warn("Failed to fetch broker pricing:", err);
   }
   return null;
@@ -571,7 +579,9 @@ async function api(path, options = {}) {
     throw new Error(data.error || t("sessionExpired"));
   }
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    const error = new Error(data.error || `Request failed (${res.status})`);
+    error.status = res.status;
+    throw error;
   }
   return data;
 }

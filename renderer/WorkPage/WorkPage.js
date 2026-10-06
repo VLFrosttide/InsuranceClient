@@ -164,6 +164,9 @@ function fetchUnreadEmails() {
 // Fetch broker pricing on page load (for clients/brokers)
 // ---------------------------------------------------------------------------
 async function initializeBrokerPricing() {
+  // Only workers (role "2") create insurances and need prices; admins have no
+  // broker attached, so the server answers 404 "Broker not found" for them.
+  if (userRole !== "2") return;
   try {
     await fetchBrokerPricing();
   } catch (err) {
@@ -243,12 +246,61 @@ function textarea(value, placeholder) {
   return node;
 }
 
+// Editable list of emails: one input per address with a remove button, plus an
+// "add" button. Call `.getValues()` on the returned node to read the result.
+function emailListEditor(initial) {
+  const wrap = el("div", null, { class: "email-list-editor" });
+  const rows = el("div", null, { class: "email-list-rows" });
+  wrap.appendChild(rows);
+
+  function addRow(value, focus) {
+    const row = el("div", null, { class: "email-list-row" });
+    const inp = input("email", value || "", "name@example.com");
+    const rm = el("button", "✕", {
+      class: "small danger",
+      type: "button",
+      title: t("delete"),
+    });
+    rm.addEventListener("click", () => row.remove());
+    row.appendChild(inp);
+    row.appendChild(rm);
+    rows.appendChild(row);
+    if (focus) inp.focus();
+  }
+
+  (initial || []).forEach((e) => addRow(e));
+  if (!initial || initial.length === 0) addRow("");
+
+  const addBtn = el("button", "+ Add email", {
+    class: "small secondary",
+    type: "button",
+  });
+  addBtn.addEventListener("click", () => addRow("", true));
+  wrap.appendChild(addBtn);
+
+  wrap.getValues = () => {
+    const seen = new Set();
+    const out = [];
+    rows.querySelectorAll("input").forEach((i) => {
+      const v = i.value.trim();
+      const key = v.toLowerCase();
+      if (v && !seen.has(key)) {
+        seen.add(key);
+        out.push(v);
+      }
+    });
+    return out;
+  };
+  return wrap;
+}
+
 function buildForm(spec, onSubmit, submitLabel) {
   const form = el("form");
   const values = {};
   for (const s of spec) {
     let control;
-    if (s.type === "select") control = select(s.options, s.value);
+    if (s.type === "emails") control = emailListEditor(s.value);
+    else if (s.type === "select") control = select(s.options, s.value);
     else if (s.type === "textarea") control = textarea(s.value, s.placeholder);
     else if (s.type === "checkbox") {
       control = input("checkbox");
@@ -267,7 +319,8 @@ function buildForm(spec, onSubmit, submitLabel) {
     const payload = {};
     for (const s of spec) {
       const c = values[s.key];
-      if (c.type === "checkbox") payload[s.key] = c.checked;
+      if (s.type === "emails") payload[s.key] = c.getValues();
+      else if (c.type === "checkbox") payload[s.key] = c.checked;
       else if (s.type === "number") payload[s.key] = Number(c.value);
       else payload[s.key] = c.value;
     }
@@ -1182,13 +1235,9 @@ function brokerCreateForm() {
         type: "number",
         value: 0,
       },
-      { key: "emails", label: "Emails (comma separated)", value: "" },
+      { key: "emails", label: "Emails", type: "emails", value: [] },
     ],
     async (payload) => {
-      payload.emails = String(payload.emails)
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
       await api("/brokers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1203,7 +1252,53 @@ function brokerCreateForm() {
   openModal(t("newBroker"), form);
 }
 
-function brokerEditForm(broker) {
+async function brokerEditForm(broker) {
+  // The list endpoint may not include emails; fall back to the single-broker
+  // endpoint so the emails already in use are always shown.
+  // Normalise any plausible shape (array of strings/objects, a delimited
+  // string, different key casing) into a flat list of address strings.
+  const EMAIL_KEYS = ["emails", "Emails", "brokerEmails", "BrokerEmails"];
+  const extractEmails = (src) => {
+    if (!src || typeof src !== "object") return [];
+    let raw;
+    for (const k of EMAIL_KEYS) {
+      if (src[k] !== undefined && src[k] !== null) {
+        raw = src[k];
+        break;
+      }
+    }
+    if (raw === undefined) return [];
+    if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) raw = parsed;
+      } catch {
+        // not JSON: treat as delimited text
+      }
+    }
+    if (typeof raw === "string") raw = raw.split(/[,;\s]+/);
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((e) =>
+        typeof e === "string"
+          ? e
+          : e && (e.Email || e.email || e.Address || e.address)
+      )
+      .map((e) => (typeof e === "string" ? e.trim() : ""))
+      .filter(Boolean);
+  };
+
+  let emails = extractEmails(broker);
+  // Always consult the single-broker endpoint too: the list endpoint may omit
+  // emails or return them empty.
+  try {
+    const d = await api(`/brokers/${broker.id}`);
+    const detail = [...extractEmails(d && d.broker), ...extractEmails(d)];
+    emails = Array.from(new Set([...emails, ...detail]));
+  } catch (err) {
+    console.warn("Failed to load broker emails:", err);
+  }
+
   const form = buildForm(
     [
       { key: "Name", label: t("name"), value: broker.Name },
@@ -1233,15 +1328,12 @@ function brokerEditForm(broker) {
       },
       {
         key: "emails",
-        label: "Emails (comma separated)",
-        value: (broker.emails || []).join(", "),
+        label: "Emails",
+        type: "emails",
+        value: emails,
       },
     ],
     async (payload) => {
-      payload.emails = String(payload.emails)
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
       await api(`/brokers/${broker.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

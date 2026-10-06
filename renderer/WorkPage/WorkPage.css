@@ -139,6 +139,31 @@ body {
   padding: 9px;
 }
 
+/* Editable broker email list */
+.email-list-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.email-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.email-list-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.email-list-row input {
+  flex: 1;
+}
+.email-list-editor > button {
+  align-self: flex-start;
+}
+
 pre {
   background: #1b2029;
   border: 1px solid var(--panel-border);

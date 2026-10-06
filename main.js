@@ -38,6 +38,20 @@ const CreateWindow = () => {
   });
 
   win.loadFile("renderer/LoginPage/index.html");
+
+  // Ctrl + ~ (backquote) toggles DevTools. The application menu is removed, so
+  // its built-in accelerator is unavailable; handle the key directly instead.
+  win.webContents.on("before-input-event", (event, input) => {
+    if (
+      input.type === "keyDown" &&
+      input.control &&
+      !input.alt &&
+      (input.code === "Backquote" || input.key === "`" || input.key === "~")
+    ) {
+      win.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
 };
 
 // Auto-update from GitHub Releases. Only runs in the packaged app.
