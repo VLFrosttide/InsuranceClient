@@ -36,7 +36,7 @@ const I18N = {
     "nav.card": "Card",
     "nav.reconcile": "Reconcile daily report",
     "reconcile.title": "Reconcile daily report",
-    "reconcile.dropHint": "Drop the daily report (.xlsx) here",
+    "reconcile.dropHint": "Drop the daily report (Excel file) here",
     "reconcile.dropHint2": "or click to choose a file",
     "reconcile.noFile": "No file selected",
     "reconcile.run": "Reconcile",
@@ -45,7 +45,7 @@ const I18N = {
       "Used to find insurances that exist in the database but are missing from the file. Clear it to skip that check.",
     "reconcile.endNote":
       "Valid-until is compared with Starting date + Duration (days).",
-    "reconcile.invalidFile": "Please choose an .xlsx file",
+    "reconcile.invalidFile": "Please choose an Excel file (.xlsx, .xlsm, etc.)",
     "reconcile.columnsNotFound": "Required columns not found in the file",
     "reconcile.fileRows": "Rows in file",
     "reconcile.matched": "Fully matching",
@@ -193,6 +193,10 @@ const I18N = {
     insuranceAnnulled: "Insurance annulled",
     alreadyAnnulled: "Already annulled",
 
+    deleted: "Deleted",
+    deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
+    insuranceDeleted: "Insurance deleted",
+
     "add.back": "← Dashboard",
 
     "add.title": "Add Insurance",
@@ -265,9 +269,9 @@ const I18N = {
     "nav.insurancesByDate": "Застраховки по дата",
     "nav.currentCash": "Наличен кеш",
     "nav.card": "Карта",
-    "nav.reconcile": "Сверка на дневен отчет",
-    "reconcile.title": "Сверка на дневен отчет",
-    "reconcile.dropHint": "Пуснете дневния отчет (.xlsx) тук",
+    "nav.reconcile": "Дневен отчет",
+    "reconcile.title": "Дневен отчет",
+    "reconcile.dropHint": "Пуснете дневния отчет (Excel файл) тук",
     "reconcile.dropHint2": "или щракнете, за да изберете файл",
     "reconcile.noFile": "Няма избран файл",
     "reconcile.run": "Сверка",
@@ -275,7 +279,7 @@ const I18N = {
     "reconcile.dbDateHint":
       "Използва се за откриване на застраховки, които са в базата, но липсват във файла. Изчистете, за да пропуснете проверката.",
     "reconcile.endNote": "Валиден до се сравнява с Начална дата + Срок (дни).",
-    "reconcile.invalidFile": "Моля, изберете .xlsx файл",
+    "reconcile.invalidFile": "Моля, изберете Excel файл (.xlsx, .xlsm и др.)",
     "reconcile.columnsNotFound": "Не са намерени необходимите колони във файла",
     "reconcile.fileRows": "Редове във файла",
     "reconcile.matched": "Напълно съвпадащи",
@@ -394,6 +398,10 @@ const I18N = {
     balanceUpdated: "Балансът е обновен",
     setBalanceFor: "Задай баланс за",
     deleteConfirm: "Изтриване",
+    deleted: "Изтрита",
+    deleteInsuranceConfirm:
+      "Да се изтрие ли застраховка {b}? Тя ще остане в базата данни, но ще бъде скрита от списъците и справките.",
+    insuranceDeleted: "Застраховката е изтрита",
     emailClaimed: "Този имейл вече е отворен от друг служител",
     emailConnUnavailable: "Връзката с имейл е недостъпна",
     name: "Име",

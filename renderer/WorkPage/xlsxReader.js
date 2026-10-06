@@ -1,9 +1,10 @@
 "use strict";
 
-// Minimal, dependency-free .xlsx reader for the renderer process.
+// Minimal, dependency-free Excel (OOXML) reader for the renderer process.
 //
-// An .xlsx file is a ZIP archive of XML documents. We read the ZIP central
-// directory ourselves, inflate entries with the browser's built-in
+// .xlsx, .xlsm, .xltx and .xltm files are all ZIP archives of XML documents
+// sharing the same internal layout. We read the ZIP central directory
+// ourselves, inflate entries with the browser's built-in
 // DecompressionStream, and parse the first worksheet with DOMParser.
 //
 // Exposes a single global: readXlsxFirstSheet(arrayBuffer) -> Promise<Array<Array<string|number>>>
@@ -29,7 +30,7 @@ function xlsxReadZipDirectory(buffer) {
       break;
     }
   }
-  if (eocd < 0) throw new Error("Not a valid .xlsx file");
+  if (eocd < 0) throw new Error("Not a valid Excel file");
 
   const count = view.getUint16(eocd + 10, true);
   let p = view.getUint32(eocd + 16, true);
@@ -53,14 +54,14 @@ function xlsxReadZipDirectory(buffer) {
     if (!entry) return null;
     const lo = entry.localOffset;
     if (view.getUint32(lo, true) !== 0x04034b50) {
-      throw new Error("Corrupted .xlsx file");
+      throw new Error("Corrupted Excel file");
     }
     const start =
       lo + 30 + view.getUint16(lo + 26, true) + view.getUint16(lo + 28, true);
     const data = bytes.subarray(start, start + entry.compressedSize);
     if (entry.method === 0) return decoder.decode(data);
     if (entry.method === 8) return decoder.decode(await xlsxInflateRaw(data));
-    throw new Error("Unsupported compression in .xlsx file");
+    throw new Error("Unsupported compression in Excel file");
   }
 
   return { read, has: (name) => entries.has(name) };
@@ -69,7 +70,7 @@ function xlsxReadZipDirectory(buffer) {
 function xlsxParseXml(text) {
   const doc = new DOMParser().parseFromString(text, "application/xml");
   if (doc.getElementsByTagName("parsererror").length) {
-    throw new Error("Corrupted .xlsx file");
+    throw new Error("Corrupted Excel file");
   }
   return doc;
 }
@@ -130,7 +131,7 @@ async function readXlsxFirstSheet(buffer) {
   }
 
   const sheetText = await zip.read(sheetPath);
-  if (!sheetText) throw new Error("Worksheet not found in .xlsx file");
+  if (!sheetText) throw new Error("Worksheet not found in Excel file");
   const sheetDoc = xlsxParseXml(sheetText);
 
   const rows = [];

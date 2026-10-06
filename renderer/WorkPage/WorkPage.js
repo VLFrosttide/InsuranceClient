@@ -853,6 +853,17 @@ async function adminInsurances() {
               },
             ]
           : []),
+        {
+          label: t("delete"),
+          class: "danger",
+          onClick: () =>
+            deleteInsurance(i, () => {
+              data.insurances = data.insurances.filter(
+                (x) => x.BlancNumber !== i.BlancNumber
+              );
+              render();
+            }),
+        },
       ],
       (i) => (i.Annulled ? "row-annulled" : "")
     );
@@ -860,6 +871,27 @@ async function adminInsurances() {
   }
 
   render();
+}
+
+// Soft-delete an insurance from the admin panel. The row is kept in the
+// database (tagged with Deleted/DeletedAt/DeletedBy by the server) so it is
+// never lost, but it is removed from `data.insurances` here so it disappears
+// from the list without a reload, and the server excludes it from every
+// other list/search endpoint so it no longer gets parsed (e.g. in the daily
+// reconcile report).
+async function deleteInsurance(insurance, onDone) {
+  if (
+    !confirm(t("deleteInsuranceConfirm").replace("{b}", insurance.BlancNumber))
+  ) {
+    return;
+  }
+  try {
+    await api(`/insurances/${insurance.BlancNumber}`, { method: "DELETE" });
+    toast(t("insuranceDeleted"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 async function currentCashView(overrideBranch) {
@@ -1638,6 +1670,16 @@ async function adminInsurancesByDate() {
                   },
                 ]
               : []),
+            // Deleting is an admin-only action (enforced server-side too).
+            ...(userRole === "1"
+              ? [
+                  {
+                    label: t("delete"),
+                    class: "danger",
+                    onClick: () => deleteInsurance(i, () => runSearch()),
+                  },
+                ]
+              : []),
           ],
           (i) => (i.Annulled ? "row-annulled" : "")
         )
@@ -1678,7 +1720,7 @@ async function adminInsurancesByDate() {
 // ---------------------------------------------------------------------------
 // Reconcile daily report (admin)
 //
-// Reads an .xlsx daily report and compares each row with the insurance table:
+// Reads an Excel (.xlsx/.xlsm/...) daily report and compares each row with the insurance table:
 //   [НОМЕР НА ПОЛИЦА] -> PolicyNumber
 //   [НОМЕР НА СТИКЕР] -> BlancNumber
 //   [ВАЛИДЕН ОТ]      -> StartDate
@@ -2072,7 +2114,7 @@ async function reconcileView() {
 
   const fileInput = el("input", null, { type: "file" });
   fileInput.accept =
-    ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    ".xlsx,.xlsm,.xltx,.xltm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.template,application/vnd.ms-excel.template.macroEnabled.12";
   fileInput.classList.add("hidden");
 
   const dropZone = el("div", null, { class: "drop-zone", tabindex: "0" });
@@ -2085,7 +2127,7 @@ async function reconcileView() {
 
   const setFile = (file) => {
     if (!file) return;
-    if (!/\.xlsx$/i.test(file.name)) {
+    if (!/\.(xlsx|xlsm|xltx|xltm)$/i.test(file.name)) {
       toast(t("reconcile.invalidFile"), "error");
       return;
     }
