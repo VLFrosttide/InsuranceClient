@@ -493,6 +493,69 @@ window.addEventListener("blur", () => {
 // ---------------------------------------------------------------------------
 // Auto-fill price based on insurance type and duration
 // ---------------------------------------------------------------------------
+// Extra fees added on top of the base price.
+const NON_TURK_FEE = 5;
+const CARD_FEE = 2;
+
+const NonTurkInput = document.getElementById("NonTurkInput");
+const CardFeeInput = document.getElementById("CardFeeInput");
+const CashInput = document.getElementById("CashInput");
+const TotalPriceInput = document.getElementById("TotalPriceInput");
+
+// The price without the optional fees. TotalPriceInput always shows
+// basePrice + the currently selected fees.
+let basePrice = 0;
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+function currentFees() {
+  let fees = 0;
+  if (NonTurkInput && NonTurkInput.checked) fees += NON_TURK_FEE;
+  if (CardFeeInput && CardFeeInput.checked) fees += CARD_FEE;
+  return fees;
+}
+
+// Writes basePrice + fees into the price input (leaves it empty while there is
+// no base price yet and no fee selected).
+function renderTotalPrice() {
+  if (!TotalPriceInput) return;
+  const fees = currentFees();
+  if (TotalPriceInput.value === "" && basePrice === 0 && fees === 0) return;
+  TotalPriceInput.value = round2(basePrice + fees);
+}
+
+// The card fee is only allowed when the payment is NOT cash.
+function syncCardFeeState() {
+  if (!CardFeeInput || !CashInput) return;
+  if (CashInput.checked) {
+    CardFeeInput.checked = false;
+    CardFeeInput.disabled = true;
+  } else {
+    CardFeeInput.disabled = false;
+  }
+}
+
+function onFeeChange() {
+  syncCardFeeState();
+  renderTotalPrice();
+}
+
+if (NonTurkInput) NonTurkInput.addEventListener("change", onFeeChange);
+if (CashInput) CashInput.addEventListener("change", onFeeChange);
+if (CardFeeInput) CardFeeInput.addEventListener("change", onFeeChange);
+
+// When the worker types a price manually, treat it as the final total and
+// derive the base price from it so toggling fees keeps working.
+if (TotalPriceInput) {
+  TotalPriceInput.addEventListener("input", () => {
+    const typed = parseFloat(TotalPriceInput.value);
+    basePrice = Number.isFinite(typed) ? round2(typed - currentFees()) : 0;
+  });
+}
+syncCardFeeState();
+
 function autofillPrice() {
   const autoTypeInput = document.getElementById("AutoTypeInput");
   const durationInput = document.getElementById("DurationInput");
@@ -506,12 +569,13 @@ function autofillPrice() {
   // Map duration text to days: "15 дена" -> 15, "1 месец" -> 30, "3 месеца" -> 90
   let duration = null;
   if (durationText.includes("15")) duration = 15;
-  else if (durationText.includes("месец")) duration = 30;
   else if (durationText.includes("месеца")) duration = 90;
+  else if (durationText.includes("месец")) duration = 30;
 
   // Map insurance type: "Otomobil" -> "Auto", etc.
   let mappedType = null;
-  if (insuranceType === "Otomobil") mappedType = "Auto";
+  if (insuranceType === "Otomobil" || insuranceType === "Automobile")
+    mappedType = "Auto";
   else if (insuranceType === "Motor") mappedType = "Motor";
   else if (insuranceType === "Bus") mappedType = "Bus";
   else if (insuranceType === "Trailer") mappedType = "Trailer";
@@ -520,7 +584,8 @@ function autofillPrice() {
   if (mappedType && duration) {
     const price = getInsurancePrice(mappedType, duration);
     if (price !== null) {
-      priceInput.value = price;
+      basePrice = Number(price) || 0;
+      priceInput.value = round2(basePrice + currentFees());
     }
   }
 }
@@ -554,6 +619,10 @@ function clearForm() {
   droppedFiles = [];
   renderDroppedFiles();
   if (DisableReturnEmailInput) DisableReturnEmailInput.checked = false;
+  if (NonTurkInput) NonTurkInput.checked = false;
+  if (CardFeeInput) CardFeeInput.checked = false;
+  basePrice = 0;
+  syncCardFeeState();
   setMessage("", false);
 }
 
@@ -605,6 +674,9 @@ InsuranceForm.addEventListener("submit", async function (e) {
     Price: FormObject.TotalPriceInput,
     CurrencyType: FormObject.CurrencyInput,
     Cash: FormObject.CashInput === true,
+    // Informational flags; their fees (+5 / +2) are already included in Price.
+    NonTurk: FormObject.NonTurkInput === true,
+    CardFee: FormObject.CardFeeInput === true && FormObject.CashInput !== true,
 
     // Broker is not typed on this form. When the form was opened from an unread
     // email, the sender's address is sent so the server can resolve the broker.

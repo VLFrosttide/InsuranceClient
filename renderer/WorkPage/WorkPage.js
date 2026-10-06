@@ -353,7 +353,14 @@ function renderTable(items, columns, actions, rowClass) {
   const table = el("table");
   const thead = el("thead");
   const headRow = el("tr");
-  columns.forEach((c) => headRow.appendChild(el("th", c.label)));
+  columns.forEach((c) => {
+    const th = el("th", c.label + (c.headerSuffix ? ` ${c.headerSuffix}` : ""));
+    if (typeof c.onHeaderClick === "function") {
+      th.classList.add("sortable");
+      th.addEventListener("click", () => c.onHeaderClick());
+    }
+    headRow.appendChild(th);
+  });
   if (actions) headRow.appendChild(el("th", t("actions")));
   thead.appendChild(headRow);
   table.appendChild(thead);
@@ -376,7 +383,11 @@ function renderTable(items, columns, actions, rowClass) {
         row.appendChild(linkCell);
         return;
       }
-      row.appendChild(el("td", value ?? ""));
+      const cellClass =
+        typeof c.cellClass === "function" ? c.cellClass(item) : "";
+      row.appendChild(
+        el("td", value ?? "", cellClass ? { class: cellClass } : null)
+      );
     });
 
     if (actions) {
@@ -1106,6 +1117,18 @@ async function cardView() {
   Content.replaceChildren(...children);
 }
 
+// Sort state for the brokers table: key is null (server order), "CashBalance"
+// or "InactivePolicies"; dir is "desc" (highest first) or "asc" (lowest first).
+let brokerSort = { key: null, dir: "desc" };
+
+// The whole row is flagged when the broker has no email.
+function brokerHasNoEmail(b) {
+  const emails = Array.isArray(b.emails)
+    ? b.emails.filter((e) => String(e || "").trim() !== "")
+    : [];
+  return emails.length === 0;
+}
+
 async function brokersView() {
   const data = await api("/brokers");
   const isAdmin = userRole === "1";
@@ -1129,54 +1152,93 @@ async function brokersView() {
     toolbar.appendChild(expCsv);
   }
 
-  const table = renderTable(
-    data.brokers,
-    [
-      {
-        key: "Name",
-        label: t("name"),
-        onClick: (b) => brokerPricingEditor(b),
+  const tableHolder = el("div");
+  const buildTable = () => {
+    let brokers = data.brokers || [];
+    if (brokerSort.key) {
+      const dir = brokerSort.dir === "desc" ? -1 : 1;
+      const k = brokerSort.key;
+      brokers = [...brokers].sort(
+        (a, b) => dir * (Number(a[k]) - Number(b[k]))
+      );
+    }
+    const sortHeader = (key) => ({
+      headerSuffix:
+        brokerSort.key !== key ? "" : brokerSort.dir === "desc" ? "▼" : "▲",
+      onHeaderClick: () => {
+        brokerSort = {
+          key,
+          dir:
+            brokerSort.key === key && brokerSort.dir === "desc"
+              ? "asc"
+              : "desc",
+        };
+        tableHolder.replaceChildren(buildTable());
       },
-      { key: "CashBalance", label: t("balance"), format: (v) => money(v) },
-    ],
-    [
-      {
-        label: t("increase"),
-        class: "",
-        onClick: (b) => brokerAdjust(b, "increase"),
-      },
-      {
-        label: t("reduce"),
-        class: "secondary",
-        onClick: (b) => brokerAdjust(b, "reduce"),
-      },
-      ...(isAdmin
-        ? [
-            {
-              label: t("edit"),
-              class: "secondary",
-              onClick: (b) => brokerEditForm(b),
-            },
-            {
-              label: t("delete"),
-              class: "danger",
-              onClick: async (b) => {
-                if (!confirm(`${t("deleteConfirm")} "${b.Name}"?`)) return;
-                try {
-                  await api(`/brokers/${b.id}`, { method: "DELETE" });
-                  toast(t("brokerDeleted"), "success");
-                  brokersView();
-                } catch (err) {
-                  toast(err.message, "error");
-                }
+    });
+    return renderTable(
+      brokers,
+      [
+        {
+          key: "Name",
+          label: t("name"),
+          onClick: (b) => brokerPricingEditor(b),
+        },
+        {
+          key: "CashBalance",
+          label: t("balance"),
+          format: (v) => money(v),
+          ...sortHeader("CashBalance"),
+        },
+        {
+          key: "InactivePolicies",
+          label: t("inactive"),
+          cellClass: (b) =>
+            Number(b.InactivePolicies) < 30 ? "cell-broker-alert" : "",
+          ...sortHeader("InactivePolicies"),
+        },
+      ],
+      [
+        {
+          label: t("increase"),
+          class: "",
+          onClick: (b) => brokerAdjust(b, "increase"),
+        },
+        {
+          label: t("reduce"),
+          class: "secondary",
+          onClick: (b) => brokerAdjust(b, "reduce"),
+        },
+        ...(isAdmin
+          ? [
+              {
+                label: t("edit"),
+                class: "secondary",
+                onClick: (b) => brokerEditForm(b),
               },
-            },
-          ]
-        : []),
-    ]
-  );
+              {
+                label: t("delete"),
+                class: "danger",
+                onClick: async (b) => {
+                  if (!confirm(`${t("deleteConfirm")} "${b.Name}"?`)) return;
+                  try {
+                    await api(`/brokers/${b.id}`, { method: "DELETE" });
+                    toast(t("brokerDeleted"), "success");
+                    brokersView();
+                  } catch (err) {
+                    toast(err.message, "error");
+                  }
+                },
+              },
+            ]
+          : []),
+      ],
+      (b) => (brokerHasNoEmail(b) ? "row-broker-alert" : "")
+    );
+  };
+  tableHolder.appendChild(buildTable());
 
-  Content.replaceChildren(el("h2", t("brokers")), toolbar, table);
+  Content.replaceChildren(el("h2", t("brokers")), toolbar, tableHolder);
 }
 
 function brokerAdjust(broker, kind) {
