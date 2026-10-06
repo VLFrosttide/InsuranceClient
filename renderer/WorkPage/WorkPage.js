@@ -43,11 +43,27 @@ function emailCardsContainer() {
 function addEmailCard(email) {
   if (!email || !email.messageId || emailCards.has(email.messageId)) return;
 
-  const card = el("button", emailTitle(email), {
-    class: "email-card",
+  const card = el("div", null, { class: "email-card" });
+
+  const openBtn = el("button", emailTitle(email), {
+    class: "email-card-open",
     type: "button",
   });
-  card.addEventListener("click", () => openEmailInNewForm(email));
+  openBtn.addEventListener("click", () => openEmailInNewForm(email));
+
+  const xBtn = el("button", "✕", {
+    class: "email-card-x",
+    type: "button",
+    title: t("email.markIrrelevant"),
+    "aria-label": t("email.markIrrelevant"),
+  });
+  xBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    markEmailIrrelevant(email);
+  });
+
+  card.appendChild(openBtn);
+  card.appendChild(xBtn);
 
   emailCards.set(email.messageId, { email, node: card });
 
@@ -70,6 +86,20 @@ function removeEmailCard(messageId) {
       emailCardsContainer()
     );
   }
+}
+
+function markEmailIrrelevant(email) {
+  if (!email || !email.messageId) return;
+  if (!confirm(t("email.irrelevantConfirm"))) return;
+
+  // Dismiss on the server. The server removes the email from the shared pool
+  // and marks the Gmail message read, so it disappears for every worker and
+  // never re-surfaces on a later poll or server restart.
+  if (emailSocket) {
+    emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+  }
+  removeEmailCard(email.messageId);
+  toast(t("email.irrelevantMarked"), "success");
 }
 
 function openEmailInNewForm(email) {
@@ -143,6 +173,7 @@ function setupEmailSocket() {
     },
     email_claimed: (msg) => removeEmailCard(msg.messageId),
     email_completed: (msg) => removeEmailCard(msg.messageId),
+    email_irrelevant: (msg) => removeEmailCard(msg.messageId),
     email_released: (msg) => {
       const email = msg.data;
       if (email && email.messageId) {

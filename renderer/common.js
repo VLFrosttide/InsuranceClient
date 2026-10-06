@@ -241,8 +241,15 @@ const I18N = {
     "email.zoomOut": "Zoom out",
     "email.resetZoom": "Reset zoom",
     "email.print": "Print picture",
+    "email.printSuccess": "Picture sent to printer",
+    "email.printCancelled": "Printing cancelled",
+    "email.printFailed": "Printing failed",
     "email.close": "Close",
     "email.unclaim": "Unclaim",
+    "email.markIrrelevant": "Mark as irrelevant",
+    "email.irrelevantConfirm":
+      "Mark this email as irrelevant? It will be removed and will not appear again.",
+    "email.irrelevantMarked": "Email marked as irrelevant",
 
     pricing: "Pricing",
     viewPricing: "View/Edit Pricing",
@@ -462,8 +469,15 @@ const I18N = {
     "email.zoomOut": "Намали",
     "email.resetZoom": "Нулирай мащаба",
     "email.print": "Принтирай снимка",
+    "email.printSuccess": "Снимката е изпратена към принтера",
+    "email.printCancelled": "Принтирането е отказано",
+    "email.printFailed": "Принтирането не успя",
     "email.close": "Затвори",
     "email.unclaim": "Освободи имейла",
+    "email.markIrrelevant": "Маркирай като нерелевантен",
+    "email.irrelevantConfirm":
+      "Да се маркира ли този имейл като нерелевантен? Той ще бъде премахнат и няма да се показва отново.",
+    "email.irrelevantMarked": "Имейлът е маркиран като нерелевантен",
 
     pricing: "Цени",
     viewPricing: "Преглед/редактиране на цени",

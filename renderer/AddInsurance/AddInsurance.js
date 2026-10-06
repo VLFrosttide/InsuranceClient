@@ -404,10 +404,24 @@ function zoomViewer(delta) {
   applyViewerScale();
 }
 
-function printViewerImage() {
+async function printViewerImage() {
   if (!ViewerImage || !ViewerImage.src) return;
   if (window.bridge && typeof window.bridge.PrintImage === "function") {
-    window.bridge.PrintImage(ViewerImage.src);
+    try {
+      const result = await window.bridge.PrintImage(ViewerImage.src);
+      if (result && result.ok) {
+        toast(t("email.printSuccess"), "success");
+      } else if (result && result.cancelled) {
+        toast(t("email.printCancelled"), "info");
+      } else {
+        const reason = (result && result.error) || "unknown error";
+        console.error("PrintImage failed:", reason);
+        toast(t("email.printFailed"), "error");
+      }
+    } catch (err) {
+      console.error("PrintImage failed:", err);
+      toast(t("email.printFailed"), "error");
+    }
   } else {
     // Fallback for a plain browser context (no Electron bridge).
     const w = window.open("", "_blank");

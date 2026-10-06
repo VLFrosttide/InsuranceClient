@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.send("LoadPage", page);
   },
   PrintImage: (dataUrl) => {
-    ipcRenderer.send("PrintImage", dataUrl);
+    return ipcRenderer.invoke("PrintImage", dataUrl);
   },
   OpenImageExternal: (dataUrl) => {
     ipcRenderer.send("OpenImageExternal", dataUrl);
