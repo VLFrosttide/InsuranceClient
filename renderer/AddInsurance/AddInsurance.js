@@ -44,13 +44,12 @@ const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 let droppedFiles = []; // { filename, mimeType, size, base64 }
 let viewerScale = 1;
 
-// Scroll-to-cycle for the duration dropdown. Only active while the select is
-// focused so normal page scrolling is never hijacked. A "change" event is
-// dispatched so the price auto-calculates like a normal selection.
+// Scroll-to-cycle for the duration dropdown. Works while the mouse hovers the
+// select (no focus needed). A "change" event is dispatched so the price
+// auto-calculates like a normal selection.
 DurationInput.addEventListener(
   "wheel",
   (e) => {
-    if (document.activeElement !== DurationInput) return;
     e.preventDefault();
     const count = DurationInput.options.length;
     if (!count) return;
@@ -513,6 +512,20 @@ const TotalPriceInput = document.getElementById("TotalPriceInput");
 // basePrice + the currently selected fees.
 let basePrice = 0;
 
+// True while the selected vehicle type + duration has no price: the price field
+// is left empty and shows "n/a" as a placeholder.
+let priceUnavailable = false;
+
+function setPriceUnavailable(unavailable) {
+  priceUnavailable = unavailable;
+  if (!TotalPriceInput) return;
+  TotalPriceInput.placeholder = unavailable ? "n/a" : "";
+  if (unavailable) {
+    TotalPriceInput.value = "";
+    basePrice = 0;
+  }
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -528,6 +541,7 @@ function currentFees() {
 // no base price yet and no fee selected).
 function renderTotalPrice() {
   if (!TotalPriceInput) return;
+  if (priceUnavailable) return;
   const fees = currentFees();
   if (TotalPriceInput.value === "" && basePrice === 0 && fees === 0) return;
   TotalPriceInput.value = round2(basePrice + fees);
@@ -557,6 +571,9 @@ if (CardFeeInput) CardFeeInput.addEventListener("change", onFeeChange);
 // derive the base price from it so toggling fees keeps working.
 if (TotalPriceInput) {
   TotalPriceInput.addEventListener("input", () => {
+    // Typing a price manually overrides the "n/a" state.
+    priceUnavailable = false;
+    TotalPriceInput.placeholder = "";
     const typed = parseFloat(TotalPriceInput.value);
     basePrice = Number.isFinite(typed) ? round2(typed - currentFees()) : 0;
   });
@@ -620,13 +637,16 @@ function autofillPrice() {
   else if (insuranceType === "Bus") mappedType = "Bus";
   else if (insuranceType === "Trailer") mappedType = "Trailer";
 
-  // Look up price from cached pricing
-  if (mappedType && duration) {
-    const price = lookupPrice(mappedType, duration);
-    if (price !== null) {
-      basePrice = Number(price) || 0;
-      priceInput.value = round2(basePrice + currentFees());
-    }
+  // Look up the price. When there is none, show "n/a" instead of keeping the
+  // previous value.
+  const price =
+    mappedType && duration ? lookupPrice(mappedType, duration) : null;
+  if (price !== null) {
+    setPriceUnavailable(false);
+    basePrice = Number(price) || 0;
+    priceInput.value = round2(basePrice + currentFees());
+  } else {
+    setPriceUnavailable(true);
   }
 }
 
