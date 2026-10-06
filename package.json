@@ -1,7 +1,7 @@
 {
   "name": "insurance-client",
   "productName": "Insurance",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "description": "Insurance client",
   "license": "ISC",
   "author": "Frosttide",
@@ -17,7 +17,7 @@
     "build": "electron-builder",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --publish always",
-    "release": "electron-builder --publish always"
+    "release": "electron-builder --publish always"  
   },
   "build": {
     "appId": "com.frosttide.insuranceclient",
