@@ -238,12 +238,32 @@ input[type="file"].hidden {
 .recon-results td {
   white-space: pre-line;
 }
+/* Status colours for reconcile results — low saturation / low opacity so they
+   read as subtle tints on the dark theme:
+     red    = total mismatch (a row missing on one side)
+     yellow = partial mismatch (differing cells)
+     green  = complete match */
 .stat-card.recon-bad {
-  border-color: #8b0000;
+  border-color: rgba(196, 84, 84, 0.55);
+  background: rgba(196, 84, 84, 0.12);
 }
-/* Mismatching cells: dark red highlight */
-td.cell-mismatch {
-  background: #8b0000;
-  color: #fff;
+.stat-card.recon-warn {
+  border-color: rgba(196, 160, 48, 0.55);
+  background: rgba(196, 160, 48, 0.12);
+}
+.stat-card.recon-good {
+  border-color: rgba(88, 166, 88, 0.55);
+  background: rgba(88, 166, 88, 0.12);
+}
+/* Total-mismatch rows (missing from DB or from file): soft red tint */
+.recon-results tr.row-missing td {
+  background: rgba(196, 84, 84, 0.10);
+}
+/* Partial-mismatch cells: soft yellow tint */
+.recon-results td.cell-mismatch {
+  background: rgba(200, 165, 48, 0.20);
   font-weight: 600;
+}
+.recon-results .recon-good-text {
+  color: rgba(120, 200, 120, 0.95);
 }

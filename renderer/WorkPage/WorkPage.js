@@ -1821,7 +1821,11 @@ function reconRenderResults(result) {
     stats.appendChild(card);
   };
   addStat(t("reconcile.fileRows"), result.fileRowCount);
-  addStat(t("reconcile.matched"), result.matched);
+  addStat(
+    t("reconcile.matched"),
+    result.matched,
+    result.matched ? "recon-good" : ""
+  );
   addStat(
     t("reconcile.missingFromDb"),
     result.missingFromDb.length,
@@ -1835,7 +1839,7 @@ function reconRenderResults(result) {
   addStat(
     t("reconcile.mismatches"),
     result.mismatches.length,
-    result.mismatches.length ? "recon-bad" : ""
+    result.mismatches.length ? "recon-warn" : ""
   );
   wrap.appendChild(stats);
 
@@ -1866,11 +1870,16 @@ function reconRenderResults(result) {
 
   wrap.appendChild(el("h3", `${t("reconcile.missingFrom")}…`));
   wrap.appendChild(
-    renderTable(missingItems, [
-      { key: "source", label: t("reconcile.missingFrom") },
-      { key: "rowNo", label: t("reconcile.row") },
-      ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
-    ])
+    renderTable(
+      missingItems,
+      [
+        { key: "source", label: t("reconcile.missingFrom") },
+        { key: "rowNo", label: t("reconcile.row") },
+        ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
+      ],
+      null,
+      () => "row-missing"
+    )
   );
 
   // --- Partial data mismatches (mismatching cells in dark red) ------------
@@ -1899,7 +1908,9 @@ function reconRenderResults(result) {
     !result.mismatches.length &&
     result.fileRowCount > 0
   ) {
-    wrap.appendChild(el("p", t("reconcile.allGood"), { class: "muted" }));
+    wrap.appendChild(
+      el("p", t("reconcile.allGood"), { class: "recon-good-text" })
+    );
   }
   return wrap;
 }
