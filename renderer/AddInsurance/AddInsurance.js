@@ -44,22 +44,27 @@ const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 let droppedFiles = []; // { filename, mimeType, size, base64 }
 let viewerScale = 1;
 
-// Scroll-to-cycle for the duration dropdown. Works while the mouse hovers the
-// select (no focus needed). A "change" event is dispatched so the price
-// auto-calculates like a normal selection.
-DurationInput.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    const count = DurationInput.options.length;
-    if (!count) return;
-    const step = e.deltaY > 0 ? 1 : -1;
-    DurationInput.selectedIndex =
-      (DurationInput.selectedIndex + step + count) % count;
-    DurationInput.dispatchEvent(new Event("change", { bubbles: true }));
-  },
-  { passive: false }
-);
+// Scroll-to-cycle for dropdowns. Works while the mouse hovers the select (no
+// focus needed). A "change" event is dispatched so the price auto-calculates
+// like a normal selection.
+function enableWheelSelect(select) {
+  if (!select) return;
+  select.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const count = select.options.length;
+      if (!count) return;
+      const step = e.deltaY > 0 ? 1 : -1;
+      select.selectedIndex = (select.selectedIndex + step + count) % count;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    { passive: false }
+  );
+}
+
+enableWheelSelect(DurationInput);
+enableWheelSelect(document.getElementById("AutoTypeInput"));
 
 // Make the whole date field open the calendar on click, not just the small
 // icon on the right. Clicking the input (or its label) triggers the native
