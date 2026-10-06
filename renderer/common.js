@@ -40,8 +40,6 @@ const I18N = {
     "reconcile.dropHint2": "or click to choose a file",
     "reconcile.noFile": "No file selected",
     "reconcile.run": "Reconcile",
-    "reconcile.testButton": "Run sample report",
-    "reconcile.testFileMissing": "Sample report not found in the Test folder",
     "reconcile.dbDate": "Check database insurances created on",
     "reconcile.dbDateHint":
       "Used to find insurances that exist in the database but are missing from the file. Clear it to skip that check.",
@@ -138,7 +136,6 @@ const I18N = {
     broker: "Broker",
     policyNumber: "Policy number",
     carNumber: "Car number",
-    test: "Test",
     exportJson: "Export JSON",
     exportCsv: "Export CSV",
     close: "Close",
@@ -284,8 +281,6 @@ const I18N = {
     "reconcile.dropHint2": "или щракнете, за да изберете файл",
     "reconcile.noFile": "Няма избран файл",
     "reconcile.run": "Сверка",
-    "reconcile.testButton": "Стартирай примерен отчет",
-    "reconcile.testFileMissing": "Примерният отчет не е намерен в папка Test",
     "reconcile.dbDate": "Провери застраховки в базата, създадени на",
     "reconcile.dbDateHint":
       "Използва се за откриване на застраховки, които са в базата, но липсват във файла. Изчистете, за да пропуснете проверката.",
@@ -381,7 +376,6 @@ const I18N = {
     broker: "Брокер",
     policyNumber: "Номер на полица",
     carNumber: "Номер на автомобил",
-    test: "Тест",
     exportJson: "Експорт JSON",
     exportCsv: "Експорт CSV",
     close: "Затвори",
@@ -752,23 +746,36 @@ class UnreadEmailSocket {
     ws.addEventListener("open", () => {
       // Reset the backoff now that a connection succeeded.
       this.reconnectDelay = 1000;
-      ws.send(
-        JSON.stringify({ type: "auth", token: getToken(), branch: getBranch() })
-      );
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            token: getToken(),
+            branch: getBranch(),
+          })
+        );
+      } catch (err) {
+        console.error("Failed to authenticate email WebSocket:", err);
+      }
     });
 
     ws.addEventListener("message", (event) => {
       let msg;
       try {
         msg = JSON.parse(event.data);
-      } catch {
+      } catch (err) {
+        console.error("Failed to parse email WebSocket message:", err);
         return;
       }
 
       if (msg.type === "auth_ok") {
         this.authed = true;
         this.flush();
-        if (this.handlers.auth_ok) this.handlers.auth_ok(msg);
+        try {
+          if (this.handlers.auth_ok) this.handlers.auth_ok(msg);
+        } catch (err) {
+          console.error("Email WebSocket auth_ok handler failed:", err);
+        }
         return;
       }
 
@@ -783,8 +790,12 @@ class UnreadEmailSocket {
         return;
       }
 
-      if (this.handlers[msg.type]) this.handlers[msg.type](msg);
-      if (this.handlers["*"]) this.handlers["*"](msg);
+      try {
+        if (this.handlers[msg.type]) this.handlers[msg.type](msg);
+        if (this.handlers["*"]) this.handlers["*"](msg);
+      } catch (err) {
+        console.error(`Email WebSocket "${msg.type}" handler failed:`, err);
+      }
     });
 
     ws.addEventListener("close", () => {
@@ -794,8 +805,10 @@ class UnreadEmailSocket {
       this.scheduleReconnect();
     });
 
-    ws.addEventListener("error", () => {
-      // A close event follows and resets connection state.
+    ws.addEventListener("error", (event) => {
+      // A close event follows and resets connection state. Log it so network
+      // failures are easy to diagnose.
+      console.error("Email WebSocket error:", event);
     });
   }
 
@@ -810,7 +823,11 @@ class UnreadEmailSocket {
 
   send(obj) {
     if (this.authed && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
+      try {
+        this.ws.send(JSON.stringify(obj));
+      } catch (err) {
+        console.error("Failed to send email WebSocket message:", err);
+      }
     } else {
       this.pending.push(obj);
     }
@@ -823,7 +840,12 @@ class UnreadEmailSocket {
       this.ws.readyState === WebSocket.OPEN &&
       this.pending.length
     ) {
-      this.ws.send(JSON.stringify(this.pending.shift()));
+      try {
+        this.ws.send(JSON.stringify(this.pending.shift()));
+      } catch (err) {
+        console.error("Failed to flush queued email WebSocket message:", err);
+        break;
+      }
     }
   }
 

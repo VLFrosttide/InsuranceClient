@@ -175,11 +175,6 @@ pre {
   word-break: break-all;
 }
 
-/* Test toolbar */
-.test-toolbar {
-  margin-bottom: 16px;
-}
-
 /* Unread email cards */
 .email-cards {
   display: grid;

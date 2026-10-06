@@ -71,7 +71,6 @@ function addEmailCard(email) {
   if (activeNav && activeNav.load === workerDashboard) {
     Content.replaceChildren(
       el("h2", t("unreadEmails")),
-      testToolbar(),
       emailCardsContainer()
     );
   }
@@ -82,7 +81,6 @@ function removeEmailCard(messageId) {
   if (activeNav && activeNav.load === workerDashboard) {
     Content.replaceChildren(
       el("h2", t("unreadEmails")),
-      testToolbar(),
       emailCardsContainer()
     );
   }
@@ -118,7 +116,11 @@ function openClaimedEmail(email) {
   // Pass the email to the new page (AddInsurance) so it can show the full
   // body and attached pictures beside the form. AddInsurance will either
   // complete (submit) or release (cancel/back) the claim.
-  localStorage.setItem("pendingEmail", JSON.stringify(email || null));
+  try {
+    localStorage.setItem("pendingEmail", JSON.stringify(email || null));
+  } catch (err) {
+    console.error("Failed to store pending email:", err);
+  }
   window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
 }
 
@@ -139,7 +141,6 @@ function reconcileEmailCards(serverEmails) {
   if (activeNav && activeNav.load === workerDashboard) {
     Content.replaceChildren(
       el("h2", t("unreadEmails")),
-      testToolbar(),
       emailCardsContainer()
     );
   }
@@ -2012,20 +2013,14 @@ async function reconcileView() {
   const dateField = field(t("reconcile.dbDate"), dateInput);
 
   const runBtn = el("button", t("reconcile.run"), { type: "button" });
-  const testBtn = el("button", t("reconcile.testButton"), {
-    type: "button",
-    class: "secondary",
-  });
   const controls = el("div", null, { class: "row filter-row" });
   controls.appendChild(dateField);
   controls.appendChild(runBtn);
-  controls.appendChild(testBtn);
 
   const result = el("div");
 
   // Runs the selected file through the full pipeline: parse the first sheet,
-  // reconcile against the database and render the comparison. Shared by the
-  // regular "Reconcile" button and the bundled-sample test button.
+  // reconcile against the database and render the comparison.
   const runReconcile = async (file, btn) => {
     btn.disabled = true;
     result.replaceChildren(el("p", t("loading"), { class: "muted" }));
@@ -2049,34 +2044,6 @@ async function reconcileView() {
     await runReconcile(selectedFile, runBtn);
   });
 
-  // Test button: loads the sample daily-report file bundled in the repo's
-  // "Test" folder (read by the main process, which has filesystem access) and
-  // runs it through the exact same reconciliation path as a real upload.
-  testBtn.addEventListener("click", async () => {
-    let payload;
-    try {
-      payload = await window.bridge.ReadTestReport();
-    } catch {
-      payload = null;
-    }
-    if (!payload || !payload.ok || !payload.data) {
-      toast(t("reconcile.testFileMissing"), "error");
-      return;
-    }
-    try {
-      const bytes = Uint8Array.from(atob(payload.data), (c) =>
-        c.charCodeAt(0)
-      );
-      const file = new File([bytes], payload.name, {
-        type: "application/vnd.ms-excel.sheet.macroEnabled.12",
-      });
-      setFile(file);
-      await runReconcile(file, testBtn);
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  });
-
   Content.replaceChildren(
     el("h2", t("reconcile.title")),
     dropZone,
@@ -2092,71 +2059,9 @@ async function reconcileView() {
 // ---------------------------------------------------------------------------
 // Worker views
 // ---------------------------------------------------------------------------
-async function testSimulateEmail() {
-  await api("/test/email", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
-}
-
-async function testCreateDummyInsurances(count = 3) {
-  const created = [];
-  for (let i = 0; i < count; i++) {
-    const suffix = `${Date.now()}-${i}-${Math.random()
-      .toString(36)
-      .slice(2, 6)}`;
-    const blancNumber = `TEST-${suffix}`;
-    await api("/worker/insurances", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        PolicyNumber: `BG/TEST/${suffix}`,
-        BlancNumber: blancNumber,
-        Duration: "1 година",
-        Branch: "ГКПП Лесово",
-        Otomobil: "Otomobil",
-        StartDate: new Date().toISOString().slice(0, 10),
-        Price: String(100 + i * 25),
-        CurrencyType: "EUR",
-        Cash: i % 2 === 0,
-      }),
-    });
-    created.push(blancNumber);
-  }
-  return created;
-}
-
-async function runTest() {
-  await testSimulateEmail();
-  const created = await testCreateDummyInsurances(3);
-  toast(
-    `Test complete: email injected + ${created.length} dummy insurances created`,
-    "success"
-  );
-}
-
-function testToolbar() {
-  const toolbar = el("div", null, { class: "row test-toolbar" });
-  const testBtn = el("button", t("test"), { type: "button" });
-  testBtn.addEventListener("click", async () => {
-    testBtn.disabled = true;
-    try {
-      await runTest();
-    } catch (err) {
-      toast(err.message, "error");
-    } finally {
-      testBtn.disabled = false;
-    }
-  });
-  toolbar.appendChild(testBtn);
-  return toolbar;
-}
-
 async function workerDashboard() {
   Content.replaceChildren(
     el("h2", t("unreadEmails")),
-    testToolbar(),
     emailCardsContainer()
   );
 }
