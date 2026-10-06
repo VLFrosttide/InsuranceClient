@@ -16,7 +16,7 @@
     "test": "node Test/reconcile.test.cjs",
     "build": "electron-builder",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder",
+    "dist": "electron-builder --publish always",
     "release": "electron-builder --publish always"
   },
   "build": {

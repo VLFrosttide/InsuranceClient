@@ -120,6 +120,12 @@ try {
 
 let emailSocket = null;
 
+// The server sends email attachments as metadata only ({ id, filename,
+// mimeType, size }). The image bytes are fetched lazily over the WebSocket via
+// a "get_attachment" message. This maps an attachment id to its on-screen <img>
+// so the get_attachment reply can fill the image in once the bytes arrive.
+const emailAttachmentImages = new Map(); // id -> { img, att, requested }
+
 function emailSubject(email) {
   return email.subject || email.from || t("email.noSubject");
 }
@@ -127,6 +133,18 @@ function emailSubject(email) {
 function clearPendingEmail() {
   PendingEmail = null;
   localStorage.removeItem("pendingEmail");
+}
+
+// Walk-in insurances are created directly from the "+ Нова застраховка" button
+// and have no associated broker email. There is no return email to send and no
+// files to attach, so the file drop area and the "disable return email" test
+// checkbox are hidden for them.
+function configureWalkInMode() {
+  const isWalkIn = !PendingEmail;
+  if (DropArea) DropArea.classList.toggle("hidden", isWalkIn);
+  if (FileInput) FileInput.hidden = isWalkIn;
+  const testField = document.querySelector(".test-checkbox-field");
+  if (testField) testField.classList.toggle("hidden", isWalkIn);
 }
 
 function renderEmailSide() {
@@ -157,16 +175,17 @@ function renderEmailSide() {
     const gallery = el("div", null, { class: "email-attachments" });
     for (const att of attachments) {
       const wrap = el("div", null, { class: "email-attachment" });
-      if (
-        att.base64 &&
-        typeof att.mimeType === "string" &&
-        att.mimeType.startsWith("image/")
-      ) {
+      const isImage =
+        typeof att.mimeType === "string" && att.mimeType.startsWith("image/");
+      if (isImage && att.id != null) {
+        // The card only carries attachment metadata; the image bytes are
+        // fetched lazily via get_attachment and filled in on its reply.
         const img = el("img");
         img.alt = att.filename || t("email.attachment");
-        img.src = `data:${att.mimeType};base64,${att.base64}`;
-        trackCtrlCursor(img);
+        img.classList.add("attachment-loading");
+        emailAttachmentImages.set(att.id, { img, att, requested: false });
         img.addEventListener("click", (e) => {
+          if (!img.src) return;
           if (e.ctrlKey || e.metaKey) {
             openImageExternal(img.src);
           } else {
@@ -181,6 +200,10 @@ function renderEmailSide() {
       }
       if (att.filename)
         wrap.appendChild(el("div", att.filename, { class: "muted small" }));
+      if (att.size)
+        wrap.appendChild(
+          el("div", fileSizeLabel(att.size), { class: "muted small" })
+        );
       gallery.appendChild(wrap);
     }
     EmailSideBody.appendChild(gallery);
@@ -191,6 +214,23 @@ function renderEmailSide() {
   }
 
   EmailSide.classList.remove("hidden");
+}
+
+function requestEmailAttachments() {
+  if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
+  for (const att of PendingEmail.attachments || []) {
+    if (att.id == null) continue;
+    if (typeof att.mimeType !== "string" || !att.mimeType.startsWith("image/"))
+      continue;
+    const entry = emailAttachmentImages.get(att.id);
+    if (!entry || entry.requested) continue;
+    entry.requested = true;
+    emailSocket.send({
+      type: "get_attachment",
+      messageId: PendingEmail.messageId,
+      id: att.id,
+    });
+  }
 }
 
 function setupEmailSocket() {
@@ -204,6 +244,29 @@ function setupEmailSocket() {
         type: "claim_email",
         messageId: PendingEmail.messageId,
       });
+      // Attachment bytes are not included on the card; fetch each image lazily.
+      requestEmailAttachments();
+    },
+    get_attachment: (msg) => {
+      const entry = emailAttachmentImages.get(msg.id);
+      if (!entry || !entry.img) return;
+      if (
+        msg.ok &&
+        msg.base64 &&
+        typeof msg.mimeType === "string" &&
+        msg.mimeType.startsWith("image/")
+      ) {
+        entry.img.src = `data:${msg.mimeType};base64,${msg.base64}`;
+        entry.img.classList.remove("attachment-loading");
+        trackCtrlCursor(entry.img);
+      } else {
+        // Could not be inlined (too large / fetch failed): show the filename.
+        entry.img.replaceWith(
+          el("span", entry.att.filename || t("email.attachment"), {
+            class: "muted",
+          })
+        );
+      }
     },
   });
   emailSocket.connect();
@@ -772,8 +835,12 @@ InsuranceForm.addEventListener("submit", async function (e) {
     // opened from an unread email), the files dropped by the worker, and the
     // test checkbox that disables sending the reply.
     MessageId: PendingEmail ? PendingEmail.messageId || null : null,
+    // A walk-in insurance has no broker email to reply to, so the return email
+    // must never be sent for it (broker emails keep the worker's test checkbox).
     DisableReturnEmail:
-      (DisableReturnEmailInput && DisableReturnEmailInput.checked) || false,
+      !PendingEmail ||
+      (DisableReturnEmailInput && DisableReturnEmailInput.checked) ||
+      false,
     Attachments: droppedFiles.map((f) => ({
       filename: f.filename,
       mimeType: f.mimeType,
@@ -840,5 +907,6 @@ async function sendReply() {
 
 if (ReplyButton) ReplyButton.addEventListener("click", sendReply);
 
+configureWalkInMode();
 renderEmailSide();
 setupEmailSocket();

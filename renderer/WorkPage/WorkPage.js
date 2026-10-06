@@ -1613,12 +1613,17 @@ async function downloadBrokersCsv() {
   URL.revokeObjectURL(url);
 }
 
-async function adminInsurancesByDate() {
+async function adminInsurancesByDate(defaultAuthor = "") {
   // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=
-  // All fields are optional, but at least one must be filled in to search.
+  // All fields are optional, but at least one must be filled in to search. Any
+  // single criteria (or any combination of them) can be used.
+  // The author field is intentionally empty by default so a search by, e.g.,
+  // only a car number is not silently narrowed to the current user's own
+  // records. Workers reach this view through "My insurances", which pre-fills
+  // the author with their username so they still see only their own records.
   // PolicyNumber/BlancNumber/CarNumber match partially (substring) on the
   // server, so a worker can search by a fragment of the number too.
-  const authorInput = input("text", username);
+  const authorInput = input("text", defaultAuthor);
   const dateInput = input("date", "");
   const policyNumberInput = input("text", "");
   const blancNumberInput = input("text", "");
@@ -2202,7 +2207,10 @@ async function workerClients() {
 }
 
 async function workerMyInsurances() {
-  await adminInsurancesByDate();
+  // Workers only see their own records here, so pre-fill the author filter
+  // with their username. The admin's "Insurances by date" view keeps the
+  // author field empty so any single/multiple criteria can be searched.
+  await adminInsurancesByDate(username);
 }
 
 // ---------------------------------------------------------------------------
@@ -2300,9 +2308,12 @@ function renderHeader() {
 
   if (userRole === "2") {
     const addBtn = el("button", t("addInsurance"));
-    addBtn.addEventListener("click", () =>
-      window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html")
-    );
+    addBtn.addEventListener("click", () => {
+      // This is a walk-in insurance, not a broker-requested one: make sure no
+      // leftover "pendingEmail" makes it look like an email-sourced insurance.
+      localStorage.removeItem("pendingEmail");
+      window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
+    });
     Nav.appendChild(addBtn);
   }
 }

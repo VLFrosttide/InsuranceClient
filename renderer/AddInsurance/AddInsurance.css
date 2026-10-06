@@ -121,6 +121,9 @@ button.reply-button:disabled {
   font-size: 12px;
   margin-top: 4px;
 }
+#DropArea.hidden {
+  display: none;
+}
 #DroppedFiles {
   list-style: none;
   margin: 12px 0 0;
@@ -175,6 +178,9 @@ button.reply-button:disabled {
   font-size: 14px;
   cursor: pointer;
 }
+.test-checkbox-field.hidden {
+  display: none;
+}
 
 /* Email side panel */
 #EmailSide {
@@ -227,6 +233,13 @@ button.reply-button:disabled {
   border: 1px solid var(--panel-border);
   background: #1b2029;
   cursor: zoom-in;
+}
+/* Placeholder state while the image bytes are still being fetched over the
+   WebSocket (the server sends attachment metadata first, then the bytes). */
+.email-attachment img.attachment-loading {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  cursor: progress;
 }
 .email-attachment .small {
   font-size: 12px;
