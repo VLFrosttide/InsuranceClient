@@ -717,6 +717,12 @@ function requireLogin() {
 // REST API. Messages sent with `send()` before authentication are queued and
 // flushed automatically once the server acknowledges `auth_ok`.
 // ---------------------------------------------------------------------------
+
+// Number of consecutive failed handshakes before the worker is told that live
+// email updates are unavailable. One or two failures are routine - the hosting
+// platform recycles the Node process on deploy - so those stay in the console.
+const WS_OUTAGE_REPORT_AFTER = 3;
+
 class UnreadEmailSocket {
   constructor(handlers = {}) {
     this.handlers = handlers;
@@ -726,6 +732,14 @@ class UnreadEmailSocket {
     this.reconnectDelay = 1000;
     this.reconnectTimer = null;
     this.manuallyClosed = false;
+    // Consecutive attempts that never reached the OPEN state. A WebSocket
+    // handshake never follows redirects, so when the hosting CDN answers the
+    // upgrade with a 3xx (or the origin is briefly unreachable) the only
+    // recovery is the retry loop. These counters decide when the failure is
+    // worth showing to the worker and when to run the reachability probe.
+    this.failedAttempts = 0;
+    this.outageReported = false;
+    this.probing = false;
   }
 
   connect() {
@@ -743,9 +757,17 @@ class UnreadEmailSocket {
     }
     this.ws = ws;
 
+    // Distinguishes "the handshake never completed" from "an established
+    // connection dropped later". Only the former means the upgrade itself was
+    // refused (e.g. a 3xx from the reverse proxy instead of 101).
+    let opened = false;
+
     ws.addEventListener("open", () => {
-      // Reset the backoff now that a connection succeeded.
+      opened = true;
+      // Reset the backoff and the outage state now that a connection succeeded.
       this.reconnectDelay = 1000;
+      this.failedAttempts = 0;
+      this.outageReported = false;
       try {
         ws.send(
           JSON.stringify({
@@ -802,14 +824,69 @@ class UnreadEmailSocket {
       this.ws = null;
       this.authed = false;
       if (this.handlers.close) this.handlers.close();
+
+      if (!opened) {
+        // The handshake never completed. This is what a redirect looks like
+        // from here: the browser reports "Unexpected response code: 307" (or
+        // any other non-101 status) and the socket never opens.
+        this.failedAttempts += 1;
+        console.error(
+          `Email WebSocket handshake failed for ${WS_URL} ` +
+            `(attempt ${this.failedAttempts}, retrying in ${this.reconnectDelay} ms)`
+        );
+        this.reportOutage();
+      }
       this.scheduleReconnect();
     });
 
     ws.addEventListener("error", (event) => {
-      // A close event follows and resets connection state. Log it so network
-      // failures are easy to diagnose.
-      console.error("Email WebSocket error:", event);
+      // A close event follows and resets connection state. The event itself
+      // carries no detail, so log the target URL alongside it: a refused
+      // handshake and a dropped connection look identical otherwise.
+      console.error(`Email WebSocket error (${WS_URL}):`, event);
     });
+  }
+
+  /**
+   * After several handshakes fail in a row, tell the worker that live email
+   * updates are unavailable and work out why. Probing the REST API separates
+   * the two causes, which need completely different fixes: the server being
+   * down (both fail), versus something blocking only the upgrade - the hosting
+   * CDN answering with a redirect, a system proxy, or antivirus TLS
+   * inspection (REST works, the socket does not).
+   */
+  reportOutage() {
+    if (this.failedAttempts < WS_OUTAGE_REPORT_AFTER || this.outageReported) {
+      return;
+    }
+    this.outageReported = true;
+    toast(t("emailConnUnavailable"), "error");
+    this.probeApi();
+  }
+
+  async probeApi() {
+    if (this.probing) return;
+    this.probing = true;
+    try {
+      const res = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+      const body = (await res.text()).trim();
+      console.warn(
+        "Email WebSocket diagnostic: the REST API is reachable " +
+          `(HTTP ${res.status}${body ? ` ${body}` : ""}), so the server is up. ` +
+          "Only the WebSocket upgrade is failing, which means it is being " +
+          "redirected or blocked by an intermediary between this client and " +
+          "the server (hosting CDN, system proxy, or antivirus TLS " +
+          "inspection). Retrying automatically."
+      );
+    } catch (err) {
+      console.warn(
+        "Email WebSocket diagnostic: the REST API is NOT reachable (" +
+          `${err && err.message ? err.message : err}), so the server or the ` +
+          "network path to it is down. Retrying automatically."
+      );
+    } finally {
+      this.probing = false;
+    }
   }
 
   scheduleReconnect() {
