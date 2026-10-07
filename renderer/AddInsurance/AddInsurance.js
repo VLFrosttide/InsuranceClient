@@ -167,23 +167,16 @@ function configureWalkInMode() {
   if (FileInput) FileInput.hidden = isWalkIn;
   const testField = document.querySelector(".test-checkbox-field");
   if (testField) testField.classList.toggle("hidden", isWalkIn);
-  lockEmailPaymentToBroker();
+  removeEmailPaymentOptions();
 }
 
 // Email policies are paid ONLY from the broker's balance - never in cash and
-// never by card. The "In cash" and card-fee options do not apply to them, so
-// both are unticked, disabled and hidden, and a note says how it is paid.
-// Walk-ins keep both options.
-function lockEmailPaymentToBroker() {
+// never by card. The "In cash" and card-fee checkboxes do not apply to them,
+// so they are removed from the form entirely (not just hidden/disabled) and a
+// note in their place says how the policy is paid. Walk-ins keep both options.
+// Safe to call repeatedly: once removed, the checkboxes are no longer found.
+function removeEmailPaymentOptions() {
   if (!OpenedFromEmail) return;
-  for (const id of ["CashInput", "CardFeeInput"]) {
-    const input = document.getElementById(id);
-    if (!input) continue;
-    input.checked = false;
-    input.disabled = true;
-    const fieldEl = input.closest(".field");
-    if (fieldEl) fieldEl.classList.add("hidden");
-  }
 
   const cashInput = document.getElementById("CashInput");
   const cashField = cashInput ? cashInput.closest(".field") : null;
@@ -194,6 +187,17 @@ function lockEmailPaymentToBroker() {
     note.setAttribute("data-i18n", "add.paidFromBroker");
     note.textContent = t("add.paidFromBroker");
     cashField.parentNode.insertBefore(note, cashField);
+  }
+
+  for (const id of ["CashInput", "CardFeeInput"]) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    // Untick first: the fee helpers keep a reference to these inputs, and an
+    // unticked detached checkbox never adds a fee to the price.
+    input.checked = false;
+    const fieldEl = input.closest(".field");
+    if (fieldEl) fieldEl.remove();
+    else input.remove();
   }
 }
 
@@ -852,7 +856,7 @@ function clearForm() {
   if (CardFeeInput) CardFeeInput.checked = false;
   basePrice = 0;
   syncCardFeeState();
-  lockEmailPaymentToBroker();
+  removeEmailPaymentOptions();
   setMessage("", false);
   // The email (if any) may have just been completed; reload the matching
   // pricing and recalculate the default price.
@@ -874,12 +878,17 @@ if (UnclaimButton) UnclaimButton.addEventListener("click", goBack);
 
 ClearButton.addEventListener("click", clearForm);
 
+// Set once a successful save starts navigating back to the dashboard.
+let redirecting = false;
+
 InsuranceForm.addEventListener("submit", async function (e) {
   e.preventDefault();
 
   const FormObject = {};
   for (const el of FormInputArray) {
-    if (!el.id) continue;
+    // Skip inputs removed from the form (the cash / card-fee checkboxes on
+    // email policies) — FormInputArray was captured before they were removed.
+    if (!el.id || !el.isConnected) continue;
     if (el.type === "checkbox") FormObject[el.id] = el.checked;
     else FormObject[el.id] = el.value;
   }
@@ -964,6 +973,11 @@ InsuranceForm.addEventListener("submit", async function (e) {
       !PendingEmail ||
       (DisableReturnEmailInput && DisableReturnEmailInput.checked) ||
       false,
+    // The worker's UTC offset in minutes (east positive, e.g. 180 for UTC+3),
+    // so the server stamps CreationDate in local time instead of the database
+    // server's (UTC) time. getTimezoneOffset() is west-positive, hence the
+    // minus sign. Taken at submit time so daylight saving is always current.
+    TzOffset: -new Date().getTimezoneOffset(),
     Attachments: droppedFiles.map((f) => ({
       filename: f.filename,
       mimeType: f.mimeType,
@@ -990,24 +1004,44 @@ InsuranceForm.addEventListener("submit", async function (e) {
       toast(t("add.saved"), "success");
     }
 
-    // The form is complete: mark the email handled and remove it everywhere.
-    completeEmail();
-    clearPendingEmail();
-
-    clearForm();
-    // clearForm() resets the message, so set it afterwards to keep it visible.
-    if (replyError) {
-      setMessage(t("add.replyFailed").replace("{e}", replyError), true);
-    } else {
-      setMessage(t("add.saved"), false);
+    // The form is complete (email policy or walk-in): return the worker to the
+    // dashboard with the unread email cards. The toast is handed over through
+    // localStorage because it would otherwise be lost on navigation; WorkPage
+    // shows it once loaded.
+    if (OpenedFromEmail) {
+      // Mark the email handled, removing its card everywhere.
+      await waitForSocketAuth();
+      completeEmail();
+      // Give the socket a moment to flush the "complete_email" frame before
+      // the page is unloaded (same approach as goBack()).
+      await new Promise((r) => setTimeout(r, 120));
     }
+    clearPendingEmail();
+    try {
+      localStorage.setItem(
+        "flashToast",
+        JSON.stringify(
+          replyError
+            ? {
+                text: t("add.replyFailed").replace("{e}", replyError),
+                type: "error",
+              }
+            : { text: t("add.saved"), type: "success" }
+        )
+      );
+    } catch (err) {
+      console.error("Failed to store flash toast:", err);
+    }
+    // Keep Save disabled while the page unloads so it can't be submitted twice.
+    redirecting = true;
+    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
   } catch (error) {
     console.error("Error saving insurance:", error);
     const message = error.message || t("serverError");
     setMessage(message, true);
     toast(message, "error");
   } finally {
-    SubmitFormButton.disabled = false;
+    if (!redirecting) SubmitFormButton.disabled = false;
   }
 });
 

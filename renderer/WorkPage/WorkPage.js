@@ -689,14 +689,19 @@ async function adminDashboard() {
   const insurances = insuranceData.insurances || [];
   const branches = branchesData.branches || {};
 
-  // Get today's date in YYYY-MM-DD format
-  const today = new Date().toISOString().slice(0, 10);
+  // Today's date as a LOCAL "YYYY-MM-DD". toISOString() would give the UTC day,
+  // which differs from the local day around midnight.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${reconPad(now.getMonth() + 1)}-${reconPad(
+    now.getDate()
+  )}`;
 
-  // Count insurances by branch for today
+  // Count insurances by branch for today. CreationDate holds the local wall
+  // clock time, so its first 10 characters are the local creation day.
   const branchCounts = {};
   for (const insurance of insurances) {
     const creationDate = insurance.CreationDate
-      ? insurance.CreationDate.slice(0, 10)
+      ? String(insurance.CreationDate).slice(0, 10)
       : null;
     if (creationDate === today) {
       const branch = insurance.Branch;
@@ -2617,8 +2622,23 @@ function syncLangButton() {
   LangButton.textContent = getLang() === "bg" ? "EN" : "BG";
 }
 
+// Show a one-time toast handed over by the previous page (e.g. AddInsurance
+// after saving an email policy and redirecting back to the dashboard).
+function showFlashToast() {
+  let flash = null;
+  try {
+    const raw = localStorage.getItem("flashToast");
+    localStorage.removeItem("flashToast");
+    if (raw) flash = JSON.parse(raw);
+  } catch {
+    flash = null;
+  }
+  if (flash && flash.text) toast(flash.text, flash.type || "info");
+}
+
 async function init() {
   renderHeader();
+  showFlashToast();
   setupEmailSocket();
   fetchUnreadEmails();
   initializeBrokerPricing();

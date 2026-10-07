@@ -1,1 +1,4 @@
 Set token expiration to 24h for Lesovo. 
+Make confirmation / error modals more noticable and they should last 3 extra seconds 
+Guard email send with try catch block. 
+Do not allow email card policies to be sent without attached files. If so, display error

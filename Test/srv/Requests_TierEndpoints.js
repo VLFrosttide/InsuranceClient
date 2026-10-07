@@ -207,6 +207,49 @@ function computeAnnulFee(insurance, now, payer) {
   };
 }
 
+// Real-world UTC offsets range from UTC-12:00 to UTC+14:00.
+const MIN_TZ_OFFSET_MINUTES = -12 * 60;
+const MAX_TZ_OFFSET_MINUTES = 14 * 60;
+
+/**
+ * The current wall-clock time of the CLIENT as a MySQL DATETIME string
+ * ("YYYY-MM-DD HH:MM:SS").
+ *
+ * MySQL's NOW() uses the database server's time zone (UTC on the hosting), so
+ * policies created in the evening/at night were stamped with the wrong time -
+ * and sometimes the wrong day. The client sends only its UTC offset in minutes
+ * (east of UTC positive, e.g. +180 for UTC+3); the instant itself always comes
+ * from the server clock, so a client can never back- or forward-date a policy
+ * beyond the time-zone range. A missing/invalid offset falls back to UTC.
+ *
+ * @param {unknown} offsetMinutes  Client UTC offset in minutes.
+ * @param {Date} [now]  Current instant (injectable for tests).
+ * @returns {string}
+ */
+function clientLocalDateTime(offsetMinutes, now = new Date()) {
+  let offset = Number(offsetMinutes);
+  if (
+    !Number.isFinite(offset) ||
+    offset < MIN_TZ_OFFSET_MINUTES ||
+    offset > MAX_TZ_OFFSET_MINUTES
+  ) {
+    offset = 0;
+  }
+  // Shift the instant by the offset and read the UTC fields: they are then the
+  // client's local wall-clock fields, independent of the server's time zone.
+  const local = new Date(now.getTime() + Math.round(offset) * 60000);
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}-${p(
+      local.getUTCDate()
+    )} ` +
+    `${p(local.getUTCHours())}:${p(local.getUTCMinutes())}:${p(
+      local.getUTCSeconds()
+    )}`
+  );
+}
+module.exports.clientLocalDateTime = clientLocalDateTime;
+
 /**
  * Coerce a checkbox-like value (boolean, "true", "1", 1, "yes") to a boolean.
  */
@@ -646,15 +689,23 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
 
       const priceDecimal = toDecimal(price);
 
+      // Creation time in the worker's local time (see clientLocalDateTime) -
+      // NOT the database server's NOW(), which runs in UTC on the hosting.
+      const creationDate = clientLocalDateTime(
+        b.TzOffset ?? b.tzOffset ?? null
+      );
+
       let replyError = null;
       await DBConnection.withTransaction(async (conn) => {
 
+        // CreationDate is bound last so the positions of the other values stay
+        // unchanged for existing callers/tests.
         await conn.query(
           `INSERT INTO insurance
-              (Author, CreationDate, PolicyNumber, BlancNumber, CarNumber, Price,
+              (Author, PolicyNumber, BlancNumber, CarNumber, Price,
                CurrencyType, Duration, Broker, Branch, Otomobil, PaymentType,
-               StartDate, BrokerId, NonTurk, CardFee)
-           VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               StartDate, BrokerId, NonTurk, CardFee, CreationDate)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             req.user.username,
             policyNumber,
@@ -671,6 +722,7 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
             brokerId,
             nonTurk ? 1 : 0,
             cardFee ? 1 : 0,
+            creationDate,
           ]
         );
 
