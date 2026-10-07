@@ -286,23 +286,50 @@ function requestEmailAttachments() {
   }
 }
 
+// Set once the worker completes (saves) or cancels the email. From then on a
+// reconnect must not claim the email again.
+let leavingEmail = false;
+
 function setupEmailSocket() {
   if (!PendingEmail || !PendingEmail.messageId) return;
 
   emailSocket = new UnreadEmailSocket({
     auth_ok: () => {
+      // The email is being completed or released while this page unloads (or
+      // was already completed): do not claim it again.
+      if (leavingEmail || !PendingEmail || !PendingEmail.messageId) return;
       // Claim the email on this page's own connection. The server broadcasts
-      // "email_claimed" to every other worker, removing their card.
+      // "email_claimed" to every other worker, removing their card, and marks
+      // the Gmail message read. auth_ok also fires after every reconnect: when
+      // the connection dropped, the server returned the email to the pool
+      // (marked unread), so claiming it again here takes it back and marks it
+      // read once more. `restore` lets the server reload the email from Gmail
+      // if it no longer holds it (e.g. it restarted while we were away).
       try {
         emailSocket.send({
           type: "claim_email",
           messageId: PendingEmail.messageId,
+          restore: true,
         });
       } catch (err) {
         reportError("Failed to claim email", err, "emailSendFailed");
       }
       // Attachment bytes are not included on the card; fetch each image lazily.
       requestEmailAttachments();
+    },
+    claim_email: (msg) => {
+      if (leavingEmail) return;
+      if (!PendingEmail || msg.messageId !== PendingEmail.messageId) return;
+      if (msg.ok) return;
+      // Another worker took the email (or it was completed/dismissed) while
+      // this page was disconnected. Keep the form so nothing typed is lost,
+      // but warn the worker that it is no longer reserved for them.
+      const message = t("add.emailLost");
+      console.error(
+        `Email "${msg.messageId}" could not be claimed again: ${msg.error || "taken"}`
+      );
+      setMessage(message, true);
+      toast(message, "error");
     },
     get_attachment: (msg) => {
       const entry = emailAttachmentImages.get(msg.id);
@@ -330,6 +357,7 @@ function setupEmailSocket() {
 }
 
 function releaseEmail() {
+  leavingEmail = true;
   if (emailSocket && PendingEmail && PendingEmail.messageId) {
     try {
       emailSocket.send({
@@ -352,6 +380,7 @@ async function waitForSocketAuth(timeoutMs = 800) {
 }
 
 function completeEmail() {
+  leavingEmail = true;
   if (emailSocket && PendingEmail && PendingEmail.messageId) {
     try {
       emailSocket.send({

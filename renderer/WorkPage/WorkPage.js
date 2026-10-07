@@ -190,6 +190,8 @@ function setupEmailSocket() {
     email_claimed: (msg) => removeEmailCard(msg.messageId),
     email_completed: (msg) => removeEmailCard(msg.messageId),
     email_irrelevant: (msg) => removeEmailCard(msg.messageId),
+    // The original Gmail message was read outside the app: drop its card.
+    email_read: (msg) => removeEmailCard(msg.messageId),
     email_released: (msg) => {
       const email = msg.data;
       if (email && email.messageId) {

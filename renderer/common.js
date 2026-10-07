@@ -26,6 +26,8 @@ const I18N = {
     accessDenied: "Access Denied",
     sessionExpired: "Session expired",
     serverError: "Server Error",
+    blockedBeforeServer:
+      "The request was blocked before reaching the server (hosting firewall, antivirus or network proxy)",
     logout: "Logout",
 
     "nav.dashboard": "Dashboard",
@@ -251,6 +253,8 @@ const I18N = {
     "add.attachmentsRequired":
       "Attach at least one file before saving an email policy. The return email cannot be sent without attachments.",
     "add.replyFailed": "Insurance saved, but the return email failed: {e}",
+    "add.emailLost":
+      "This email is no longer reserved for you: it was taken by another worker or handled while you were disconnected.",
 
     "email.noSubject": "(no subject)",
     "email.from": "From:",
@@ -303,6 +307,8 @@ const I18N = {
     accessDenied: "Отказан достъп",
     sessionExpired: "Сесията изтече",
     serverError: "Сървърна грешка",
+    blockedBeforeServer:
+      "Заявката е блокирана преди да достигне сървъра (защитна стена на хостинга, антивирус или мрежов прокси)",
     logout: "Изход",
 
     "nav.dashboard": "Табло",
@@ -527,6 +533,8 @@ const I18N = {
       "Прикачете поне един файл, преди да запишете имейл полица. Обратният имейл не може да бъде изпратен без прикачени файлове.",
     "add.replyFailed":
       "Застраховката е запазена, но обратният имейл не беше изпратен: {e}",
+    "add.emailLost":
+      "Този имейл вече не е запазен за вас: бил е взет от друг служител или обработен, докато връзката беше прекъсната.",
 
     "email.noSubject": "(без тема)",
     "email.from": "От:",
@@ -739,11 +747,24 @@ async function api(path, options = {}) {
   );
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
-  let data = {};
+  // Read the body as text first so a non-JSON reply (e.g. an HTML error page
+  // from the hosting CDN/firewall or a proxy) can still be diagnosed. Every
+  // error our own server sends is JSON with an `error` field.
+  let raw = "";
   try {
-    data = await res.json();
+    raw = await res.text();
   } catch {
-    data = {};
+    raw = "";
+  }
+  let data = {};
+  let isJson = false;
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+      isJson = true;
+    } catch {
+      data = {};
+    }
   }
 
   if (res.status === 401) {
@@ -751,7 +772,27 @@ async function api(path, options = {}) {
     throw new Error(data.error || t("sessionExpired"));
   }
   if (!res.ok) {
-    const error = new Error(data.error || `Request failed (${res.status})`);
+    let message = data.error;
+    if (!message) {
+      // Not produced by the InsuranceServer API: the request was rejected
+      // before it reached the application (hosting CDN / web application
+      // firewall, antivirus or network proxy).
+      const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw);
+      const title = titleMatch ? titleMatch[1].replace(/\s+/g, " ").trim() : "";
+      message = isJson
+        ? `Request failed (${res.status})`
+        : `${t("blockedBeforeServer")} (HTTP ${res.status}${
+            title ? ` - ${title}` : ""
+          })`;
+      console.error(
+        `API ${options.method || "GET"} ${path} was rejected outside the ` +
+          `application: HTTP ${res.status}, server=${
+            res.headers.get("server") || "?"
+          }, request-id=${res.headers.get("x-hcdn-request-id") || "?"}, ` +
+          `body: ${raw.slice(0, 500)}`
+      );
+    }
+    const error = new Error(message);
     error.status = res.status;
     throw error;
   }
