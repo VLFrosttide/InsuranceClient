@@ -16,13 +16,9 @@ const DisplayMsg = document.getElementById("DisplayMsg");
 const EmailSide = document.getElementById("EmailSide");
 const EmailSideTitle = document.getElementById("EmailSideTitle");
 const EmailSideBody = document.getElementById("EmailSideBody");
-const DisableReturnEmailInput = document.getElementById(
-  "DisableReturnEmailInput"
-);
 const ReplySection = document.getElementById("ReplySection");
 const ReplyInput = document.getElementById("ReplyInput");
 const ReplyButton = document.getElementById("ReplyButton");
-const UnclaimButton = document.getElementById("UnclaimButton");
 
 // File drop area
 const DropArea = document.getElementById("DropArea");
@@ -159,14 +155,13 @@ function clearPendingEmail() {
 
 // Walk-in insurances are created directly from the "+ Нова застраховка" button
 // and have no associated broker email. There is no return email to send and no
-// files to attach, so the file drop area and the "disable return email" test
-// checkbox are hidden for them.
+// files to attach, so the file drop area is hidden for them. The native file
+// input always stays hidden: it is only opened programmatically by clicking
+// the drop area, so the drop area is the single file selector on the page.
 function configureWalkInMode() {
   const isWalkIn = !PendingEmail;
   if (DropArea) DropArea.classList.toggle("hidden", isWalkIn);
-  if (FileInput) FileInput.hidden = isWalkIn;
-  const testField = document.querySelector(".test-checkbox-field");
-  if (testField) testField.classList.toggle("hidden", isWalkIn);
+  if (FileInput) FileInput.hidden = true;
   removeEmailPaymentOptions();
 }
 
@@ -370,15 +365,9 @@ function completeEmail() {
 }
 
 // Whether saving this form sends a return email to the broker: only for
-// policies opened from an email card, and not when the worker ticked the test
-// checkbox that disables the reply.
+// policies opened from an email card.
 function returnEmailEnabled() {
-  return (
-    OpenedFromEmail &&
-    !!PendingEmail &&
-    !!PendingEmail.messageId &&
-    !(DisableReturnEmailInput && DisableReturnEmailInput.checked)
-  );
+  return OpenedFromEmail && !!PendingEmail && !!PendingEmail.messageId;
 }
 
 // ---------------------------------------------------------------------------
@@ -851,7 +840,6 @@ function clearForm() {
     StartDateInput.value = OpenedFromEmail ? "" : todayLocalDate();
   droppedFiles = [];
   renderDroppedFiles();
-  if (DisableReturnEmailInput) DisableReturnEmailInput.checked = false;
   if (NonTurkInput) NonTurkInput.checked = false;
   if (CardFeeInput) CardFeeInput.checked = false;
   basePrice = 0;
@@ -874,9 +862,12 @@ async function goBack() {
 }
 
 BackButton.addEventListener("click", goBack);
-if (UnclaimButton) UnclaimButton.addEventListener("click", goBack);
 
-ClearButton.addEventListener("click", clearForm);
+// Clearing wipes every entered value and attached file, so ask first.
+ClearButton.addEventListener("click", () => {
+  if (!confirm(t("add.clearConfirm"))) return;
+  clearForm();
+});
 
 // Set once a successful save starts navigating back to the dashboard.
 let redirecting = false;
@@ -964,15 +955,11 @@ InsuranceForm.addEventListener("submit", async function (e) {
     EmailFrom: PendingEmail ? PendingEmail.from || "" : "",
 
     // Return-email handling: the original Gmail message ID (when this form was
-    // opened from an unread email), the files dropped by the worker, and the
-    // test checkbox that disables sending the reply.
+    // opened from an unread email) and the files dropped by the worker.
     MessageId: PendingEmail ? PendingEmail.messageId || null : null,
     // A walk-in insurance has no broker email to reply to, so the return email
-    // must never be sent for it (broker emails keep the worker's test checkbox).
-    DisableReturnEmail:
-      !PendingEmail ||
-      (DisableReturnEmailInput && DisableReturnEmailInput.checked) ||
-      false,
+    // must never be sent for it. Email policies always send it.
+    DisableReturnEmail: !PendingEmail,
     // The worker's UTC offset in minutes (east positive, e.g. 180 for UTC+3),
     // so the server stamps CreationDate in local time instead of the database
     // server's (UTC) time. getTimezoneOffset() is west-positive, hence the

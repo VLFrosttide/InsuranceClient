@@ -47,7 +47,17 @@ if (!closing) {
   console.error("Could not find the end of openInsuranceEditor");
   process.exit(1);
 }
-const block = tail.slice(0, closing.index + closing[0].length);
+// The editor builds its duration / vehicle type dropdowns and wires the price
+// recalculation with the helpers declared right above it, so load those too.
+const HELPERS_MARKER = "const EDIT_DURATION_OPTIONS = ";
+const helpersStart = src.indexOf(HELPERS_MARKER);
+if (helpersStart < 0 || helpersStart > start) {
+  console.error("Could not locate the edit-price helpers above openInsuranceEditor");
+  process.exit(1);
+}
+const block =
+  src.slice(helpersStart, start) +
+  tail.slice(0, closing.index + closing[0].length);
 
 // --- fakes -------------------------------------------------------------------
 let apiCalls = [];

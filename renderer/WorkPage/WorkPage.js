@@ -472,6 +472,173 @@ function renderTable(items, columns, actions, rowClass) {
 }
 
 // ---------------------------------------------------------------------------
+// Edit-insurance price recalculation
+// ---------------------------------------------------------------------------
+// Changing the duration or the vehicle type of a policy in the edit modal
+// recalculates its price from the same tariffs the add-insurance form uses:
+// the broker's tariffs for email (broker-linked) policies - falling back to the
+// branch walk-in tariffs when the broker has none, like /tariffs/policy-pricing
+// does - and the branch walk-in tariffs for walk-ins. The fees stored with the
+// policy are added on top, exactly like the add form: +5 for a non-Turk
+// client and +2 for the card fee (only while the payment is by card).
+const EDIT_DURATION_OPTIONS = [15, 30, 90];
+const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
+const EDIT_NON_TURK_FEE = 5;
+const EDIT_CARD_FEE = 2;
+
+// Stored Otomobil value -> tariff key ("Auto" / "Motor" / "Bus" / "Trailer").
+// Accepts the values the add form stores as well as their Bulgarian labels.
+function pricingVehicleKey(otomobil) {
+  const v = String(otomobil ?? "").trim().toLowerCase();
+  if (!v) return null;
+  if (
+    v === "automobile" ||
+    v === "otomobil" ||
+    v === "auto" ||
+    v === "автомобил" ||
+    v === "лек автомобил"
+  )
+    return "Auto";
+  if (v === "motor" || v === "мотор") return "Motor";
+  if (v === "bus" || v === "бус") return "Bus";
+  if (v === "trailer" || v === "ремарке") return "Trailer";
+  return null;
+}
+
+// MySQL flags arrive as 0/1 (number or string) or booleans.
+function editFlag(value) {
+  return value === true || value === 1 || value === "1";
+}
+
+// Duration dropdown options (values in days). A stored duration that is not
+// one of the standard ones is kept as an extra option, so opening the editor
+// never changes it silently.
+function editDurationOptions(current) {
+  const options = EDIT_DURATION_OPTIONS.map((d) => ({
+    label: t(`duration.${d}`, `${d} ${t("days")}`),
+    value: d,
+  }));
+  const hasCurrent = current !== undefined && current !== null && current !== "";
+  if (!hasCurrent) {
+    options.unshift({ label: "", value: "" });
+  } else if (!EDIT_DURATION_OPTIONS.some((d) => String(d) === String(current))) {
+    options.push({ label: `${current} ${t("days")}`, value: current });
+  }
+  return options;
+}
+
+// Vehicle type dropdown options. Like the duration, an unknown stored value
+// (e.g. a legacy free-text one) is kept as an extra option.
+function editVehicleOptions(current) {
+  const options = EDIT_VEHICLE_TYPES.map((v) => ({
+    label: t(`vehicle.${v}`, v),
+    value: v,
+  }));
+  const hasCurrent = current !== undefined && current !== null && current !== "";
+  if (!hasCurrent) {
+    options.unshift({ label: "", value: "" });
+  } else if (!EDIT_VEHICLE_TYPES.includes(String(current))) {
+    options.push({ label: String(current), value: current });
+  }
+  return options;
+}
+
+// Price for the given vehicle type + duration including the policy's fees, or
+// null when the tariffs have no price for that combination.
+function editedPolicyPrice(pricing, otomobil, duration, fees) {
+  const type = pricingVehicleKey(otomobil);
+  const days = Number(duration);
+  if (!type || !Number.isFinite(days) || days <= 0) return null;
+  if (!pricing || !pricing[type]) return null;
+  const raw = pricing[type][days];
+  if (raw === undefined || raw === null || raw === "") return null;
+  const base = Number(raw);
+  if (!Number.isFinite(base)) return null;
+  let total = base;
+  if (fees && fees.nonTurk) total += EDIT_NON_TURK_FEE;
+  if (fees && fees.cardFee) total += EDIT_CARD_FEE;
+  return Math.round(total * 100) / 100;
+}
+
+// Tariffs that apply to the edited policy. Responses are kept in `cache` for
+// as long as the modal is open, so each source is requested at most once.
+async function loadEditPricing(insurance, branch, cache) {
+  const brokerId = insurance.BrokerId;
+  if (brokerId !== null && brokerId !== undefined && brokerId !== "") {
+    const key = `broker:${brokerId}`;
+    if (!(key in cache)) {
+      const data = await api(`/tariffs/broker/${encodeURIComponent(brokerId)}`);
+      cache[key] = (data && data.pricing) || {};
+    }
+    if (Object.keys(cache[key]).length > 0) return cache[key];
+  }
+  if (!branch) return {};
+  const key = `branch:${branch}`;
+  if (!(key in cache)) {
+    const data = await api(`/tariffs/branch/${encodeURIComponent(branch)}`);
+    cache[key] = (data && data.pricing) || {};
+  }
+  return cache[key];
+}
+
+// Hooks the duration / vehicle type dropdowns of the edit form up to the price
+// field. Tariffs are only fetched once one of them actually changes.
+function wireEditPriceRecalc(form, insurance) {
+  if (!form || typeof form.querySelector !== "function") return;
+  const control = (key) => form.querySelector(`[data-key="${key}"]`);
+  const priceInput = control("Price");
+  const durationInput = control("Duration");
+  const vehicleInput = control("Otomobil");
+  if (!priceInput || !durationInput || !vehicleInput) return;
+  const branchInput = control("Branch");
+  const paymentInput = control("PaymentType");
+
+  const cache = {};
+  let latest = 0;
+
+  async function recalc() {
+    const request = ++latest;
+    const branch = String(
+      branchInput ? branchInput.value : insurance.Branch ?? ""
+    ).trim();
+    let pricing;
+    try {
+      pricing = await loadEditPricing(insurance, branch, cache);
+    } catch (err) {
+      console.warn("Failed to load pricing for the edited policy:", err);
+      if (request === latest) toast(t("edit.pricingLoadFailed"), "error");
+      return;
+    }
+    // A newer change started while this one was loading; let it win.
+    if (request !== latest) return;
+
+    const price = editedPolicyPrice(
+      pricing,
+      vehicleInput.value,
+      durationInput.value,
+      {
+        nonTurk: editFlag(insurance.NonTurk),
+        // Email policies have no payment field: they are broker-paid and the
+        // server clears their card fee.
+        cardFee:
+          editFlag(insurance.CardFee) &&
+          !!paymentInput &&
+          paymentInput.value === "Card",
+      }
+    );
+    if (price === null) {
+      // Keep the current price; the worker can still correct it by hand.
+      toast(t("edit.priceUnavailable"), "error");
+      return;
+    }
+    priceInput.value = price.toFixed(2);
+  }
+
+  durationInput.addEventListener("change", recalc);
+  vehicleInput.addEventListener("change", recalc);
+}
+
+// ---------------------------------------------------------------------------
 // Modal form for editing an insurance (admins + workers)
 // ---------------------------------------------------------------------------
 // `onDone` (optional) runs after a successful save so the calling view can
@@ -505,14 +672,23 @@ function openInsuranceEditor(insurance, onDone) {
       ],
       value: insurance.CurrencyType || "EUR",
     },
+    // Duration and vehicle type are dropdowns: changing either one
+    // recalculates the price from the tariffs (see wireEditPriceRecalc).
     {
       key: "Duration",
       label: t("add.duration"),
-      type: "number",
+      type: "select",
+      options: editDurationOptions(insurance.Duration),
       value: insurance.Duration,
     },
     { key: "Branch", label: t("add.branch"), value: insurance.Branch },
-    { key: "Otomobil", label: t("add.vehicleType"), value: insurance.Otomobil },
+    {
+      key: "Otomobil",
+      label: t("add.vehicleType"),
+      type: "select",
+      options: editVehicleOptions(insurance.Otomobil),
+      value: insurance.Otomobil,
+    },
     {
       key: "StartDate",
       label: t("add.startDate"),
@@ -552,6 +728,7 @@ function openInsuranceEditor(insurance, onDone) {
     },
     t("saveChanges")
   );
+  wireEditPriceRecalc(form, insurance);
 
   openModal(`${t("editInsurance")} ${insurance.BlancNumber}`, form);
 }

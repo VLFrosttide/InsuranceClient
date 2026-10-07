@@ -135,16 +135,8 @@
           </div>
           <ul id="DroppedFiles"></ul>
         </div>
+        <!-- Hidden helper opened by clicking the drop area; never shown itself. -->
         <input id="FileInput" type="file" multiple hidden />
-
-        <div class="test-checkbox-field">
-          <label>
-            <input id="DisableReturnEmailInput" type="checkbox" />
-            <span data-i18n="add.testDisableEmail"
-              >Тест (изключи обратния имейл)</span
-            >
-          </label>
-        </div>
 
         <div id="DisplayMsg"></div>
         <div class="row actions-row">
@@ -186,16 +178,6 @@
       <aside id="EmailSide" class="hidden">
         <h2 id="EmailSideTitle"></h2>
         <div id="EmailSideBody"></div>
-        <div class="email-side-actions">
-          <button
-            id="UnclaimButton"
-            class="secondary"
-            type="button"
-            data-i18n="email.unclaim"
-          >
-            Освободи имейла
-          </button>
-        </div>
       </aside>
     </div>
 

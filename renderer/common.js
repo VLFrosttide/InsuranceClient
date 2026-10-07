@@ -236,8 +236,8 @@ const I18N = {
       "Paid from the broker's balance (email policies cannot be paid in cash or by card).",
     "add.submit": "Save",
     "add.clear": "Clear",
+    "add.clearConfirm": "Clear the form? All entered data and attached files will be lost.",
     "add.saved": "Insurance saved",
-    "add.testDisableEmail": "Test (disable return email)",
     "add.dropArea": "Drop files here",
     "add.dropAreaHint": "or click to choose files",
     "add.attachedFiles": "Attached files",
@@ -267,7 +267,6 @@ const I18N = {
     "email.printCancelled": "Printing cancelled",
     "email.printFailed": "Printing failed",
     "email.close": "Close",
-    "email.unclaim": "Unclaim",
     "email.markIrrelevant": "Mark as irrelevant",
     "email.irrelevantConfirm":
       "Mark this email as irrelevant? It will be removed and will not appear again.",
@@ -280,6 +279,18 @@ const I18N = {
     duration: "Duration",
     days: "days",
     pricingUpdated: "Pricing updated",
+
+    "duration.15": "15 days",
+    "duration.30": "1 month",
+    "duration.90": "3 months",
+    "vehicle.Automobile": "Car",
+    "vehicle.Motor": "Motorcycle",
+    "vehicle.Bus": "Van",
+    "vehicle.Trailer": "Trailer",
+    "edit.priceUnavailable":
+      "No tariff for this vehicle type and duration - the price was not changed.",
+    "edit.pricingLoadFailed":
+      "Failed to load the tariffs - the price was not recalculated.",
   },
   bg: {
     brand: "Застрахователна конзола",
@@ -500,8 +511,8 @@ const I18N = {
       "Плаща се от баланса на брокера (имейл полиците не могат да се платят в брой или с карта).",
     "add.submit": "Запиши",
     "add.clear": "Изчисти",
+    "add.clearConfirm": "Да се изчисти ли формата? Всички въведени данни и прикачени файлове ще бъдат загубени.",
     "add.saved": "Застраховката е запазена",
-    "add.testDisableEmail": "Тест (изключи обратния имейл)",
     "add.dropArea": "Пуснете файлове тук",
     "add.dropAreaHint": "или щракнете, за да изберете файлове",
     "add.attachedFiles": "Прикачени файлове",
@@ -532,7 +543,6 @@ const I18N = {
     "email.printCancelled": "Принтирането е отказано",
     "email.printFailed": "Принтирането не успя",
     "email.close": "Затвори",
-    "email.unclaim": "Освободи имейла",
     "email.markIrrelevant": "Маркирай като нерелевантен",
     "email.irrelevantConfirm":
       "Да се маркира ли този имейл като нерелевантен? Той ще бъде премахнат и няма да се показва отново.",
@@ -545,6 +555,18 @@ const I18N = {
     duration: "Период",
     days: "дни",
     pricingUpdated: "Цените са обновени",
+
+    "duration.15": "15 дена",
+    "duration.30": "1 месец",
+    "duration.90": "3 месеца",
+    "vehicle.Automobile": "Автомобил",
+    "vehicle.Motor": "Мотор",
+    "vehicle.Bus": "Бус",
+    "vehicle.Trailer": "Ремарке",
+    "edit.priceUnavailable":
+      "Няма тарифа за този вид превозно средство и срок - цената не е променена.",
+    "edit.pricingLoadFailed":
+      "Неуспешно зареждане на тарифите - цената не е преизчислена.",
   },
 };
 
