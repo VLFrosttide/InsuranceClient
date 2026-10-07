@@ -118,6 +118,28 @@ try {
   PendingEmail = null;
 }
 
+// Whether this form was opened from an email card (true) or from the
+// "+ Add Insurance" button (walk-in, false). Captured once at load: the
+// PendingEmail object itself is cleared after a successful save, but the
+// page keeps the date rules of the mode it was opened in.
+const OpenedFromEmail = !!PendingEmail;
+
+// Today's date as YYYY-MM-DD in local time — the value format expected by
+// <input type="date">. Built from local components (not toISOString) so the
+// day never shifts around midnight.
+function todayLocalDate() {
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+}
+
+// Walk-in insurances start with today's date pre-filled. Email insurances
+// keep the date unselected on purpose: the worker must choose it, and the
+// submit is rejected with an error while it is still empty.
+if (!OpenedFromEmail && StartDateInput) {
+  StartDateInput.value = todayLocalDate();
+}
+
 let emailSocket = null;
 
 // The server sends email attachments as metadata only ({ id, filename,
@@ -145,6 +167,34 @@ function configureWalkInMode() {
   if (FileInput) FileInput.hidden = isWalkIn;
   const testField = document.querySelector(".test-checkbox-field");
   if (testField) testField.classList.toggle("hidden", isWalkIn);
+  lockEmailPaymentToBroker();
+}
+
+// Email policies are paid ONLY from the broker's balance - never in cash and
+// never by card. The "In cash" and card-fee options do not apply to them, so
+// both are unticked, disabled and hidden, and a note says how it is paid.
+// Walk-ins keep both options.
+function lockEmailPaymentToBroker() {
+  if (!OpenedFromEmail) return;
+  for (const id of ["CashInput", "CardFeeInput"]) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    input.checked = false;
+    input.disabled = true;
+    const fieldEl = input.closest(".field");
+    if (fieldEl) fieldEl.classList.add("hidden");
+  }
+
+  const cashInput = document.getElementById("CashInput");
+  const cashField = cashInput ? cashInput.closest(".field") : null;
+  if (cashField && !document.getElementById("BrokerPaymentNote")) {
+    const note = document.createElement("div");
+    note.id = "BrokerPaymentNote";
+    note.className = "field muted";
+    note.setAttribute("data-i18n", "add.paidFromBroker");
+    note.textContent = t("add.paidFromBroker");
+    cashField.parentNode.insertBefore(note, cashField);
+  }
 }
 
 function renderEmailSide() {
@@ -224,12 +274,16 @@ function requestEmailAttachments() {
       continue;
     const entry = emailAttachmentImages.get(att.id);
     if (!entry || entry.requested) continue;
-    entry.requested = true;
-    emailSocket.send({
-      type: "get_attachment",
-      messageId: PendingEmail.messageId,
-      id: att.id,
-    });
+    try {
+      emailSocket.send({
+        type: "get_attachment",
+        messageId: PendingEmail.messageId,
+        id: att.id,
+      });
+      entry.requested = true;
+    } catch (err) {
+      reportError("Failed to request email attachment", err, "emailSendFailed");
+    }
   }
 }
 
@@ -240,10 +294,14 @@ function setupEmailSocket() {
     auth_ok: () => {
       // Claim the email on this page's own connection. The server broadcasts
       // "email_claimed" to every other worker, removing their card.
-      emailSocket.send({
-        type: "claim_email",
-        messageId: PendingEmail.messageId,
-      });
+      try {
+        emailSocket.send({
+          type: "claim_email",
+          messageId: PendingEmail.messageId,
+        });
+      } catch (err) {
+        reportError("Failed to claim email", err, "emailSendFailed");
+      }
       // Attachment bytes are not included on the card; fetch each image lazily.
       requestEmailAttachments();
     },
@@ -274,10 +332,14 @@ function setupEmailSocket() {
 
 function releaseEmail() {
   if (emailSocket && PendingEmail && PendingEmail.messageId) {
-    emailSocket.send({
-      type: "release_email",
-      messageId: PendingEmail.messageId,
-    });
+    try {
+      emailSocket.send({
+        type: "release_email",
+        messageId: PendingEmail.messageId,
+      });
+    } catch (err) {
+      reportError("Failed to release email", err, "emailSendFailed");
+    }
   }
 }
 
@@ -292,11 +354,27 @@ async function waitForSocketAuth(timeoutMs = 800) {
 
 function completeEmail() {
   if (emailSocket && PendingEmail && PendingEmail.messageId) {
-    emailSocket.send({
-      type: "complete_email",
-      messageId: PendingEmail.messageId,
-    });
+    try {
+      emailSocket.send({
+        type: "complete_email",
+        messageId: PendingEmail.messageId,
+      });
+    } catch (err) {
+      reportError("Failed to complete email", err, "emailSendFailed");
+    }
   }
+}
+
+// Whether saving this form sends a return email to the broker: only for
+// policies opened from an email card, and not when the worker ticked the test
+// checkbox that disables the reply.
+function returnEmailEnabled() {
+  return (
+    OpenedFromEmail &&
+    !!PendingEmail &&
+    !!PendingEmail.messageId &&
+    !(DisableReturnEmailInput && DisableReturnEmailInput.checked)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +389,8 @@ function fileSizeLabel(bytes) {
 function renderDroppedFiles() {
   if (!DroppedFiles) return;
   DroppedFiles.replaceChildren();
+  // A file has been attached: clear the "attachments required" highlight.
+  if (DropArea && droppedFiles.length) DropArea.classList.remove("drop-error");
 
   for (let i = 0; i < droppedFiles.length; i++) {
     const f = droppedFiles[i];
@@ -761,7 +841,10 @@ function clearForm() {
     el.value = "";
   }
   DurationInput.value = DurationOptions[1];
-  if (StartDateInput) StartDateInput.value = "";
+  // Walk-ins go back to today's pre-filled date; email forms stay empty
+  // (there the date must always be chosen deliberately).
+  if (StartDateInput)
+    StartDateInput.value = OpenedFromEmail ? "" : todayLocalDate();
   droppedFiles = [];
   renderDroppedFiles();
   if (DisableReturnEmailInput) DisableReturnEmailInput.checked = false;
@@ -769,6 +852,7 @@ function clearForm() {
   if (CardFeeInput) CardFeeInput.checked = false;
   basePrice = 0;
   syncCardFeeState();
+  lockEmailPaymentToBroker();
   setMessage("", false);
   // The email (if any) may have just been completed; reload the matching
   // pricing and recalculate the default price.
@@ -810,6 +894,36 @@ InsuranceForm.addEventListener("submit", async function (e) {
     return;
   }
 
+  // Email insurances must have an explicit starting date (walk-ins come
+  // pre-filled with today). Show the error and open the calendar so the
+  // worker can pick the date right away.
+  const startDate = FormObject.StartDateInput
+    ? String(FormObject.StartDateInput).trim()
+    : "";
+  if (OpenedFromEmail && !startDate) {
+    setMessage(t("add.startDateRequired"), true);
+    if (StartDateInput) {
+      StartDateInput.focus();
+      openDatePicker(StartDateInput);
+    }
+    return;
+  }
+
+  // Email card policies are answered with a return email carrying the policy
+  // files, so they must not be saved without at least one attached file.
+  if (returnEmailEnabled() && droppedFiles.length === 0) {
+    const message = t("add.attachmentsRequired");
+    console.error("Email policy submit blocked: no attached files");
+    setMessage(message, true);
+    toast(message, "error");
+    if (DropArea) {
+      DropArea.classList.add("drop-error");
+      DropArea.scrollIntoView({ behavior: "smooth", block: "center" });
+      DropArea.focus();
+    }
+    return;
+  }
+
   const payload = {
     PolicyNumber: FormObject.PolicyNumberInput,
     BlancNumber: FormObject.BlancNumberInput,
@@ -822,10 +936,19 @@ InsuranceForm.addEventListener("submit", async function (e) {
     StartDate: FormObject.StartDateInput || "",
     Price: FormObject.TotalPriceInput,
     CurrencyType: FormObject.CurrencyInput,
-    Cash: FormObject.CashInput === true,
+    // Email policies are paid only from the broker's balance; walk-ins are
+    // paid in cash or by card.
+    PaymentType: OpenedFromEmail
+      ? "Broker"
+      : FormObject.CashInput === true
+      ? "Cash"
+      : "Card",
     // Informational flags; their fees (+5 / +2) are already included in Price.
     NonTurk: FormObject.NonTurkInput === true,
-    CardFee: FormObject.CardFeeInput === true && FormObject.CashInput !== true,
+    CardFee:
+      !OpenedFromEmail &&
+      FormObject.CardFeeInput === true &&
+      FormObject.CashInput !== true,
 
     // Broker is not typed on this form. When the form was opened from an unread
     // email, the sender's address is sent so the server can resolve the broker.
@@ -850,43 +973,61 @@ InsuranceForm.addEventListener("submit", async function (e) {
 
   SubmitFormButton.disabled = true;
   try {
-    await api("/worker/insurances", {
+    const result = await api("/worker/insurances", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    toast(t("add.saved"), "success");
-    setMessage(t("add.saved"), false);
+
+    // The insurance is saved even when the return email fails (the server
+    // sends it after committing), so report that failure separately.
+    const replyError = result && result.replyError;
+    if (replyError) {
+      const message = t("add.replyFailed").replace("{e}", replyError);
+      console.error("Return email failed after saving insurance:", replyError);
+      toast(message, "error");
+    } else {
+      toast(t("add.saved"), "success");
+    }
 
     // The form is complete: mark the email handled and remove it everywhere.
     completeEmail();
     clearPendingEmail();
 
     clearForm();
+    // clearForm() resets the message, so set it afterwards to keep it visible.
+    if (replyError) {
+      setMessage(t("add.replyFailed").replace("{e}", replyError), true);
+    } else {
+      setMessage(t("add.saved"), false);
+    }
   } catch (error) {
     console.error("Error saving insurance:", error);
-    setMessage(error.message || t("serverError"), true);
+    const message = error.message || t("serverError");
+    setMessage(message, true);
+    toast(message, "error");
   } finally {
     SubmitFormButton.disabled = false;
   }
 });
 
 async function sendReply() {
-  if (!PendingEmail || !PendingEmail.messageId) {
-    toast(t("emailConnUnavailable"), "error");
-    return;
-  }
-
-  const text = ReplyInput ? ReplyInput.value.trim() : "";
-  if (!text) {
-    toast(t("add.replyEmpty"), "error");
-    return;
-  }
-
-  if (!confirm(t("add.replyConfirm"))) return;
-
-  if (ReplyButton) ReplyButton.disabled = true;
   try {
+    if (!PendingEmail || !PendingEmail.messageId) {
+      console.error("Cannot send reply: no pending email");
+      toast(t("emailConnUnavailable"), "error");
+      return;
+    }
+
+    const text = ReplyInput ? ReplyInput.value.trim() : "";
+    if (!text) {
+      toast(t("add.replyEmpty"), "error");
+      return;
+    }
+
+    if (!confirm(t("add.replyConfirm"))) return;
+
+    if (ReplyButton) ReplyButton.disabled = true;
     await api("/worker/insurances/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -898,8 +1039,7 @@ async function sendReply() {
     toast(t("add.replySent"), "success");
     if (ReplyInput) ReplyInput.value = "";
   } catch (error) {
-    console.error("Error sending reply:", error);
-    toast(error.message || t("serverError"), "error");
+    reportError("Error sending reply", error, "emailSendFailed");
   } finally {
     if (ReplyButton) ReplyButton.disabled = false;
   }

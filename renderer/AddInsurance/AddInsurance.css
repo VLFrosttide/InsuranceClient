@@ -124,6 +124,12 @@ button.reply-button:disabled {
 #DropArea.hidden {
   display: none;
 }
+/* Shown when an email policy is submitted without any attached file. */
+#DropArea.drop-error {
+  border-color: var(--danger);
+  background: rgba(229, 83, 75, 0.1);
+  color: var(--text);
+}
 #DroppedFiles {
   list-style: none;
   margin: 12px 0 0;

@@ -11,12 +11,17 @@
 
 const express = require("express");
 const { requireAuth, requireRole } = require("./Auth.js");
-const { recordCashMovement, toDecimal } = require("./CurrentCash.js");
+const {
+  recordCashMovement,
+  recordChannelMovement,
+  toDecimal,
+} = require("./CurrentCash.js");
 const { recordCardPayment, reduceCardBalance } = require("./CardPayments.js");
 const {
   resolveBrokerByEmail,
   decreaseBrokerForInsurance,
   restoreBrokerForAnnulment,
+  adjustBrokerForPriceChange,
 } = require("./Brokers.js");
 const { sendReply } = require("../Mail/SendReply.js");
 
@@ -24,11 +29,18 @@ const { sendReply } = require("../Mail/SendReply.js");
  * Resolve an insurance payment type from the received value.
  *
  * A boolean `true` (or the legacy strings "true"/"1"/"yes") maps to "Cash";
- * a boolean `false` maps to "Card". The literal strings "Cash"/"Card" are
- * also accepted (case-insensitive) so the PaymentType field can be round-tripped.
+ * a boolean `false` maps to "Card". The literal strings "Cash"/"Card"/"Broker"
+ * are also accepted (case-insensitive) so the PaymentType field can be
+ * round-tripped.
+ *
+ * Payment types:
+ *   Cash   - walk-in, paid into the cash drawer (current cash).
+ *   Card   - walk-in, paid by card (card balance).
+ *   Broker - email policy, paid ONLY from the broker's balance. Email policies
+ *            can never be Cash or Card, and walk-ins can never be Broker.
  *
  * @param {unknown} value
- * @returns {"Cash"|"Card"}
+ * @returns {"Cash"|"Card"|"Broker"}
  */
 function resolvePaymentType(value) {
   if (typeof value === "boolean") return value ? "Cash" : "Card";
@@ -37,7 +49,162 @@ function resolvePaymentType(value) {
   const lower = s.toLowerCase();
   if (lower === "cash") return "Cash";
   if (lower === "card") return "Card";
+  if (lower === "broker") return "Broker";
   return lower === "true" || lower === "1" || lower === "yes" ? "Cash" : "Card";
+}
+
+/**
+ * Whether a stored policy is linked to a broker (i.e. it was created from a
+ * broker's email).
+ */
+function isBrokerLinked(insurance) {
+  return (
+    insurance.BrokerId !== null &&
+    insurance.BrokerId !== undefined &&
+    insurance.BrokerId !== ""
+  );
+}
+
+/**
+ * The channel a stored policy's money goes through.
+ *
+ * Email (broker-linked) policies are ALWAYS paid from the broker's balance -
+ * never cash, never card - whatever PaymentType an older row was stored with
+ * (before the "Broker" type existed they were saved as "Cash" or "Card"). So
+ * any broker-linked row is treated as "Broker": reversing it (edit/annul)
+ * never touches current cash or the card balance.
+ *
+ * @returns {"Cash"|"Card"|"Broker"}
+ */
+function effectivePayment(insurance) {
+  if (isBrokerLinked(insurance)) return "Broker";
+  return resolvePaymentType(insurance.PaymentType);
+}
+
+/**
+ * Move a policy's money through the ledger that matches its payment type.
+ * Runs inside the caller's transaction.
+ *
+ *   Broker -> Broker part of Total cash only (never current cash; the broker's
+ *             own balance is handled separately by Brokers.js).
+ *   Cash   -> current cash (and, through it, Total cash).
+ *   Card   -> card balance + Card part of Total cash.
+ */
+async function movePolicyMoney(conn, payment, type, m) {
+  const { branch, username, amount, reason, currency } = m;
+  if (payment === "Broker") {
+    return recordChannelMovement(
+      conn,
+      branch,
+      username,
+      type,
+      amount,
+      reason,
+      currency,
+      "Broker"
+    );
+  }
+  if (payment === "Cash") {
+    return recordCashMovement(
+      conn,
+      branch,
+      username,
+      type,
+      amount,
+      reason,
+      currency
+    );
+  }
+  if (type === "increase") {
+    await recordCardPayment(conn, username, amount, reason);
+  } else {
+    await reduceCardBalance(conn, username, amount, reason);
+  }
+  return recordChannelMovement(
+    conn,
+    branch,
+    username,
+    type,
+    amount,
+    reason,
+    currency,
+    "Card"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Annulment fee.
+//
+// The caller chooses who is at fault (ANNUL_PAYERS):
+//
+//   "none"   - no fault: no fee at all, the full price is refunded.
+//   "broker" / "worker" - that party pays the fee. The amount does not depend
+//              on who pays - only on whether the policy is already in effect
+//              at the moment it is annulled:
+//
+//                not in effect yet (now is before the start date) -> 1
+//                already in effect (start date reached)           -> 9
+//
+// The fee is in the policy's own currency and is deducted from the refund.
+// ---------------------------------------------------------------------------
+const ANNUL_PAYERS = ["broker", "worker", "none"];
+const ANNUL_FEE_NOT_IN_EFFECT = 1;
+const ANNUL_FEE_IN_EFFECT = 9;
+
+/**
+ * Parse a policy start date into the LOCAL midnight it begins at.
+ *
+ * Accepts a Date (mysql2 returns DATE columns as local-midnight Dates) or a
+ * "YYYY-MM-DD" / "YYYY-MM-DD HH:MM:SS" / ISO string. Only the calendar day is
+ * used: a policy is in effect for the whole of its starting day.
+ *
+ * @param {Date|string|null|undefined} value
+ * @returns {Date|null}
+ */
+function parseStartDate(value) {
+  if (value === undefined || value === null || value === "") return null;
+  // Realm-safe Date check (instanceof fails for Dates from another context).
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    if (Number.isNaN(value.getTime())) return null;
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  const m = String(value)
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/**
+ * Whether a policy is already in effect at `now`, i.e. `now` has reached its
+ * start date. A policy without a usable start date is treated as in effect
+ * (the higher fee), since there is nothing to prove it has not started.
+ *
+ * @param {{StartDate?: any}} insurance
+ * @param {Date} now
+ * @returns {boolean}
+ */
+function isPolicyInEffect(insurance, now) {
+  const start = parseStartDate(insurance && insurance.StartDate);
+  if (!start) return true;
+  return now.getTime() >= start.getTime();
+}
+
+/**
+ * The annulment fee for a policy at `now`. "none" (no fault) is always free.
+ *
+ * @param {{StartDate?: any}} insurance
+ * @param {Date} now
+ * @param {"broker"|"worker"|"none"} payer
+ * @returns {{fee: number, inEffect: boolean}}
+ */
+function computeAnnulFee(insurance, now, payer) {
+  const inEffect = isPolicyInEffect(insurance, now);
+  if (payer === "none") return { fee: 0, inEffect };
+  return {
+    fee: inEffect ? ANNUL_FEE_IN_EFFECT : ANNUL_FEE_NOT_IN_EFFECT,
+    inEffect,
+  };
 }
 
 /**
@@ -405,20 +572,37 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
       const duration = parseDurationDays(b.Duration ?? b.duration ?? 0);
       const branch = b.Branch ?? b.branch ?? "";
       const otomobil = b.Otomobil ?? b.otomobil ?? "";
-      const paymentType = resolvePaymentType(
+      const requestedPayment = resolvePaymentType(
         b.Cash ?? b.cash ?? b.PaymentType ?? b.paymentType
       );
       let startDate = b.StartDate ?? b.startDate ?? null;
       if (startDate === "") startDate = null;
 
-      // Optional surcharges (already included in Price). The card fee is only
-      // valid when the payment is NOT cash.
-      const nonTurk = toFlag(b.NonTurk ?? b.nonTurk);
-      const cardFee = paymentType !== "Cash" && toFlag(b.CardFee ?? b.cardFee);
-
       // Broker is no longer typed on the form. It is inferred from the sender
       // ("From" address) of the unread email the policy is created from.
       const emailFrom = b.EmailFrom ?? b.emailFrom ?? "";
+      const isEmailPolicy = String(emailFrom).trim() !== "";
+
+      // Email policies are paid ONLY from the broker's balance - never in cash
+      // and never by card. Walk-ins are paid in cash or by card and can never
+      // use a broker balance. (A legacy client sending `Cash: true` for an
+      // email policy is accepted and stored as "Broker".)
+      if (isEmailPolicy && requestedPayment === "Card") {
+        return res.status(400).json({
+          error: "Email policies are paid from the broker balance only",
+        });
+      }
+      if (!isEmailPolicy && requestedPayment === "Broker") {
+        return res.status(400).json({
+          error: "Only email policies can be paid from a broker balance",
+        });
+      }
+      const paymentType = isEmailPolicy ? "Broker" : requestedPayment;
+
+      // Optional surcharges (already included in Price). The card fee is only
+      // valid for card payments.
+      const nonTurk = toFlag(b.NonTurk ?? b.nonTurk);
+      const cardFee = paymentType === "Card" && toFlag(b.CardFee ?? b.cardFee);
 
       // Optional return-email handling. When the form was opened from an
       // unread email, the client sends the original Gmail message ID plus any
@@ -437,16 +621,33 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
       if (!String(carNumber).trim()) {
         return res.status(400).json({ error: "CarNumber is required" });
       }
+      // An email card policy is answered with a return email carrying the
+      // policy files; it must not be created without at least one attachment.
+      const validAttachments = attachments.filter((a) => a && a.base64);
+      if (messageId && !disableReturnEmail && validAttachments.length === 0) {
+        return res.status(400).json({
+          error: "Attach at least one file before saving an email policy",
+        });
+      }
+
+      // An email policy is paid from its broker's balance, so the sender must
+      // resolve to a broker. Without one there is no balance to charge.
+      let broker = null;
+      if (isEmailPolicy) {
+        broker = await resolveBrokerByEmail(DBConnection, emailFrom);
+        if (!broker) {
+          return res.status(400).json({
+            error: "The email sender is not linked to a broker",
+          });
+        }
+      }
+      const brokerId = broker ? broker.id : null;
+      const brokerName = broker ? broker.name : "";
 
       const priceDecimal = toDecimal(price);
 
       let replyError = null;
       await DBConnection.withTransaction(async (conn) => {
-        // Resolve the broker from the email sender. When no broker matches,
-        // the policy is stored without a broker link.
-        const broker = await resolveBrokerByEmail(conn, emailFrom);
-        const brokerId = broker ? broker.id : null;
-        const brokerName = broker ? broker.name : "";
 
         await conn.query(
           `INSERT INTO insurance
@@ -473,33 +674,33 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
           ]
         );
 
-        // Every created insurance contributes its value to either current cash
-        // (PaymentType = "Cash") or the card balance (PaymentType = "Card").
+        // Every created insurance contributes its value to one of the three
+        // payment types counted in Total cash:
+        //
+        //   Cash   (walk-in) -> the cash drawer (current cash) goes up.
+        //   Card   (walk-in) -> the card balance goes up (Card channel).
+        //   Broker (email)   -> paid from the broker's balance, which is
+        //                       reduced below. That money already entered the
+        //                       drawer when the broker topped up, so current
+        //                       cash does NOT go up again; the payment is only
+        //                       recorded under the Broker channel.
+        //
         // The author is the logged-in user and the reason is the blanc number.
         if (priceDecimal !== null && priceDecimal > 0) {
-          if (paymentType === "Cash") {
-            await recordCashMovement(
-              conn,
-              branch,
-              req.user.username,
-              "increase",
-              priceDecimal,
-              blancNumber,
-              currencyType
-            );
-          } else {
-            await recordCardPayment(
-              conn,
-              req.user.username,
-              priceDecimal,
-              blancNumber
-            );
-          }
+          await movePolicyMoney(conn, paymentType, "increase", {
+            branch,
+            username: req.user.username,
+            amount: priceDecimal,
+            reason: blancNumber,
+            currency: currencyType,
+          });
         }
 
         // Flat fee: when the sender's email is associated with a broker, the
         // policy price is deducted from that broker's balance (which may go
-        // negative) and its InactivePolicies is decremented.
+        // negative) and its InactivePolicies is decremented. Creating an email
+        // insurance therefore REDUCES the broker balance - that reduction is
+        // what pays for the policy.
         if (brokerId !== null) {
           await decreaseBrokerForInsurance(conn, brokerId, price);
         }
@@ -609,11 +810,12 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
   // Shared insurance endpoints (roles 1 and 2)
   // ---------------------------------------------------------------------
 
-  // GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=
+  // GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
   // Returns insurances matching any combination of the supplied filters.
   // At least one filter must be provided. Author/date match exactly (date
-  // compares only the calendar day); policyNumber/blancNumber/carNumber use a
-  // partial (substring) match so partially-remembered numbers still work.
+  // compares only the calendar day); policyNumber/blancNumber/carNumber/broker
+  // use a partial (substring) match so partially-remembered numbers - and
+  // partially typed broker names such as "Euro" for "Euroins" - still work.
   router.get("/insurances", auth, requireRole(1, 2), async (req, res) => {
     try {
       const author = req.query.author ? String(req.query.author).trim() : "";
@@ -627,11 +829,19 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
       const carNumber = req.query.carNumber
         ? String(req.query.carNumber).trim()
         : "";
+      const broker = req.query.broker ? String(req.query.broker).trim() : "";
 
-      if (!author && !date && !policyNumber && !blancNumber && !carNumber) {
+      if (
+        !author &&
+        !date &&
+        !policyNumber &&
+        !blancNumber &&
+        !carNumber &&
+        !broker
+      ) {
         return res.status(400).json({
           error:
-            "At least one search parameter is required (author, date, policyNumber, blancNumber or carNumber)",
+            "At least one search parameter is required (author, date, policyNumber, blancNumber, carNumber or broker)",
         });
       }
 
@@ -666,6 +876,13 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
         conditions.push("CarNumber LIKE ?");
         params.push(`%${carNumber}%`);
       }
+      // The broker is stored as a name on the policy (insurance.Broker), so a
+      // substring match lets the caller type only part of it ("Euro" -> the
+      // policies issued through "Euroins").
+      if (broker) {
+        conditions.push("Broker LIKE ?");
+        params.push(`%${broker}%`);
+      }
 
       const [rows] = await DBConnection.query(
         `SELECT * FROM insurance WHERE ${conditions.join(
@@ -683,6 +900,14 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
   // PATCH /insurances/:blancNumber
   // Modify an existing insurance. Admins (role 1) can edit any policy;
   // workers (role 2) can only edit policies they created themselves.
+  //
+  // The edit is also applied to the money the policy represents: a policy
+  // contributes its price to current cash (PaymentType = "Cash") or to the card
+  // balance (PaymentType = "Card"), so changing Price, PaymentType, Branch or
+  // CurrencyType of an EXISTING policy reverses its old contribution and applies
+  // the new one in the same transaction as the row update. Without that, the
+  // balance shown in "Current cash" would silently drift away from the policies
+  // behind it every time an old policy is corrected.
   router.patch(
     "/insurances/:blancNumber",
     auth,
@@ -737,20 +962,39 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
         // when the payment is NOT cash.
         const newPaymentRaw =
           b.PaymentType ?? b.paymentType ?? b.Cash ?? b.cash;
-        const finalPayment =
-          newPaymentRaw !== undefined && newPaymentRaw !== null
-            ? resolvePaymentType(newPaymentRaw)
-            : insurance.PaymentType;
+        const hasNewPayment =
+          newPaymentRaw !== undefined && newPaymentRaw !== null;
+
+        // Email (broker-linked) policies are paid ONLY from the broker's
+        // balance: their payment type is always "Broker" and cannot be changed
+        // to Cash or Card. Walk-ins stay Cash/Card and can never become Broker.
+        const isEmailPolicy = isBrokerLinked(insurance);
+        const requestedPayment = hasNewPayment
+          ? resolvePaymentType(newPaymentRaw)
+          : null;
+        if (isEmailPolicy && hasNewPayment && requestedPayment !== "Broker") {
+          return res.status(400).json({
+            error: "Email policies are paid from the broker balance only",
+          });
+        }
+        if (!isEmailPolicy && requestedPayment === "Broker") {
+          return res.status(400).json({
+            error: "Only email policies can be paid from a broker balance",
+          });
+        }
+        const finalPayment = isEmailPolicy
+          ? "Broker"
+          : requestedPayment ?? resolvePaymentType(insurance.PaymentType);
         let cardFeeHandled = false;
 
         for (const [column, value] of editable) {
           if (value !== undefined && value !== null) {
             let v;
-            if (column === "PaymentType") v = resolvePaymentType(value);
+            if (column === "PaymentType") v = finalPayment;
             else if (column === "Price") v = String(value);
             else if (column === "NonTurk") v = toFlag(value) ? 1 : 0;
             else if (column === "CardFee") {
-              v = finalPayment !== "Cash" && toFlag(value) ? 1 : 0;
+              v = finalPayment === "Card" && toFlag(value) ? 1 : 0;
               cardFeeHandled = true;
             } else v = value;
             sets.push(`${column} = ?`);
@@ -758,8 +1002,8 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
           }
         }
 
-        // Switching to Cash clears a previously stored card fee flag.
-        if (!cardFeeHandled && finalPayment === "Cash" && insurance.CardFee) {
+        // Any payment other than Card clears a previously stored card fee flag.
+        if (!cardFeeHandled && finalPayment !== "Card" && insurance.CardFee) {
           sets.push("CardFee = ?");
           params.push(0);
         }
@@ -776,11 +1020,102 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
           return res.status(400).json({ error: "Nothing to update" });
         }
 
+        // -------------------------------------------------------------------
+        // Money side-effects of the edit.
+        //
+        // Creating a policy adds its price to current cash (PaymentType =
+        // "Cash") or to the card balance (PaymentType = "Card"). Editing one of
+        // the fields that decide WHERE and HOW MUCH that is - Price,
+        // PaymentType, Branch or CurrencyType - has to move the money too, so
+        // the old contribution is reversed and the new one applied. Both run
+        // inside the same transaction as the row update, so the ledger and the
+        // policy can never disagree: when the reversal cannot be funded, the
+        // whole edit is rolled back and nothing changes.
+        //
+        // Annulled policies are skipped - annulment already refunded their
+        // price out of the cash/card balance, so they no longer contribute to
+        // it and correcting their fields must not move money a second time.
+        // -------------------------------------------------------------------
+        const oldPrice = toDecimal(insurance.Price) || 0;
+        const newPriceValue = b.Price ?? b.price;
+        const newPrice =
+          newPriceValue !== undefined && newPriceValue !== null
+            ? toDecimal(newPriceValue) || 0
+            : oldPrice;
+
+        // Email rows are always broker-paid, even legacy ones stored as
+        // "Cash"/"Card", so they count as "Broker" here too.
+        const oldPayment = effectivePayment(insurance);
+        const oldBranch = String(insurance.Branch ?? "");
+        const oldCurrency = insurance.CurrencyType;
+
+        const newBranchValue = b.Branch ?? b.branch;
+        const newBranch =
+          newBranchValue !== undefined && newBranchValue !== null
+            ? String(newBranchValue)
+            : oldBranch;
+        const newCurrencyValue = b.CurrencyType ?? b.currencyType;
+        const newCurrency =
+          newCurrencyValue !== undefined && newCurrencyValue !== null
+            ? newCurrencyValue
+            : oldCurrency;
+
+        // Nothing money-related changed (e.g. only the policy number or the
+        // start date was corrected): the balances are left untouched, so no
+        // pointless reversal/entry pair lands in the ledger.
+        const moneyChanged =
+          newPrice !== oldPrice ||
+          finalPayment !== oldPayment ||
+          newBranch !== oldBranch ||
+          String(newCurrency ?? "") !== String(oldCurrency ?? "");
+
         params.push(blancNumber);
-        await DBConnection.query(
-          `UPDATE insurance SET ${sets.join(", ")} WHERE BlancNumber = ?`,
-          params
-        );
+        await DBConnection.withTransaction(async (conn) => {
+          if (moneyChanged && !insurance.Annulled) {
+            // 1) Reverse what the policy contributed before this edit, through
+            //    the channel it was originally paid through.
+            if (oldPrice > 0) {
+              await movePolicyMoney(conn, oldPayment, "reduce", {
+                branch: oldBranch,
+                username: req.user.username,
+                amount: oldPrice,
+                reason: `Edit ${blancNumber}`,
+                currency: oldCurrency,
+              });
+            }
+
+            // 2) Apply what the policy contributes after the edit, exactly like
+            //    the creation endpoint does (reason = the blanc number). Email
+            //    policies always go through the Broker channel, so they never
+            //    touch current cash.
+            if (newPrice > 0) {
+              await movePolicyMoney(conn, finalPayment, "increase", {
+                branch: newBranch,
+                username: req.user.username,
+                amount: newPrice,
+                reason: blancNumber,
+                currency: newCurrency,
+              });
+            }
+
+            // 3) Keep the broker's own balance in step with the corrected price.
+            //    For an email policy that balance is the only record of the
+            //    payment, so a price correction has to move it too - without
+            //    touching InactivePolicies, since the policy is still active.
+            if (isEmailPolicy && newPrice !== oldPrice) {
+              await adjustBrokerForPriceChange(
+                conn,
+                insurance.BrokerId,
+                Math.round((newPrice - oldPrice) * 100) / 100
+              );
+            }
+          }
+
+          await conn.query(
+            `UPDATE insurance SET ${sets.join(", ")} WHERE BlancNumber = ?`,
+            params
+          );
+        });
 
         const [rows] = await DBConnection.query(
           "SELECT * FROM insurance WHERE BlancNumber = ?",
@@ -788,27 +1123,30 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
         );
         res.json({ message: "Insurance updated", insurance: rows[0] });
       } catch (err) {
+        // The cash drawer cannot fund the reversal of the old price (the money
+        // was already paid out or reset). The transaction was rolled back, so
+        // neither the policy nor the balances changed - report it the same way
+        // the annulment endpoint does instead of a generic 500.
+        const msg = (err && err.message) || "";
+        if (msg.includes("insufficient")) {
+          return res.status(400).json({ error: msg });
+        }
         console.error("Insurance update failed:", err);
         res.status(500).json({ error: "Failed to update insurance" });
       }
     }
   );
 
-  // Annulment fees (flat amount, in the policy's own currency) per fault
-  // reason. "broker" and "worker" faults still charge a small fee to cover
-  // processing costs; "none" (no fault) refunds the full price.
-  const ANNUL_FEES = {
-    broker: 8,
-    worker: 1,
-    none: 0,
-  };
-
-  // POST /insurances/:blancNumber/annul  { reason: "broker"|"worker"|"none" }
-  // Annuls a policy: refunds its price (minus the fee for the given fault
-  // reason) out of current cash (or the card balance, depending on how it was
-  // originally paid) and reverses its effect on the linked broker's balance,
-  // if any. A policy can only be annulled once. Admins (role 1) can annul any
-  // policy; workers (role 2) can only annul policies they created themselves.
+  // POST /insurances/:blancNumber/annul  { payer: "broker"|"worker"|"none" }
+  // Annuls a policy: refunds its price minus the annulment fee, through the
+  // channel it was originally paid through (current cash, card balance, or the
+  // Broker channel for email policies), and reverses its effect on the linked
+  // broker's balance, if any. The caller chooses WHO pays the fee (or "none"
+  // for no fault, which is free); the fee itself (1 or 9, see
+  // computeAnnulFee) is decided here from the policy's start date and is
+  // never taken from the request. A policy can only be
+  // annulled once. Admins (role 1) can annul any policy; workers (role 2) can
+  // only annul policies they created themselves.
   router.post(
     "/insurances/:blancNumber/annul",
     auth,
@@ -816,13 +1154,21 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
     async (req, res) => {
       try {
         const { blancNumber } = req.params;
-        const reason = String(req.body?.reason ?? req.body?.Reason ?? "")
+        // Who pays the fee. `reason` is still accepted as an alias so an older
+        // client sending { reason: "broker" | "worker" } keeps working.
+        const payer = String(
+          req.body?.payer ??
+            req.body?.Payer ??
+            req.body?.reason ??
+            req.body?.Reason ??
+            ""
+        )
           .trim()
           .toLowerCase();
 
-        if (!Object.prototype.hasOwnProperty.call(ANNUL_FEES, reason)) {
+        if (!ANNUL_PAYERS.includes(payer)) {
           return res.status(400).json({
-            error: "reason must be one of 'broker', 'worker' or 'none'",
+            error: "payer must be one of 'broker', 'worker' or 'none'",
           });
         }
 
@@ -856,32 +1202,31 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
         }
 
         const price = toDecimal(insurance.Price) || 0;
-        const fee = ANNUL_FEES[reason];
+        // No fault: 0. Otherwise 9 when the policy is already in effect (its
+        // start date has been reached), 1 when it has not started yet.
+        const { fee, inEffect } = computeAnnulFee(
+          insurance,
+          new Date(),
+          payer
+        );
         const refund = Math.max(0, Math.round((price - fee) * 100) / 100);
 
         await DBConnection.withTransaction(async (conn) => {
+          // The refund leaves through the channel the policy was paid through.
+          // An email policy was paid from the broker's balance, so its refund
+          // comes out of the Broker channel and never reduces current cash -
+          // the drawer never received that money in the first place.
           if (refund > 0) {
-            if (insurance.PaymentType === "Cash") {
-              await recordCashMovement(
-                conn,
-                insurance.Branch,
-                req.user.username,
-                "reduce",
-                refund,
-                `Annul ${blancNumber}`,
-                insurance.CurrencyType
-              );
-            } else {
-              await reduceCardBalance(
-                conn,
-                req.user.username,
-                refund,
-                `Annul ${blancNumber}`
-              );
-            }
+            await movePolicyMoney(conn, effectivePayment(insurance), "reduce", {
+              branch: insurance.Branch,
+              username: req.user.username,
+              amount: refund,
+              reason: `Annul ${blancNumber}`,
+              currency: insurance.CurrencyType,
+            });
           }
 
-          if (insurance.BrokerId !== null && insurance.BrokerId !== undefined) {
+          if (isBrokerLinked(insurance)) {
             await restoreBrokerForAnnulment(
               conn,
               insurance.BrokerId,
@@ -893,7 +1238,7 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
             `UPDATE insurance
                 SET Annulled = 1, AnnulReason = ?, AnnulFee = ?, AnnulDate = NOW(), AnnulBy = ?
               WHERE BlancNumber = ?`,
-            [reason, fee, req.user.username, blancNumber]
+            [payer, fee, req.user.username, blancNumber]
           );
         });
 
@@ -905,7 +1250,8 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
           message: "Insurance annulled",
           refund,
           fee,
-          reason,
+          payer,
+          inEffect,
           insurance: rows[0],
         });
       } catch (err) {

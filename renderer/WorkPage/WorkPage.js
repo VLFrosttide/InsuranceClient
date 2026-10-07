@@ -93,8 +93,13 @@ function markEmailIrrelevant(email) {
   // Dismiss on the server. The server removes the email from the shared pool
   // and marks the Gmail message read, so it disappears for every worker and
   // never re-surfaces on a later poll or server restart.
-  if (emailSocket) {
+  try {
+    if (!emailSocket) throw new Error(t("emailConnUnavailable"));
     emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+  } catch (err) {
+    // Keep the card: the server never received the dismissal.
+    reportError("Failed to mark email as irrelevant", err, "emailSendFailed");
+    return;
   }
   removeEmailCard(email.messageId);
   toast(t("email.irrelevantMarked"), "success");
@@ -102,6 +107,7 @@ function markEmailIrrelevant(email) {
 
 function openEmailInNewForm(email) {
   if (!emailSocket) {
+    console.error("Cannot open email: email WebSocket is not available");
     toast(t("emailConnUnavailable"), "error");
     return;
   }
@@ -109,7 +115,12 @@ function openEmailInNewForm(email) {
   // Only navigate once the server confirms this client won the claim. If
   // another worker clicked the same card first, we show an error instead.
   pendingClaimEmail = email;
-  emailSocket.send({ type: "claim_email", messageId: email.messageId });
+  try {
+    emailSocket.send({ type: "claim_email", messageId: email.messageId });
+  } catch (err) {
+    pendingClaimEmail = null;
+    reportError("Failed to claim email", err, "emailSendFailed");
+  }
 }
 
 function openClaimedEmail(email) {
@@ -153,7 +164,11 @@ function setupEmailSocket() {
     new_email: (msg) => addEmailCard(msg.data),
     auth_ok: () => {
       // After (re)connecting, re-sync cards with the server's source of truth.
-      emailSocket.send({ type: "list_emails" });
+      try {
+        emailSocket.send({ type: "list_emails" });
+      } catch (err) {
+        reportError("Failed to request unread emails", err, "emailSendFailed");
+      }
     },
     list_emails: (msg) => reconcileEmailCards(msg.data),
     claim_email: (msg) => {
@@ -189,7 +204,11 @@ function setupEmailSocket() {
 
 function fetchUnreadEmails() {
   if (userRole !== "2" || !emailSocket) return;
-  emailSocket.send({ type: "list_emails" });
+  try {
+    emailSocket.send({ type: "list_emails" });
+  } catch (err) {
+    reportError("Failed to request unread emails", err, "emailSendFailed");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +228,13 @@ async function initializeBrokerPricing() {
 function money(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+}
+
+// Display label for a stored payment type (Cash / Card / Broker). Unknown
+// values are shown as they are.
+function paymentLabel(value) {
+  if (value === undefined || value === null || value === "") return "";
+  return t(`payment.${value}`, String(value));
 }
 
 function renderCashBalances(balances) {
@@ -448,7 +474,19 @@ function renderTable(items, columns, actions, rowClass) {
 // ---------------------------------------------------------------------------
 // Modal form for editing an insurance (admins + workers)
 // ---------------------------------------------------------------------------
-function openInsuranceEditor(insurance) {
+// `onDone` (optional) runs after a successful save so the calling view can
+// refresh itself — the same pattern openAnnulForm/deleteInsurance use. Editing
+// the price, the payment type, the branch or the currency also moves the money
+// behind the policy on the server (current cash / card balance), so the list has
+// to be re-rendered for the change to be visible.
+function openInsuranceEditor(insurance, onDone) {
+  // Email (broker-linked) policies are paid ONLY from the broker's balance, so
+  // their payment type cannot be edited at all. Walk-ins choose Cash or Card.
+  const isEmailPolicy =
+    insurance.BrokerId !== null &&
+    insurance.BrokerId !== undefined &&
+    insurance.BrokerId !== "";
+
   const spec = [
     {
       key: "PolicyNumber",
@@ -481,7 +519,9 @@ function openInsuranceEditor(insurance) {
       type: "date",
       value: insurance.StartDate,
     },
-    {
+  ];
+  if (!isEmailPolicy) {
+    spec.push({
       key: "PaymentType",
       label: t("paymentType"),
       type: "select",
@@ -489,9 +529,9 @@ function openInsuranceEditor(insurance) {
         { label: t("payment.Card"), value: "Card" },
         { label: t("payment.Cash"), value: "Cash" },
       ],
-      value: insurance.PaymentType || "Card",
-    },
-  ];
+      value: insurance.PaymentType === "Cash" ? "Cash" : "Card",
+    });
+  }
 
   const form = buildForm(
     spec,
@@ -501,8 +541,13 @@ function openInsuranceEditor(insurance) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      // Adopt the stored row (the server returns the policy as it is now,
+      // including any normalisation it applied) so a view rendering from its
+      // local rows immediately shows the new price/payment type.
+      if (data && data.insurance) Object.assign(insurance, data.insurance);
       toast(t("insuranceUpdated"), "success");
       closeModal();
+      if (onDone) onDone(data);
       return data;
     },
     t("saveChanges")
@@ -514,40 +559,82 @@ function openInsuranceEditor(insurance) {
 // ---------------------------------------------------------------------------
 // Annulment modal (admins + workers)
 // ---------------------------------------------------------------------------
-const ANNUL_FEES = { broker: 8, worker: 1, none: 0 };
+// The fee is decided by whether the policy is already in effect when it is
+// annulled (now has reached its start date): 9 if it is, 1 if it has not
+// started yet. Who pays it (broker or worker) is chosen in the form; "no
+// fault" charges no fee at all. The
+// server computes the same fee on its own; this is only the preview.
+const ANNUL_FEE_NOT_IN_EFFECT = 1;
+const ANNUL_FEE_IN_EFFECT = 9;
+
+// Local midnight of the policy's start date, or null when it has none.
+function annulStartDate(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  const m = String(value)
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+// A policy without a start date is treated as in effect (the higher fee).
+function isPolicyInEffect(insurance, now = new Date()) {
+  const start = annulStartDate(insurance.StartDate);
+  if (!start) return true;
+  return now.getTime() >= start.getTime();
+}
 
 function openAnnulForm(insurance, onDone) {
   const price = Number(insurance.Price) || 0;
+  const currency = insurance.CurrencyType || "";
 
-  const reasonSelect = select(
+  const payerSelect = select(
     [
-      { label: t("annul.broker"), value: "broker" },
-      { label: t("annul.worker"), value: "worker" },
-      { label: t("annul.none"), value: "none" },
+      { label: t("annul.payer.broker"), value: "broker" },
+      { label: t("annul.payer.worker"), value: "worker" },
+      { label: t("annul.payer.none"), value: "none" },
     ],
     "broker"
   );
 
+  const statusLine = el("p", "", { class: "muted" });
   const feeLine = el("p", "", { class: "muted" });
   const refundLine = el("p", "", { class: "big" });
 
   function updatePreview() {
-    const reason = reasonSelect.value;
-    const fee = ANNUL_FEES[reason] ?? 0;
+    const inEffect = isPolicyInEffect(insurance);
+    // No fault is always free; otherwise the start date decides.
+    const noFault = payerSelect.value === "none";
+    const fee = noFault
+      ? 0
+      : inEffect
+      ? ANNUL_FEE_IN_EFFECT
+      : ANNUL_FEE_NOT_IN_EFFECT;
     const refund = Math.max(0, Math.round((price - fee) * 100) / 100);
-    feeLine.textContent = `${t("annulFee")}: ${money(fee)} ${
-      insurance.CurrencyType || ""
-    }`;
-    refundLine.textContent = `${t("annulRefund")}: ${money(refund)} ${
-      insurance.CurrencyType || ""
-    }`;
+    statusLine.textContent = t(
+      noFault ? "annulNoFault" : inEffect ? "annulInEffect" : "annulNotInEffect"
+    );
+    // Show who pays next to the fee; a no-fault annulment has no payer.
+    feeLine.textContent = noFault
+      ? `${t("annulFee")}: ${money(fee)} ${currency}`
+      : `${t("annulFee")}: ${money(fee)} ${currency} (${t(
+          `annul.payer.${payerSelect.value}`
+        )})`;
+    refundLine.textContent = `${t("annulRefund")}: ${money(
+      refund
+    )} ${currency}`;
   }
-  reasonSelect.addEventListener("change", updatePreview);
+  payerSelect.addEventListener("change", updatePreview);
   updatePreview();
 
   const form = el("form");
-  form.appendChild(field(t("annulReason"), reasonSelect));
+  form.appendChild(field(t("annulPayer"), payerSelect));
   form.appendChild(el("p", t("annulFeeNote"), { class: "muted" }));
+  form.appendChild(statusLine);
   form.appendChild(feeLine);
   form.appendChild(refundLine);
 
@@ -562,7 +649,7 @@ function openAnnulForm(insurance, onDone) {
       const data = await api(`/insurances/${insurance.BlancNumber}/annul`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: reasonSelect.value }),
+        body: JSON.stringify({ payer: payerSelect.value }),
       });
       toast(t("insuranceAnnulled"), "success");
       closeModal();
@@ -858,7 +945,7 @@ async function adminInsurances() {
         { key: "PolicyNumber", label: t("policyNumber") },
         { key: "Price", label: t("price"), format: (v) => money(v) },
         { key: "CurrencyType", label: t("currency") },
-        { key: "PaymentType", label: t("payment") },
+        { key: "PaymentType", label: t("payment"), format: paymentLabel },
         { key: "Broker", label: t("broker") },
         {
           key: "Annulled",
@@ -870,7 +957,10 @@ async function adminInsurances() {
         {
           label: t("edit"),
           class: "",
-          onClick: () => openInsuranceEditor(i),
+          // Re-render from the row the editor just refreshed with the server's
+          // stored values, so a corrected price/payment type shows up straight
+          // away.
+          onClick: () => openInsuranceEditor(i, () => render()),
         },
         ...(!i.Annulled
           ? [
@@ -1134,11 +1224,123 @@ async function currentCashView(overrideBranch) {
   Content.replaceChildren(
     heading,
     balance,
+    el("p", t("currentCashHint"), { class: "muted" }),
     actions,
     el("h3", t("transactions")),
     txTable,
     el("h3", t("resets")),
     resetTable
+  );
+}
+
+// Total cash - the second record of cash flow.
+//
+// Total cash is a strict superset of current cash: every type of payment (cash
+// money, card payments and payments funded from a broker's balance) is counted
+// in it, while current cash holds only the cash balance. It is read-only here -
+// the money moves through the same increase/reduce/reset actions as before, and
+// Total cash follows them by construction.
+async function totalCashView(overrideBranch) {
+  // Admins can inspect any branch's total; workers are scoped to their own
+  // login branch, exactly like the current cash view.
+  const isAdmin = userRole === "1";
+  let branch = overrideBranch || getBranch();
+
+  let allBranchNames = [];
+  if (isAdmin) {
+    const branchesData = await api("/totalcash/branches");
+    allBranchNames = Object.keys(branchesData.branches || {}).sort();
+    if (!branch && allBranchNames.length) branch = allBranchNames[0];
+  }
+
+  const data = await api(`/totalcash?branch=${encodeURIComponent(branch)}`);
+  const heading = el("h2", t("totalCash"));
+
+  heading.appendChild(
+    el("span", ` — ${t("branch")}: ${branch || t("unknownBranch")}`, {
+      class: "muted",
+    })
+  );
+
+  if (isAdmin && allBranchNames.length > 1) {
+    const branchSelect = select(
+      allBranchNames.map((b) => ({ label: b, value: b })),
+      branch
+    );
+    branchSelect.addEventListener("change", () => {
+      totalCashView(branchSelect.value);
+    });
+    heading.appendChild(branchSelect);
+  }
+
+  const balances = data.balances || {};
+  const parts = data.parts || {};
+
+  const balance = el("div", null, { class: "balance-card" });
+  balance.appendChild(el("h3", t("totalCash")));
+
+  const nonZero = Object.entries(balances).filter(
+    ([, value]) => Number(value) !== 0
+  );
+  if (nonZero.length === 0) {
+    balance.appendChild(el("p", money(0), { class: "big" }));
+  } else {
+    const list = el("div");
+    for (const [currency, value] of nonZero) {
+      list.appendChild(el("p", `${money(value)} ${currency}`, { class: "big" }));
+    }
+    balance.appendChild(list);
+  }
+  balance.appendChild(el("p", t("totalCashHint"), { class: "muted" }));
+
+  // Break the total down into the three payment types it is built from. The
+  // cash part is what current cash already carries, so it is derived rather
+  // than sent by the server.
+  const partsRows = Object.keys(balances).map((currency) => {
+    const p = parts[currency] || {};
+    const card = Number(p.CardPart) || 0;
+    const broker = Number(p.BrokerPart) || 0;
+    const total = Number(balances[currency]) || 0;
+    return {
+      Currency: currency,
+      CashPart: Math.round((total - card - broker) * 100) / 100,
+      CardPart: card,
+      BrokerPart: broker,
+      Total: total,
+    };
+  });
+
+  const partsTable = renderTable(partsRows, [
+    { key: "Currency", label: t("currency") },
+    { key: "CashPart", label: t("cashPart"), format: (v) => money(v) },
+    { key: "CardPart", label: t("cardPart"), format: (v) => money(v) },
+    { key: "BrokerPart", label: t("brokerPart"), format: (v) => money(v) },
+    { key: "Total", label: t("totalCash"), format: (v) => money(v) },
+  ]);
+
+  // One row per movement, tagged with the channel it came through, so this
+  // ledger can be compared entry by entry with the current cash one.
+  const txTable = renderTable(data.transactions, [
+    { key: "Source", label: t("source"), format: (v) => t(`source.${v}`, v) },
+    { key: "Type", label: t("type") },
+    { key: "Amount", label: t("amount"), format: (v) => money(v) },
+    { key: "Currency", label: t("currency") },
+    { key: "Username", label: t("user") },
+    { key: "Reason", label: t("reason") },
+    {
+      key: "CreatedAt",
+      label: t("created"),
+      format: (v) => formatDateTime(v),
+    },
+  ]);
+
+  Content.replaceChildren(
+    heading,
+    balance,
+    el("h3", t("overview")),
+    partsTable,
+    el("h3", t("transactions")),
+    txTable
   );
 }
 
@@ -1614,17 +1816,115 @@ async function downloadBrokersCsv() {
   URL.revokeObjectURL(url);
 }
 
+// ---------------------------------------------------------------------------
+// Insurance lookup result sorting
+//
+// The lookup table ("My insurances" for workers, "Insurances by date" for
+// admins) is sorted in the browser: the whole result set is already loaded by
+// the search, so clicking a column header re-orders it locally instead of
+// querying the server again. The helpers below are pure (no DOM) so they can be
+// exercised in Node.
+// ---------------------------------------------------------------------------
+
+// Sort state for the insurance lookup table: key is null (server order, newest
+// first) or one of INSURANCE_SORT_KEYS; dir is "desc" (highest/newest first) or
+// "asc" (lowest/oldest first).
+let insuranceSort = { key: null, dir: "desc" };
+
+// The columns of the lookup table that can be sorted by clicking their header.
+const INSURANCE_SORT_KEYS = [
+  "Price",
+  "CreationDate",
+  "Broker",
+  "Author",
+  "Annulled",
+  "PaymentType",
+];
+
+// Comparable value of one cell: a number for price/status, a timestamp for the
+// creation date (parsed exactly like formatDateTime, so the order matches what
+// is displayed) and text for broker/author/payment type. Empty or unparsable
+// values become null and always sink to the bottom of the list.
+function insuranceSortValue(item, key) {
+  const raw = item ? item[key] : null;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return null;
+  }
+  if (key === "Price" || key === "Annulled") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (key === "CreationDate") {
+    let d;
+    if (raw instanceof Date) {
+      d = raw;
+    } else {
+      const s = String(raw).trim();
+      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})/);
+      d = m
+        ? new Date(
+            Number(m[1]),
+            Number(m[2]) - 1,
+            Number(m[3]),
+            Number(m[4]),
+            Number(m[5])
+          )
+        : new Date(s);
+    }
+    const ms = d ? d.getTime() : NaN;
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return String(raw);
+}
+
+// Order two extracted values: numbers numerically, text alphabetically
+// (case-insensitive, and "2" before "10" thanks to the numeric option).
+function compareInsuranceValues(a, b) {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "string" && typeof b === "string") {
+    return a.localeCompare(b, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// Sorted copy of `rows`. They are returned untouched (in the fetched order)
+// when no sort key is active. Array.prototype.sort is stable, so equal values
+// keep the server order (newest first).
+function sortInsuranceRows(rows, key, dir) {
+  const list = Array.isArray(rows) ? [...rows] : [];
+  if (!INSURANCE_SORT_KEYS.includes(key)) return list;
+  const d = dir === "asc" ? 1 : -1;
+  return list.sort((a, b) => {
+    const va = insuranceSortValue(a, key);
+    const vb = insuranceSortValue(b, key);
+    // Blank cells stay at the bottom in both directions.
+    if (va === null || vb === null) {
+      if (va === null && vb === null) return 0;
+      return va === null ? 1 : -1;
+    }
+    return d * compareInsuranceValues(va, vb);
+  });
+}
+
 async function adminInsurancesByDate(defaultAuthor = "") {
-  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
   // only a car number is not silently narrowed to the current user's own
   // records. Workers reach this view through "My insurances", which pre-fills
   // the author with their username so they still see only their own records.
-  // PolicyNumber/BlancNumber/CarNumber match partially (substring) on the
-  // server, so a worker can search by a fragment of the number too.
+  // PolicyNumber/BlancNumber/CarNumber/Broker match partially (substring) on
+  // the server, so a worker can search by a fragment of the number, or by a
+  // partially typed broker name ("Euro" finds the "Euroins" policies) too.
+  // The result table also lists the broker and the author of every policy and
+  // can be sorted by price, creation date, broker, author, status and payment
+  // type by clicking the column headers (see the sorting helpers above).
   const authorInput = input("text", defaultAuthor);
+  const brokerInput = input("text", "");
   const dateInput = input("date", "");
   const policyNumberInput = input("text", "");
   const blancNumberInput = input("text", "");
@@ -1636,6 +1936,7 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   });
   const form = el("div", null, { class: "row filter-row" });
   form.appendChild(field(t("author"), authorInput));
+  form.appendChild(field(t("broker"), brokerInput));
   form.appendChild(field(t("date"), dateInput));
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
@@ -1646,20 +1947,128 @@ async function adminInsurancesByDate(defaultAuthor = "") {
 
   const result = el("div");
 
+  // Rows of the last successful search, kept so clicking a column header can
+  // re-sort and re-render them without asking the server again.
+  let lastRows = [];
+
+  // Header extras for a sortable column: an arrow on the currently sorted
+  // column plus the click handler. The first click on a column sorts
+  // descending (highest/newest first), a second click on the same column flips
+  // it to ascending — the same behaviour as the brokers table.
+  const sortHeader = (key) => ({
+    headerSuffix:
+      insuranceSort.key !== key ? "" : insuranceSort.dir === "desc" ? "▼" : "▲",
+    onHeaderClick: () => {
+      insuranceSort = {
+        key,
+        dir:
+          insuranceSort.key === key && insuranceSort.dir === "desc"
+            ? "asc"
+            : "desc",
+      };
+      renderResults();
+    },
+  });
+
+  // Renders the current rows with the active sort applied. Sorting is done in
+  // the browser (see sortInsuranceRows), so switching the order never re-runs
+  // the search.
+  function renderResults() {
+    result.replaceChildren(
+      renderTable(
+        sortInsuranceRows(lastRows, insuranceSort.key, insuranceSort.dir),
+        [
+          { key: "BlancNumber", label: t("blankNo") },
+          { key: "PolicyNumber", label: t("policyNumber") },
+          { key: "CarNumber", label: t("carNumber") },
+          {
+            key: "Price",
+            label: t("price"),
+            format: (v) => money(v),
+            ...sortHeader("Price"),
+          },
+          { key: "CurrencyType", label: t("currency") },
+          {
+            key: "PaymentType",
+            label: t("payment"),
+            format: paymentLabel,
+            ...sortHeader("PaymentType"),
+          },
+          { key: "Broker", label: t("broker"), ...sortHeader("Broker") },
+          { key: "Author", label: t("author"), ...sortHeader("Author") },
+          {
+            key: "CreationDate",
+            label: t("created"),
+            format: (v) => formatDateTime(v),
+            ...sortHeader("CreationDate"),
+          },
+          {
+            key: "Annulled",
+            label: t("status"),
+            format: (v) => (v ? t("annulled") : ""),
+            ...sortHeader("Annulled"),
+          },
+        ],
+        (i) => [
+          {
+            label: t("edit"),
+            class: "",
+            // Re-run the search after a save (like annul/delete do here) so the
+            // corrected price/payment type is re-read from the server.
+            onClick: () => openInsuranceEditor(i, () => runSearch()),
+          },
+          ...(!i.Annulled
+            ? [
+                {
+                  label: t("annul"),
+                  class: "danger",
+                  onClick: () =>
+                    openAnnulForm(i, () => {
+                      i.Annulled = 1;
+                      runSearch();
+                    }),
+                },
+              ]
+            : []),
+          // Deleting is an admin-only action (enforced server-side too).
+          ...(userRole === "1"
+            ? [
+                {
+                  label: t("delete"),
+                  class: "danger",
+                  onClick: () => deleteInsurance(i, () => runSearch()),
+                },
+              ]
+            : []),
+        ],
+        (i) => (i.Annulled ? "row-annulled" : "")
+      )
+    );
+  }
+
   async function runSearch() {
     const author = authorInput.value.trim();
+    const broker = brokerInput.value.trim();
     const date = dateInput.value;
     const policyNumber = policyNumberInput.value.trim();
     const blancNumber = blancNumberInput.value.trim();
     const carNumber = carNumberInput.value.trim();
 
-    if (!author && !date && !policyNumber && !blancNumber && !carNumber) {
+    if (
+      !author &&
+      !broker &&
+      !date &&
+      !policyNumber &&
+      !blancNumber &&
+      !carNumber
+    ) {
       toast(t("searchCriteriaRequired"), "error");
       return;
     }
 
     const params = new URLSearchParams();
     if (author) params.set("author", author);
+    if (broker) params.set("broker", broker);
     if (date) params.set("date", date);
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
@@ -1667,60 +2076,21 @@ async function adminInsurancesByDate(defaultAuthor = "") {
 
     try {
       const data = await api(`/insurances?${params.toString()}`);
-      result.replaceChildren(
-        renderTable(
-          data.insurances,
-          [
-            { key: "BlancNumber", label: t("blankNo") },
-            { key: "PolicyNumber", label: t("policyNumber") },
-            { key: "CarNumber", label: t("carNumber") },
-            { key: "Price", label: t("price"), format: (v) => money(v) },
-            { key: "CurrencyType", label: t("currency") },
-            { key: "PaymentType", label: t("payment") },
-            {
-              key: "CreationDate",
-              label: t("created"),
-              format: (v) => formatDateTime(v),
-            },
-            {
-              key: "Annulled",
-              label: t("status"),
-              format: (v) => (v ? t("annulled") : ""),
-            },
-          ],
-          (i) => [
-            {
-              label: t("edit"),
-              class: "",
-              onClick: () => openInsuranceEditor(i),
-            },
-            ...(!i.Annulled
-              ? [
-                  {
-                    label: t("annul"),
-                    class: "danger",
-                    onClick: () =>
-                      openAnnulForm(i, () => {
-                        i.Annulled = 1;
-                        runSearch();
-                      }),
-                  },
-                ]
-              : []),
-            // Deleting is an admin-only action (enforced server-side too).
-            ...(userRole === "1"
-              ? [
-                  {
-                    label: t("delete"),
-                    class: "danger",
-                    onClick: () => deleteInsurance(i, () => runSearch()),
-                  },
-                ]
-              : []),
-          ],
-          (i) => (i.Annulled ? "row-annulled" : "")
-        )
-      );
+      let rows = data.insurances || [];
+      // The server applies `Broker LIKE %name%` itself. This extra pass only
+      // matters while the deployed server still predates the `broker`
+      // parameter, so the new field keeps working right after a client update;
+      // once the server filters too, every returned row already matches and
+      // the pass is a no-op.
+      if (broker) {
+        const needle = broker.toLowerCase();
+        rows = rows.filter((r) =>
+          String(r.Broker || "").toLowerCase().includes(needle)
+        );
+      }
+      // Keep the rows so the column headers can re-sort them locally.
+      lastRows = rows;
+      renderResults();
     } catch (err) {
       toast(err.message, "error");
     }
@@ -1730,6 +2100,7 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   // Pressing Enter in any filter field triggers the search too.
   [
     authorInput,
+    brokerInput,
     dateInput,
     policyNumberInput,
     blancNumberInput,
@@ -1744,10 +2115,15 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   });
   clearBtn.addEventListener("click", () => {
     authorInput.value = "";
+    brokerInput.value = "";
     dateInput.value = "";
     policyNumberInput.value = "";
     blancNumberInput.value = "";
     carNumberInput.value = "";
+    // Clearing drops the results, so the sort order is reset with them: the
+    // next search starts in the default (server) order again.
+    lastRows = [];
+    insuranceSort = { key: null, dir: "desc" };
     result.replaceChildren();
   });
 
@@ -2145,7 +2521,7 @@ async function clientInsurances() {
       { key: "PolicyNumber", label: t("policyNumber") },
       { key: "Price", label: t("price"), format: (v) => money(v) },
       { key: "CurrencyType", label: t("currency") },
-      { key: "PaymentType", label: t("payment") },
+      { key: "PaymentType", label: t("payment"), format: paymentLabel },
       {
         key: "CreationDate",
         label: t("created"),
@@ -2173,6 +2549,7 @@ const NAV_DEFS = {
     { key: "nav.insurances", load: adminInsurances },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
     { key: "nav.currentCash", load: currentCashView },
+    { key: "nav.totalCash", load: totalCashView },
     { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
     { key: "nav.reconcile", load: reconcileView },
@@ -2181,6 +2558,7 @@ const NAV_DEFS = {
     { key: "nav.dashboard", load: workerDashboard },
     { key: "nav.myInsurances", load: workerMyInsurances },
     { key: "nav.currentCash", load: currentCashView },
+    { key: "nav.totalCash", load: totalCashView },
     { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
   ],

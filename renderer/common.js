@@ -33,6 +33,7 @@ const I18N = {
     "nav.insurances": "Insurances",
     "nav.insurancesByDate": "Insurances by date",
     "nav.currentCash": "Current cash",
+    "nav.totalCash": "Total cash",
     "nav.card": "Card",
     "nav.reconcile": "Reconcile daily report",
     "reconcile.title": "Reconcile daily report",
@@ -82,6 +83,18 @@ const I18N = {
 
     balance: "Balance",
     currentCash: "Current cash",
+    totalCash: "Total cash",
+    totalCashHint:
+      "Total cash = current cash + card payments + broker-balance payments. Current cash is only the cash balance.",
+    currentCashHint:
+      "Only the cash balance: money that physically arrived as cash. Card payments and email payments funded by a broker balance are counted in Total cash instead.",
+    source: "Source",
+    "source.Cash": "Cash",
+    "source.Card": "Card",
+    "source.Broker": "Broker balance",
+    cashPart: "Cash part",
+    cardPart: "Card part",
+    brokerPart: "Broker part",
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
@@ -164,6 +177,7 @@ const I18N = {
     deleteConfirm: "Delete",
     emailClaimed: "This email was already opened by another worker",
     emailConnUnavailable: "Email connection unavailable",
+    emailSendFailed: "Failed to send email",
     name: "Name",
     rangeStart: "Range start",
     rangeEnd: "Range end",
@@ -173,6 +187,7 @@ const I18N = {
     paymentType: "Payment method",
     "payment.Cash": "Cash",
     "payment.Card": "Card",
+    "payment.Broker": "Broker balance",
     clearBalance: "Clear balance",
     clearCardBalanceConfirm:
       "Clear the card balance to 0? This will record the kept amount.",
@@ -180,13 +195,17 @@ const I18N = {
 
     annul: "Annul",
     annulled: "Annulled",
-    annulReason: "Annul reason",
-    "annul.broker": "Broker fault",
-    "annul.worker": "Worker fault",
-    "annul.none": "No fault",
+    annulPayer: "Fee paid by",
+    "annul.payer.broker": "Broker",
+    "annul.payer.worker": "Worker",
+    "annul.payer.none": "No fault",
+    annulNoFault: "No fault: no fee, the full price is refunded.",
+    annulInEffect: "The policy is already in effect: fee 9.",
+    annulNotInEffect: "The policy has not started yet: fee 1.",
     annulFee: "Fee",
     annulRefund: "Refund",
-    annulFeeNote: "A fee is deducted from the refund depending on the reason.",
+    annulFeeNote:
+      "The fee is 1 if the policy has not started yet, or 9 if it is already in effect (by its start date). No fault: no fee.",
     annulConfirmTitle: "Annul insurance",
     annulSubmit: "Annul insurance",
     insuranceAnnulled: "Insurance annulled",
@@ -207,11 +226,14 @@ const I18N = {
     "add.branch": "Branch",
     "add.vehicleType": "Vehicle type",
     "add.startDate": "Starting date",
+    "add.startDateRequired": "Starting date is required",
     "add.price": "Price",
     "add.currency": "Currency",
     "add.cash": "In cash",
     "add.nonTurk": "Non-Turk (+5 €)",
     "add.cardFee": "Card payment fee (+2 €)",
+    "add.paidFromBroker":
+      "Paid from the broker's balance (email policies cannot be paid in cash or by card).",
     "add.submit": "Save",
     "add.clear": "Clear",
     "add.saved": "Insurance saved",
@@ -226,6 +248,9 @@ const I18N = {
     "add.replyConfirm": "Send this reply to the original sender?",
     "add.replySent": "Reply sent",
     "add.replyEmpty": "Type a reply first",
+    "add.attachmentsRequired":
+      "Attach at least one file before saving an email policy. The return email cannot be sent without attachments.",
+    "add.replyFailed": "Insurance saved, but the return email failed: {e}",
 
     "email.noSubject": "(no subject)",
     "email.from": "From:",
@@ -274,6 +299,7 @@ const I18N = {
     "nav.insurances": "Застраховки",
     "nav.insurancesByDate": "Застраховки по дата",
     "nav.currentCash": "Наличен кеш",
+    "nav.totalCash": "Общ кеш",
     "nav.card": "Карта",
     "nav.reconcile": "Дневен отчет",
     "reconcile.title": "Дневен отчет",
@@ -322,6 +348,18 @@ const I18N = {
 
     balance: "Баланс",
     currentCash: "Наличен кеш",
+    totalCash: "Общ кеш",
+    totalCashHint:
+      "Общ кеш = наличен кеш + картови плащания + плащания от баланс на брокер. Наличният кеш е само кешовият баланс.",
+    currentCashHint:
+      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания и имейл плащанията, финансирани от баланс на брокер, се отчитат в Общ кеш.",
+    source: "Източник",
+    "source.Cash": "В брой",
+    "source.Card": "Карта",
+    "source.Broker": "Баланс на брокер",
+    cashPart: "Кешова част",
+    cardPart: "Картова част",
+    brokerPart: "Брокерна част",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -409,6 +447,7 @@ const I18N = {
     insuranceDeleted: "Застраховката е изтрита",
     emailClaimed: "Този имейл вече е отворен от друг служител",
     emailConnUnavailable: "Връзката с имейл е недостъпна",
+    emailSendFailed: "Неуспешно изпращане на имейл",
     name: "Име",
     rangeStart: "Начало на диапазон",
     rangeEnd: "Край на диапазон",
@@ -418,10 +457,29 @@ const I18N = {
     paymentType: "Начин на плащане",
     "payment.Cash": "В брой",
     "payment.Card": "С карта",
+    "payment.Broker": "От баланс на брокер",
     clearBalance: "Изчисти баланса",
     clearCardBalanceConfirm:
       "Да се нулира ли балансът на картата? Ще бъде записана задържаната сума.",
     cardBalanceCleared: "Балансът на картата е изчистен",
+
+    annul: "Анулирай",
+    annulled: "Анулирана",
+    annulPayer: "Таксата се плаща от",
+    "annul.payer.broker": "Брокер",
+    "annul.payer.worker": "Служител",
+    "annul.payer.none": "Без вина",
+    annulNoFault: "Без вина: без такса, възстановява се цялата сума.",
+    annulInEffect: "Полицата вече е в сила: такса 9.",
+    annulNotInEffect: "Полицата още не е започнала: такса 1.",
+    annulFee: "Такса",
+    annulRefund: "Възстановена сума",
+    annulFeeNote:
+      "Таксата е 1, ако полицата още не е започнала, или 9, ако вече е в сила (според началната дата). Без вина: без такса.",
+    annulConfirmTitle: "Анулиране на застраховка",
+    annulSubmit: "Анулирай застраховката",
+    insuranceAnnulled: "Застраховката е анулирана",
+    alreadyAnnulled: "Вече е анулирана",
     "add.back": "← Табло",
     "add.title": "Нова застраховка",
     "add.policyNumber": "Полица номер",
@@ -432,11 +490,14 @@ const I18N = {
     "add.branch": "Клон",
     "add.vehicleType": "Вид превозно средство",
     "add.startDate": "Начална дата",
+    "add.startDateRequired": "Началната дата е задължителна",
     "add.price": "Цена",
     "add.currency": "Валута",
     "add.cash": "В брой",
     "add.nonTurk": "Не-турчин (+5 €)",
     "add.cardFee": "Такса плащане с карта (+2 €)",
+    "add.paidFromBroker":
+      "Плаща се от баланса на брокера (имейл полиците не могат да се платят в брой или с карта).",
     "add.submit": "Запиши",
     "add.clear": "Изчисти",
     "add.saved": "Застраховката е запазена",
@@ -451,6 +512,10 @@ const I18N = {
     "add.replyConfirm": "Да се изпрати ли този отговор до оригиналния подател?",
     "add.replySent": "Отговорът е изпратен",
     "add.replyEmpty": "Първо въведете отговор",
+    "add.attachmentsRequired":
+      "Прикачете поне един файл, преди да запишете имейл полица. Обратният имейл не може да бъде изпратен без прикачени файлове.",
+    "add.replyFailed":
+      "Застраховката е запазена, но обратният имейл не беше изпратен: {e}",
 
     "email.noSubject": "(без тема)",
     "email.from": "От:",
@@ -688,6 +753,9 @@ function el(tag, text, attrs) {
 // Toast notification. `pointer-events` is disabled via CSS so a visible toast
 // can never block pointer events on the inputs underneath it (this was a
 // source of "sometimes unresponsive" input fields).
+// Confirmation / error toasts stay on screen for 6.5 s (previously 3.5 s) so
+// the worker has time to notice and read them.
+const TOAST_DURATION_MS = 6500;
 let toastTimer = null;
 function toast(text, type = "info") {
   if (!text) return;
@@ -695,10 +763,23 @@ function toast(text, type = "info") {
   if (existing) existing.remove();
 
   const node = el("div", text, { class: `toast ${type}` });
+  // Errors interrupt screen readers; confirmations are announced politely.
+  node.setAttribute("role", type === "error" ? "alert" : "status");
+  node.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   document.body.appendChild(node);
 
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => node.remove(), 3500);
+  toastTimer = setTimeout(() => node.remove(), TOAST_DURATION_MS);
+}
+
+// Log an error to the console and show it to the user in an error toast.
+// `context` describes what failed (console only); the toast shows the error's
+// own message, or the translated `fallbackKey` when the error has none.
+function reportError(context, err, fallbackKey = "serverError") {
+  console.error(`${context}:`, err);
+  const message = err && err.message ? err.message : "";
+  const base = t(fallbackKey);
+  toast(message && message !== base ? `${base}: ${message}` : base, "error");
 }
 
 // Guard pages that require login.
@@ -898,18 +979,24 @@ class UnreadEmailSocket {
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15000);
   }
 
+  // Send (or queue until authenticated) an email WebSocket message. Errors are
+  // logged here and re-thrown so every caller can guard the send with its own
+  // try/catch and tell the worker what failed.
   send(obj) {
     if (this.authed && this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify(obj));
       } catch (err) {
         console.error("Failed to send email WebSocket message:", err);
+        throw err;
       }
     } else {
       this.pending.push(obj);
     }
   }
 
+  // Queued messages are flushed from the socket's own message handler, where
+  // there is no caller to re-throw to, so failures are reported directly.
   flush() {
     while (
       this.authed &&
@@ -920,7 +1007,11 @@ class UnreadEmailSocket {
       try {
         this.ws.send(JSON.stringify(this.pending.shift()));
       } catch (err) {
-        console.error("Failed to flush queued email WebSocket message:", err);
+        reportError(
+          "Failed to flush queued email WebSocket message",
+          err,
+          "emailSendFailed"
+        );
         break;
       }
     }

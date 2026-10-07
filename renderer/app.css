@@ -83,6 +83,33 @@ input[type="checkbox"] {
   accent-color: var(--accent);
 }
 
+/* Calendar logos on date fields. Chromium paints the native
+   ::-webkit-calendar-picker-indicator glyph black, which is darker than the
+   #1b2029 input behind it, so it all but disappears on this theme. invert(0.8)
+   remaps that black to light gray (#cccccc), which sits between --muted and
+   --text: clearly visible without competing with the field's own text.
+   This single rule covers every calendar logo in the app — #StartDateInput in
+   AddInsurance.html plus the fields built at runtime in WorkPage.js (the
+   edit-insurance modal, the insurances search filter and the reconcile date),
+   because all three pages load app.css.
+   Note: this relies on the native glyph being dark. The app sets no
+   `color-scheme`, so it is; if `color-scheme: dark` is ever added the glyph
+   would already render light and this filter would need removing. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator,
+input[type="week"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8);
+}
+/* Brighten to white on hover, matching the #VisIcon affordance on the login
+   page, so the icon reads as clickable (the whole date field opens the picker). */
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover,
+input[type="week"]::-webkit-calendar-picker-indicator:hover {
+  filter: invert(1);
+}
+
 label {
   color: var(--muted);
   font-size: 12px;
@@ -149,29 +176,82 @@ h3 {
   padding: 18px;
 }
 
+/* Confirmation / error toasts. Deliberately loud: a solid coloured background,
+   large bold text, an icon, a slide-in and a short attention pulse so they are
+   not missed while the worker is focused on the form. */
 .toast {
   position: fixed;
-  top: 18px;
+  top: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-left: 4px solid var(--accent);
-  color: var(--text);
-  padding: 11px 18px;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 9999;
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 320px;
   max-width: 80vw;
+  background: #1f3a66;
+  border: 2px solid var(--accent);
+  border-left: 8px solid var(--accent);
+  color: #fff;
+  padding: 16px 26px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 4px rgba(79, 140, 255, 0.25),
+    0 14px 40px rgba(0, 0, 0, 0.65);
+  z-index: 9999;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  animation: toast-in 260ms ease-out, toast-pulse 900ms ease-in-out 260ms 2;
   /* A visible toast must never intercept clicks/typing on underlying inputs. */
   pointer-events: none;
 }
+.toast::before {
+  content: "ℹ";
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 17px;
+  font-weight: 700;
+}
 .toast.success {
-  border-left-color: var(--success);
+  background: #1d5a2c;
+  border-color: var(--success);
+  box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.3), 0 14px 40px rgba(0, 0, 0, 0.65);
+}
+.toast.success::before {
+  content: "✔";
 }
 .toast.error {
-  border-left-color: var(--danger);
+  background: #8a1f1a;
+  border-color: var(--danger);
+  box-shadow: 0 0 0 4px rgba(229, 83, 75, 0.35), 0 14px 40px rgba(0, 0, 0, 0.65);
+}
+.toast.error::before {
+  content: "✖";
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -24px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@keyframes toast-pulse {
+  0%,
+  100% {
+    transform: translate(-50%, 0) scale(1);
+  }
+  50% {
+    transform: translate(-50%, 0) scale(1.04);
+  }
 }
 
 .banner {
