@@ -2232,9 +2232,17 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
+  // Exports exactly what the table shows (same rows, same order, same row
+  // numbers) as an .xlsx file. Disabled until a search returns rows.
+  const exportBtn = el("button", t("exportExcel"), {
+    class: "secondary",
+    type: "button",
+  });
+  exportBtn.disabled = true;
   form.appendChild(apply);
   form.appendChild(clearBtn);
   form.appendChild(el("div", null, { class: "spacer" }));
+  form.appendChild(exportBtn);
 
   const result = el("div");
 
@@ -2265,10 +2273,23 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   // the browser (see sortInsuranceRows), so switching the order never re-runs
   // the search.
   function renderResults() {
+    const sorted = sortInsuranceRows(
+      lastRows,
+      insuranceSort.key,
+      insuranceSort.dir
+    );
+    // Row numbers follow the displayed (sorted) order: 1, 2, 3, …
+    const rowNumbers = new Map(sorted.map((row, idx) => [row, idx + 1]));
+    exportBtn.disabled = sorted.length === 0;
     result.replaceChildren(
       renderTable(
-        sortInsuranceRows(lastRows, insuranceSort.key, insuranceSort.dir),
+        sorted,
         [
+          {
+            key: "__rowNo",
+            label: t("rowNo"),
+            format: (_v, item) => rowNumbers.get(item),
+          },
           { key: "BlancNumber", label: t("blankNo") },
           { key: "PolicyNumber", label: t("policyNumber") },
           { key: "CarNumber", label: t("carNumber") },
@@ -2415,10 +2436,98 @@ async function adminInsurancesByDate(defaultAuthor = "") {
     // next search starts in the default (server) order again.
     lastRows = [];
     insuranceSort = { key: null, dir: "desc" };
+    exportBtn.disabled = true;
     result.replaceChildren();
+  });
+  exportBtn.addEventListener("click", () => {
+    const sorted = sortInsuranceRows(
+      lastRows,
+      insuranceSort.key,
+      insuranceSort.dir
+    );
+    if (!sorted.length) {
+      toast(t("noData"), "error");
+      return;
+    }
+    try {
+      downloadInsurancesXlsx(sorted, dateInput.value);
+    } catch (err) {
+      toast(`${t("exportFailed")}: ${err.message}`, "error");
+    }
   });
 
   Content.replaceChildren(el("h2", t("nav.insurancesByDate")), form, result);
+}
+
+// ---------------------------------------------------------------------------
+// Insurance lookup -> Excel export
+//
+// Columns mirror the result table (row number included). Prices are written
+// as real numbers (0.00 format) and creation dates as real Excel date/times,
+// so the sheet can be summed, filtered and sorted in Excel.
+// ---------------------------------------------------------------------------
+function insuranceExportSheet(rows) {
+  const columns = [
+    { label: t("rowNo"), width: 6 },
+    { label: t("blankNo"), width: 14 },
+    { label: t("policyNumber"), width: 18 },
+    { label: t("carNumber"), width: 14 },
+    { label: t("price"), width: 10 },
+    { label: t("currency"), width: 9 },
+    { label: t("payment"), width: 14 },
+    { label: t("broker"), width: 20 },
+    { label: t("author"), width: 14 },
+    { label: t("created"), width: 17 },
+    { label: t("status"), width: 12 },
+  ];
+  const text = (v) => (v === undefined || v === null ? "" : String(v));
+  const body = (rows || []).map((r, idx) => {
+    const price = Number(r.Price);
+    // Same parsing as the display/sort (local wall-clock time).
+    const ms = insuranceSortValue(r, "CreationDate");
+    const serial = ms === null ? null : xlsxDateSerial(new Date(ms));
+    return [
+      idx + 1,
+      text(r.BlancNumber),
+      text(r.PolicyNumber),
+      text(r.CarNumber),
+      Number.isFinite(price) ? { value: price, style: "money" } : "",
+      text(r.CurrencyType),
+      paymentLabel(r.PaymentType),
+      text(r.Broker),
+      text(r.Author),
+      serial !== null
+        ? { value: serial, style: "date" }
+        : text(r.CreationDate),
+      r.Annulled ? t("annulled") : "",
+    ];
+  });
+  return { columns, rows: body };
+}
+
+function downloadInsurancesXlsx(rows, date) {
+  const sheet = insuranceExportSheet(rows);
+  const bytes = buildXlsxFile({
+    sheetName: t("nav.insurances"),
+    columns: sheet.columns,
+    rows: sheet.rows,
+  });
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  const stamp =
+    date ||
+    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+  const blob = new Blob([bytes], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = el("a", "download");
+  a.href = url;
+  a.download = `insurances_${stamp}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------

@@ -245,6 +245,7 @@ async function create(body) {
     eq(r.insert.params.length, 16, "param count");
     eq(r.insert.params[0], "worker1", "Author");
     eq(r.insert.params[2], "7654321", "BlancNumber");
+    eq(r.insert.params[7], "Офис Харманли", "Broker (the branch, for walk-ins)");
     eq(r.insert.params[10], "Cash", "PaymentType");
     eq(r.insert.params[14], 0, "CardFee");
   });

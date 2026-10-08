@@ -874,6 +874,68 @@ async function patch(body, opts = {}) {
   });
 
   // -------------------------------------------------------------------------
+  // Walk-ins record their branch as the broker.
+  //
+  // Broker is the 8th bound value of the INSERT, BrokerId the 13th.
+  // -------------------------------------------------------------------------
+  await check("a walk-in records its branch as the broker", async () => {
+    const r = await create({ PaymentType: "Cash", EmailFrom: "" });
+    eq(r.status, 201, "status");
+    eq(r.inserts[0].params[7], "Офис Харманли", "stored broker");
+    eq(r.inserts[0].params[12], null, "BrokerId stays empty");
+    eq(r.brokerDeltas, [], "no broker balance is charged");
+  });
+
+  await check("a card walk-in also records its branch as the broker", async () => {
+    const r = await create({ Cash: false, EmailFrom: "", Branch: "ГКПП Лесово" });
+    eq(r.status, 201, "status");
+    eq(r.inserts[0].params[7], "ГКПП Лесово", "stored broker");
+    eq(r.storedPayment, "Card", "still a card payment");
+  });
+
+  await check("an email policy keeps the real broker's name", async () => {
+    const r = await create({
+      PaymentType: "Broker",
+      EmailFrom: "broker@example.com",
+    });
+    eq(r.status, 201, "status");
+    eq(r.inserts[0].params[7], "Euroins", "stored broker");
+    eq(r.inserts[0].params[12], 7, "BrokerId");
+  });
+
+  await check("moving a walk-in to another branch moves its broker too", async () => {
+    const r = await patch(
+      { Branch: "ГКПП Лесово" },
+      { row: { BrokerId: null, Broker: "Офис Харманли" } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.Branch, "ГКПП Лесово", "stored branch");
+    eq(r.row.Broker, "ГКПП Лесово", "stored broker follows the branch");
+  });
+
+  await check("an older walk-in without a broker gets the new branch", async () => {
+    const r = await patch(
+      { Branch: "ГКПП Лесово" },
+      { row: { BrokerId: null, Broker: "" } }
+    );
+    eq(r.row.Broker, "ГКПП Лесово", "stored broker");
+  });
+
+  await check("moving an email policy to another branch keeps its broker", async () => {
+    const r = await patch({ Branch: "ГКПП Лесово" }, { row: BROKER_ROW });
+    eq(r.status, 200, "status");
+    eq(r.row.Broker, "Euroins", "the real broker is kept");
+  });
+
+  await check("a walk-in with a hand-typed broker keeps it on branch change", async () => {
+    const r = await patch(
+      { Branch: "ГКПП Лесово" },
+      { row: { BrokerId: null, Broker: "Euroins" } }
+    );
+    eq(r.row.Broker, "Euroins", "the legacy broker is kept");
+  });
+
+  // -------------------------------------------------------------------------
   // POST /insurances/:blancNumber/annul - the annulment fee.
   //
   // The caller chooses WHO pays the fee (broker or worker). The fee itself is
