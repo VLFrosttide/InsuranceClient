@@ -12,10 +12,12 @@ import {
   dialog,
   shell,
   powerMonitor,
+  net,
 } from "electron";
 import path from "path";
 import fs from "fs";
 import electronUpdater from "electron-updater";
+import { Outbox } from "./outbox.js";
 const { autoUpdater } = electronUpdater;
 let win;
 let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
@@ -56,6 +58,7 @@ const CreateWindow = () => {
   });
 
   win.loadFile("renderer/LoginPage/index.html");
+  GuardWindowClose(win);
 
   // Keep the release number visible in the title bar even after a page sets
   // its own document title (e.g. "Insurance - Login").
@@ -100,6 +103,12 @@ const SetupAutoUpdater = () => {
 
   autoUpdater.on("error", (err) => {
     console.error("Auto-update error:", err);
+  });
+
+  // "Restart now" on an update must not be blocked by the unsent-policies
+  // prompt: queued policies are on disk and are sent after the restart.
+  autoUpdater.on("before-quit-for-update", () => {
+    closeConfirmed = true;
   });
 
   // Remember which version the user was already asked about, so a periodic
@@ -173,7 +182,157 @@ const SetupAutoUpdater = () => {
   powerMonitor.on("unlock-screen", checkIfStale);
 };
 
+// ---------------------------------------------------------------------------
+// Outbox: requests (new policies + their files) that must reach the server even
+// when the connection is slow or down. Runs here, not in a page, because every
+// page change destroys the renderer - the retry loop must survive the worker
+// moving on to the next policy. Stored under userData so it survives restarts.
+// ---------------------------------------------------------------------------
+// Only these API origins may be used by queued requests (same list as the CSP).
+const OUTBOX_ALLOWED_ORIGINS = new Set([
+  "https://lavender-quail-935384.hostingersite.com",
+  "http://127.0.0.1:5501",
+  "http://localhost:5501",
+]);
+const OUTBOX_ALLOWED_PATHS = new Set(["/worker/insurances"]);
+const OUTBOX_DEFAULT_ORIGIN = "https://lavender-quail-935384.hostingersite.com";
+
+let outbox = null;
+let outboxReady = null;
+
+// Push the queue state to every open window (the badge on each page).
+const BroadcastToWindows = (channel, payload) => {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send(channel, payload);
+  }
+};
+
+const SetupOutbox = () => {
+  outbox = new Outbox({
+    dir: path.join(app.getPath("userData"), "outbox"),
+    baseUrl: OUTBOX_DEFAULT_ORIGIN,
+    // Chromium's network stack: honours the system proxy like the renderer.
+    fetch: (url, init) => net.fetch(url, init),
+    onChange: (state) => BroadcastToWindows("OutboxState", state),
+    onDelivered: (item, result) =>
+      BroadcastToWindows("OutboxDelivered", { item, result }),
+  });
+  outboxReady = outbox.init().catch((err) => {
+    console.error("[Outbox] Failed to load the saved queue:", err);
+  });
+
+  // Timers do not run while the PC sleeps and the network is often just back
+  // after a wake-up: retry right away instead of waiting for the next tick.
+  const retryNow = () => outbox && outbox.retryAll(false);
+  powerMonitor.on("resume", retryNow);
+  powerMonitor.on("unlock-screen", retryNow);
+};
+
+// Validate an enqueue request coming from a renderer before it is persisted.
+const SanitizeOutboxRequest = (req) => {
+  if (!req || typeof req !== "object") throw new Error("Invalid request");
+  const origin = String(req.baseUrl || OUTBOX_DEFAULT_ORIGIN).replace(/\/+$/, "");
+  if (!OUTBOX_ALLOWED_ORIGINS.has(origin)) {
+    throw new Error(`Outbox: origin not allowed (${origin})`);
+  }
+  if (!OUTBOX_ALLOWED_PATHS.has(req.path)) {
+    throw new Error(`Outbox: path not allowed (${req.path})`);
+  }
+  if (typeof req.body !== "string") throw new Error("Outbox: invalid body");
+  let verify = null;
+  if (req.verify && typeof req.verify === "object") {
+    const vPath = String(req.verify.path || "");
+    if (vPath.startsWith("/insurances?")) {
+      verify = {
+        path: vPath,
+        listKey: String(req.verify.listKey || "insurances"),
+        match: Object.fromEntries(
+          Object.entries(req.verify.match || {}).map(([k, v]) => [
+            String(k),
+            String(v ?? ""),
+          ])
+        ),
+      };
+    }
+  }
+  return {
+    baseUrl: origin,
+    path: req.path,
+    method: "POST",
+    body: req.body,
+    token: String(req.token || ""),
+    username: String(req.username || ""),
+    label: String(req.label || "").slice(0, 200),
+    kind: String(req.kind || "").slice(0, 50),
+    messageId: req.messageId ? String(req.messageId) : null,
+    verify,
+  };
+};
+
+ipcMain.handle("OutboxSubmit", async (event, req, waitMs) => {
+  await outboxReady;
+  const wait = Math.min(Math.max(Number(waitMs) || 0, 0), 60000);
+  return outbox.submit(SanitizeOutboxRequest(req), wait);
+});
+ipcMain.handle("OutboxGetState", async () => {
+  await outboxReady;
+  return outbox.getState();
+});
+ipcMain.handle("OutboxRetryAll", async (event, includeFailed) => {
+  await outboxReady;
+  return outbox.retryAll(includeFailed === true);
+});
+ipcMain.handle("OutboxRetry", async (event, id) => {
+  await outboxReady;
+  return outbox.retry(id);
+});
+ipcMain.handle("OutboxDiscard", async (event, id) => {
+  await outboxReady;
+  return outbox.discard(id);
+});
+ipcMain.handle("OutboxAcknowledge", async (event, id) => {
+  await outboxReady;
+  return outbox.acknowledge(id);
+});
+ipcMain.handle("OutboxUpdateToken", async (event, username, token) => {
+  await outboxReady;
+  return outbox.updateToken(username, token);
+});
+
+// Closing the window with undelivered policies: they are stored on disk and
+// sent on the next start, but warn so the worker does not assume they landed.
+// Hooked on the window's "close" (not app "before-quit") so the window is still
+// there when the worker chooses to keep it open, and so auto-update installs
+// (quitAndInstall) are never blocked.
+let closeConfirmed = false;
+const GuardWindowClose = (window) => {
+  window.on("close", (event) => {
+    if (closeConfirmed || !outbox || outbox.unsentCount() === 0) return;
+    event.preventDefault();
+    const count = outbox.unsentCount();
+    dialog
+      .showMessageBox(window, {
+        type: "warning",
+        buttons: ["Close anyway", "Keep the app open"],
+        defaultId: 1,
+        cancelId: 1,
+        title: "Unsent policies",
+        message: `${count} polic${count === 1 ? "y has" : "ies have"} not reached the server yet.`,
+        detail:
+          "They are saved on this computer and will be sent automatically the next time the app is started with an internet connection. Keep the app open to send them now.",
+      })
+      .then(({ response }) => {
+        if (response === 0 && !window.isDestroyed()) {
+          closeConfirmed = true;
+          window.close();
+        }
+      })
+      .catch((err) => console.error("[Outbox] Close prompt failed:", err));
+  });
+};
+
 app.whenReady().then(() => {
+  SetupOutbox();
   CreateWindow();
   Menu.setApplicationMenu(null);
   SetupAutoUpdater();

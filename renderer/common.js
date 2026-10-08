@@ -298,6 +298,39 @@ const I18N = {
       "No tariff for this vehicle type and duration - the price was not changed.",
     "edit.pricingLoadFailed":
       "Failed to load the tariffs - the price was not recalculated.",
+
+    "outbox.queuedToast":
+      "No connection to the server. The policy is saved on this computer and will be sent automatically - you can continue with the next one.",
+    "outbox.deliveredToast": "Queued policy delivered: {label}",
+    "outbox.deliveredReplyFailed":
+      "Queued policy {label} was saved, but the return email failed: {e}",
+    "outbox.failedToast": "The server rejected queued policy {label}: {e}",
+    "outbox.authToast":
+      "Your session expired - log in again to send the queued policies.",
+    "outbox.badgeQueued": "{n} queued",
+    "outbox.badgeFailed": "{n} failed",
+    "outbox.badgeTitle": "Requests waiting to be sent to the server",
+    "outbox.panelTitle": "Queued requests",
+    "outbox.panelHint":
+      "Saved on this computer. Retrying every {s} s until the server answers - also after restarting the app.",
+    "outbox.retryNow": "Retry now",
+    "outbox.retry": "Retry",
+    "outbox.discard": "Discard",
+    "outbox.discardConfirm":
+      "Discard this policy? It has NOT reached the server and its data and files will be lost.",
+    "outbox.offline": "Offline - no connection to the server",
+    "outbox.online": "Connected",
+    "outbox.nextRetry": "Next attempt in {s} s",
+    "outbox.sendingNow": "Sending…",
+    "outbox.status.pending": "Waiting",
+    "outbox.status.sending": "Sending",
+    "outbox.status.auth": "Log in again",
+    "outbox.status.failed": "Rejected",
+    "outbox.status.sent": "Delivered",
+    "outbox.attempts": "attempts: {n}",
+    "outbox.empty": "Nothing queued.",
+    "outbox.emailQueued":
+      "This email's policy is queued and will be sent automatically.",
   },
   bg: {
     brand: "Застрахователна конзола",
@@ -581,6 +614,39 @@ const I18N = {
       "Няма тарифа за този вид превозно средство и срок - цената не е променена.",
     "edit.pricingLoadFailed":
       "Неуспешно зареждане на тарифите - цената не е преизчислена.",
+
+    "outbox.queuedToast":
+      "Няма връзка със сървъра. Полицата е запазена на този компютър и ще бъде изпратена автоматично - можете да продължите със следващата.",
+    "outbox.deliveredToast": "Чакащата полица е изпратена: {label}",
+    "outbox.deliveredReplyFailed":
+      "Чакащата полица {label} е запазена, но обратният имейл не беше изпратен: {e}",
+    "outbox.failedToast": "Сървърът отхвърли чакащата полица {label}: {e}",
+    "outbox.authToast":
+      "Сесията изтече - влезте отново, за да се изпратят чакащите полици.",
+    "outbox.badgeQueued": "{n} чакащи",
+    "outbox.badgeFailed": "{n} неуспешни",
+    "outbox.badgeTitle": "Заявки, които чакат изпращане към сървъра",
+    "outbox.panelTitle": "Чакащи заявки",
+    "outbox.panelHint":
+      "Запазени на този компютър. Нов опит на всеки {s} с, докато сървърът отговори - и след рестарт на приложението.",
+    "outbox.retryNow": "Опитай сега",
+    "outbox.retry": "Опитай",
+    "outbox.discard": "Откажи",
+    "outbox.discardConfirm":
+      "Да се откаже ли тази полица? Тя НЕ е достигнала сървъра и данните и файловете ѝ ще бъдат загубени.",
+    "outbox.offline": "Няма връзка със сървъра",
+    "outbox.online": "Свързан",
+    "outbox.nextRetry": "Следващ опит след {s} с",
+    "outbox.sendingNow": "Изпращане…",
+    "outbox.status.pending": "Чака",
+    "outbox.status.sending": "Изпраща се",
+    "outbox.status.auth": "Влезте отново",
+    "outbox.status.failed": "Отхвърлена",
+    "outbox.status.sent": "Изпратена",
+    "outbox.attempts": "опити: {n}",
+    "outbox.empty": "Няма чакащи заявки.",
+    "outbox.emailQueued":
+      "Полицата за този имейл чака изпращане и ще бъде изпратена автоматично.",
   },
 };
 
@@ -858,6 +924,346 @@ function requireLogin() {
     return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Outbox (offline queue) - renderer side.
+//
+// The queue itself lives in the main process (see /outbox.js): it stores each
+// request with its files on disk and retries every 5 s until the server
+// answers, across page changes and app restarts. This part shows a floating
+// "N queued" badge on every page and keeps the email workflow in sync.
+// ---------------------------------------------------------------------------
+let outboxState = null;
+const outboxListeners = new Set();
+let outboxBadge = null;
+let outboxPanel = null;
+let outboxTick = null;
+
+function outboxAvailable() {
+  return !!(window.bridge && typeof window.bridge.OutboxSubmit === "function");
+}
+
+function fmt(text, vars) {
+  return String(text).replace(/\{(\w+)\}/g, (m, k) =>
+    vars && vars[k] !== undefined ? String(vars[k]) : m
+  );
+}
+
+// Subscribe to queue state changes (called immediately with the last state).
+function onOutboxState(listener) {
+  outboxListeners.add(listener);
+  if (outboxState) listener(outboxState);
+  return () => outboxListeners.delete(listener);
+}
+
+// Message IDs of email policies that are queued (not yet delivered, or
+// delivered but the email is not completed yet). Their cards must stay hidden.
+function outboxEmailIds(state = outboxState) {
+  const ids = new Set();
+  for (const item of (state && state.items) || []) {
+    if (item.messageId && item.status !== "failed") ids.add(item.messageId);
+  }
+  return ids;
+}
+
+/**
+ * Send a request through the durable outbox. Waits up to `waitMs` for the
+ * server, so with a normal connection it behaves like api(); when the server
+ * cannot be reached the request stays queued and `{ queued: true }` returns.
+ *
+ * @returns {Promise<{status, queued, result?, error?, id}>}
+ *   status: "sent" | "failed" | "pending" | "sending" | "auth"
+ */
+async function submitWithOutbox(req, waitMs = 8000) {
+  if (!outboxAvailable()) {
+    // Fallback (plain browser): a normal one-shot request.
+    const result = await api(req.path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: req.body,
+    });
+    return { status: "sent", queued: false, result };
+  }
+  return window.bridge.OutboxSubmit(
+    {
+      ...req,
+      baseUrl: API_BASE,
+      token: getToken(),
+      username: getUsername(),
+    },
+    waitMs
+  );
+}
+
+// --- Email follow-up for queued email policies ----------------------------
+// An email policy's email must stay reserved for this worker while the policy
+// waits in the queue, and be completed once it is delivered. Pages that hold
+// an authenticated email socket (dashboard, email form) call this after
+// auth_ok and on every queue change.
+const outboxClaimedEmails = new Set();
+
+// `ownMessageId`: the email the current page itself has open (the email form).
+// Its claim is managed by that page, so it is never claimed or released here -
+// e.g. a policy the server rejects right away is dropped from the queue, and
+// that must not hand the email the worker is still editing back to everyone.
+function syncOutboxEmails(socket, ownMessageId = null) {
+  if (!socket || typeof socket.isReady !== "function" || !socket.isReady()) {
+    return;
+  }
+  const current = new Set();
+  for (const item of (outboxState && outboxState.items) || []) {
+    if (!item.messageId) continue;
+    current.add(item.messageId);
+    if (item.messageId === ownMessageId && item.status !== "sent") continue;
+    try {
+      if (item.status === "sent") {
+        // Delivered: mark the email handled everywhere, then forget the item.
+        socket.send({ type: "complete_email", messageId: item.messageId });
+        outboxClaimedEmails.delete(item.messageId);
+        window.bridge.OutboxAcknowledge(item.id).catch((err) =>
+          console.error("Failed to acknowledge outbox item:", err)
+        );
+      } else if (!outboxClaimedEmails.has(item.messageId)) {
+        // Still queued: keep the email reserved so nobody handles it twice.
+        socket.send({
+          type: "claim_email",
+          messageId: item.messageId,
+          restore: true,
+        });
+        outboxClaimedEmails.add(item.messageId);
+      }
+    } catch (err) {
+      console.error("Failed to sync queued email policy:", err);
+    }
+  }
+  // Discarded by the worker: give the email back to everyone.
+  for (const messageId of Array.from(outboxClaimedEmails)) {
+    if (current.has(messageId) || messageId === ownMessageId) continue;
+    outboxClaimedEmails.delete(messageId);
+    try {
+      socket.send({ type: "release_email", messageId });
+    } catch (err) {
+      console.error("Failed to release discarded email policy:", err);
+    }
+  }
+}
+
+// A reconnect starts a new server-side session: claims must be re-sent.
+function resetOutboxEmailClaims() {
+  outboxClaimedEmails.clear();
+}
+
+// --- Badge + panel ---------------------------------------------------------
+function outboxStatusLabel(status) {
+  return t(`outbox.status.${status}`, status);
+}
+
+function ensureOutboxBadge() {
+  if (outboxBadge || !document.body) return;
+  outboxBadge = el("button", "", {
+    id: "OutboxBadge",
+    type: "button",
+    class: "outbox-badge hidden",
+  });
+  outboxBadge.addEventListener("click", () => toggleOutboxPanel());
+  outboxPanel = el("div", null, { id: "OutboxPanel", class: "outbox-panel hidden" });
+  document.body.appendChild(outboxPanel);
+  document.body.appendChild(outboxBadge);
+}
+
+function toggleOutboxPanel(show) {
+  if (!outboxPanel) return;
+  const visible = show ?? outboxPanel.classList.contains("hidden");
+  outboxPanel.classList.toggle("hidden", !visible);
+  if (visible) renderOutboxPanel();
+}
+
+function renderOutboxBadge() {
+  ensureOutboxBadge();
+  if (!outboxBadge) return;
+  const s = outboxState || { items: [], unsentCount: 0, failedCount: 0 };
+  const unsent = s.unsentCount || 0;
+  const failed = s.failedCount || 0;
+  const visible = unsent > 0 || failed > 0;
+  outboxBadge.classList.toggle("hidden", !visible);
+  if (!visible) {
+    toggleOutboxPanel(false);
+    return;
+  }
+  const parts = [];
+  if (unsent) parts.push(fmt(t("outbox.badgeQueued"), { n: unsent }));
+  if (failed) parts.push(fmt(t("outbox.badgeFailed"), { n: failed }));
+  let sub = "";
+  if (unsent) {
+    if (s.items.some((i) => i.status === "sending")) sub = t("outbox.sendingNow");
+    else if (s.nextRetryAt) {
+      const secs = Math.max(0, Math.ceil((s.nextRetryAt - Date.now()) / 1000));
+      sub = fmt(t("outbox.nextRetry"), { s: secs });
+    }
+  }
+  outboxBadge.replaceChildren(
+    el("span", "⇅", { class: "outbox-badge-icon" }),
+    el("span", parts.join(" · "), { class: "outbox-badge-count" }),
+    el("span", sub, { class: "outbox-badge-sub" })
+  );
+  outboxBadge.title = t("outbox.badgeTitle");
+  outboxBadge.classList.toggle("outbox-badge-failed", failed > 0);
+  outboxBadge.classList.toggle("outbox-badge-offline", s.connected === false);
+  if (outboxPanel && !outboxPanel.classList.contains("hidden")) {
+    renderOutboxPanel();
+  }
+}
+
+function renderOutboxPanel() {
+  if (!outboxPanel) return;
+  const s = outboxState || { items: [] };
+  const items = (s.items || []).filter((i) => i.status !== "sent");
+
+  const header = el("div", null, { class: "row outbox-panel-header" });
+  header.appendChild(el("strong", t("outbox.panelTitle")));
+  header.appendChild(el("div", null, { class: "spacer" }));
+  const retryAll = el("button", t("outbox.retryNow"), {
+    class: "small",
+    type: "button",
+  });
+  retryAll.addEventListener("click", () => {
+    window.bridge
+      .OutboxRetryAll(true)
+      .catch((err) => reportError("Outbox retry failed", err));
+  });
+  header.appendChild(retryAll);
+  const close = el("button", "✕", { class: "secondary small", type: "button" });
+  close.addEventListener("click", () => toggleOutboxPanel(false));
+  header.appendChild(close);
+
+  const conn = el(
+    "div",
+    s.connected === false ? t("outbox.offline") : s.connected ? t("outbox.online") : "",
+    { class: `outbox-conn ${s.connected === false ? "offline" : "online"}` }
+  );
+  const hint = el(
+    "div",
+    fmt(t("outbox.panelHint"), { s: Math.round((s.retryIntervalMs || 5000) / 1000) }),
+    { class: "muted outbox-hint" }
+  );
+
+  const list = el("ul", null, { class: "outbox-list" });
+  if (!items.length) list.appendChild(el("li", t("outbox.empty"), { class: "muted" }));
+  for (const item of items) {
+    const li = el("li", null, { class: `outbox-item status-${item.status}` });
+    const top = el("div", null, { class: "row" });
+    top.appendChild(el("span", item.label || item.id, { class: "outbox-label" }));
+    top.appendChild(el("div", null, { class: "spacer" }));
+    top.appendChild(
+      el("span", outboxStatusLabel(item.status), { class: "outbox-status" })
+    );
+    li.appendChild(top);
+    const meta = [
+      formatDateTime(new Date(item.createdAt)),
+      fmt(t("outbox.attempts"), { n: item.attempts || 0 }),
+    ];
+    li.appendChild(el("div", meta.join(" · "), { class: "muted small" }));
+    if (item.lastError) {
+      li.appendChild(el("div", item.lastError, { class: "outbox-error small" }));
+    }
+    const actions = el("div", null, { class: "row outbox-actions" });
+    if (item.status === "failed") {
+      const retry = el("button", t("outbox.retry"), { class: "small", type: "button" });
+      retry.addEventListener("click", () =>
+        window.bridge.OutboxRetry(item.id).catch((err) => reportError("Outbox retry failed", err))
+      );
+      actions.appendChild(retry);
+    }
+    if (item.status !== "sending") {
+      const discard = el("button", t("outbox.discard"), {
+        class: "danger small",
+        type: "button",
+      });
+      discard.addEventListener("click", () => {
+        if (!confirm(t("outbox.discardConfirm"))) return;
+        window.bridge
+          .OutboxDiscard(item.id)
+          .catch((err) => reportError("Outbox discard failed", err));
+      });
+      actions.appendChild(discard);
+    }
+    if (actions.childNodes.length) li.appendChild(actions);
+    list.appendChild(li);
+  }
+  outboxPanel.replaceChildren(header, conn, hint, list);
+}
+
+function applyOutboxState(state) {
+  const previous = outboxState;
+  outboxState = state || null;
+  // Surface new 401 parking once per change, not on every tick.
+  const authNow = (state && state.items || []).some((i) => i.status === "auth");
+  const authBefore = (previous && previous.items || []).some((i) => i.status === "auth");
+  if (authNow && !authBefore) toast(t("outbox.authToast"), "error");
+  // Newly rejected items (validation error, duplicate number, ...).
+  const failedBefore = new Set(
+    ((previous && previous.items) || [])
+      .filter((i) => i.status === "failed")
+      .map((i) => i.id)
+  );
+  if (previous) {
+    for (const item of (state && state.items) || []) {
+      if (item.status === "failed" && !failedBefore.has(item.id)) {
+        toast(
+          fmt(t("outbox.failedToast"), { label: item.label, e: item.lastError }),
+          "error"
+        );
+      }
+    }
+  }
+  renderOutboxBadge();
+  for (const listener of outboxListeners) {
+    try {
+      listener(outboxState);
+    } catch (err) {
+      console.error("Outbox state listener failed:", err);
+    }
+  }
+}
+
+function initOutboxUi() {
+  if (!outboxAvailable()) return;
+  window.bridge.OnOutboxState(applyOutboxState);
+  window.bridge.OnOutboxDelivered(({ item, result } = {}) => {
+    if (!item) return;
+    const replyError = result && result.replyError;
+    if (replyError) {
+      toast(
+        fmt(t("outbox.deliveredReplyFailed"), { label: item.label, e: replyError }),
+        "error"
+      );
+    } else {
+      toast(fmt(t("outbox.deliveredToast"), { label: item.label }), "success");
+    }
+  });
+  window.bridge
+    .OutboxGetState()
+    .then((state) => {
+      // Pick up a fresh login (new token) for requests parked on a 401.
+      const token = getToken();
+      if (token && state && state.items.some((i) => i.status === "auth")) {
+        window.bridge.OutboxUpdateToken(getUsername(), token).catch(() => {});
+      }
+      applyOutboxState(state);
+    })
+    .catch((err) => console.error("Failed to load the outbox state:", err));
+  // Count down "Next attempt in N s" between state pushes.
+  clearInterval(outboxTick);
+  outboxTick = setInterval(() => {
+    if (outboxState && outboxState.unsentCount && outboxState.nextRetryAt) {
+      renderOutboxBadge();
+    }
+  }, 1000);
+  // The OS says the network is back: do not wait for the next 5 s tick.
+  window.addEventListener("online", () => {
+    window.bridge.OutboxRetryAll(false).catch(() => {});
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,3 +1556,5 @@ class UnreadEmailSocket {
 
 // Apply translations once the static DOM is parsed (scripts are deferred).
 translatePage();
+// Queued-requests badge on every page (scripts are deferred: body exists).
+initOutboxUi();

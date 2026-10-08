@@ -13,7 +13,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs",
+    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs && node Test/outbox.test.cjs",
     "build": "electron-builder",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --publish always",
@@ -27,6 +27,7 @@
     },
     "files": [
       "main.js",
+      "outbox.js",
       "package.json",
       "renderer/**/*",
       "Icons/**/*"

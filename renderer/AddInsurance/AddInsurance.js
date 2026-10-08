@@ -338,10 +338,31 @@ function requestEmailAttachments() {
 let leavingEmail = false;
 
 function setupEmailSocket() {
-  if (!PendingEmail || !PendingEmail.messageId) return;
+  if (!PendingEmail || !PendingEmail.messageId) {
+    // Walk-in form: no email of its own. Still connect while email policies
+    // wait in the outbox - their reservations live on this page's socket
+    // (the dashboard's connection closed on navigation) and they must be
+    // completed if the outbox delivers them while this form is open.
+    onOutboxState((state) => {
+      if (emailSocket || outboxEmailIds(state).size === 0) return;
+      emailSocket = new UnreadEmailSocket({
+        close: () => resetOutboxEmailClaims(),
+        auth_ok: () => syncOutboxEmails(emailSocket),
+      });
+      emailSocket.connect();
+    });
+    onOutboxState(() => syncOutboxEmails(emailSocket));
+    return;
+  }
 
   emailSocket = new UnreadEmailSocket({
+    // The server released this connection's claims: re-claim on reconnect.
+    close: () => resetOutboxEmailClaims(),
     auth_ok: () => {
+      // Emails of policies queued earlier stay reserved on this connection
+      // too (the dashboard's connection, which held them, is gone), and get
+      // completed here if the outbox delivers them while this form is open.
+      syncOutboxEmails(emailSocket, ownEmailId());
       // The email is being completed or released while this page unloads (or
       // was already completed): do not claim it again.
       if (leavingEmail || !PendingEmail || !PendingEmail.messageId) return;
@@ -416,6 +437,14 @@ function setupEmailSocket() {
     },
   });
   emailSocket.connect();
+  onOutboxState(() => syncOutboxEmails(emailSocket, ownEmailId()));
+}
+
+// The email this form was opened for (claimed and released by this page).
+// Kept even after a save so a late queue update cannot release it.
+const OwnEmailId = PendingEmail && PendingEmail.messageId ? PendingEmail.messageId : null;
+function ownEmailId() {
+  return OwnEmailId;
 }
 
 function releaseEmail() {
@@ -963,6 +992,12 @@ ClearButton.addEventListener("click", () => {
 // Set once a successful save starts navigating back to the dashboard.
 let redirecting = false;
 
+// How long Save waits for the server before the policy is left in the outbox
+// and the worker is sent on to the next one. Short enough not to stall the
+// worker on a dead connection; the outbox returns even earlier as soon as an
+// attempt fails outright (no network, server down).
+const OUTBOX_WAIT_MS = 10000;
+
 InsuranceForm.addEventListener("submit", async function (e) {
   e.preventDefault();
 
@@ -1065,53 +1100,94 @@ InsuranceForm.addEventListener("submit", async function (e) {
 
   SubmitFormButton.disabled = true;
   try {
-    const result = await api("/worker/insurances", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    // Sent through the durable outbox: with a working connection this waits
+    // for the server like a normal request; when the server cannot be reached
+    // the policy (with its files) is stored on disk and retried every 5 s in
+    // the background, and the worker moves on to the next policy.
+    const outcome = await submitWithOutbox(
+      {
+        path: "/worker/insurances",
+        body: JSON.stringify(payload),
+        kind: "insurance",
+        label: [payload.BlancNumber, carNumber].filter(Boolean).join(" · "),
+        messageId: returnEmailEnabled() ? PendingEmail.messageId : null,
+        // After an attempt that got no answer, the outbox checks whether this
+        // policy already exists before re-sending it (no duplicates).
+        verify: {
+          path: `/insurances?blancNumber=${encodeURIComponent(
+            payload.BlancNumber
+          )}&author=${encodeURIComponent(getUsername())}`,
+          listKey: "insurances",
+          match: { BlancNumber: payload.BlancNumber, Author: getUsername() },
+        },
+      },
+      OUTBOX_WAIT_MS
+    );
+
+    if (outcome.status === "failed") {
+      // The server answered and rejected it (validation, duplicate, ...):
+      // keep the form so the worker can fix it.
+      const error = new Error(outcome.error || t("serverError"));
+      error.status = outcome.httpStatus;
+      throw error;
+    }
+
+    const queued = outcome.status !== "sent";
+    const result = outcome.result || {};
 
     // The insurance is saved even when the return email fails (the server
     // sends it after committing), so report that failure separately.
-    const replyError = result && result.replyError;
-    if (replyError) {
-      const message = t("add.replyFailed").replace("{e}", replyError);
+    const replyError = !queued && result && result.replyError;
+    let flash;
+    if (queued) {
+      console.warn(
+        "Insurance queued in the outbox (server unreachable):",
+        outcome.error || outcome.status
+      );
+      flash = { text: t("outbox.queuedToast"), type: "info" };
+    } else if (replyError) {
       console.error("Return email failed after saving insurance:", replyError);
-      toast(message, "error");
+      flash = { text: t("add.replyFailed").replace("{e}", replyError), type: "error" };
     } else {
-      toast(t("add.saved"), "success");
+      flash = { text: t("add.saved"), type: "success" };
     }
+    toast(flash.text, flash.type);
 
     // The form is complete (email policy or walk-in): return the worker to the
     // dashboard with the unread email cards. The toast is handed over through
     // localStorage because it would otherwise be lost on navigation; WorkPage
     // shows it once loaded.
     if (OpenedFromEmail) {
-      // Mark the email handled, removing its card everywhere.
+      // Delivered: mark the email handled, removing its card everywhere.
+      // Queued: keep it reserved; the dashboard keeps the claim alive and
+      // completes the email once the outbox delivers the policy.
+      leavingEmail = true;
       await waitForSocketAuth();
-      completeEmail();
+      if (!queued) {
+        completeEmail();
+        if (outcome.id && outboxAvailable()) {
+          window.bridge.OutboxAcknowledge(outcome.id).catch(() => {});
+        }
+      }
       // Give the socket a moment to flush the "complete_email" frame before
       // the page is unloaded (same approach as goBack()).
       await new Promise((r) => setTimeout(r, 120));
     }
     clearPendingEmail();
     try {
-      localStorage.setItem(
-        "flashToast",
-        JSON.stringify(
-          replyError
-            ? {
-                text: t("add.replyFailed").replace("{e}", replyError),
-                type: "error",
-              }
-            : { text: t("add.saved"), type: "success" }
-        )
-      );
+      localStorage.setItem("flashToast", JSON.stringify(flash));
     } catch (err) {
       console.error("Failed to store flash toast:", err);
     }
     // Keep Save disabled while the page unloads so it can't be submitted twice.
     redirecting = true;
+    if (outcome.status === "auth") {
+      // Session expired (401). The policy is safe in the outbox and is sent
+      // with the new token right after the worker logs in again.
+      toast(t("outbox.authToast"), "error");
+      redirectToLogin();
+      return;
+    }
     window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
   } catch (error) {
     console.error("Error saving insurance:", error);

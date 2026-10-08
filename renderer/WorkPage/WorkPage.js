@@ -42,6 +42,9 @@ function emailCardsContainer() {
 
 function addEmailCard(email) {
   if (!email || !email.messageId || emailCards.has(email.messageId)) return;
+  // Its policy is already queued in the outbox (saved offline, waiting to be
+  // sent): the email is handled, so it must not be offered again.
+  if (outboxEmailIds().has(email.messageId)) return;
 
   const card = el("div", null, { class: "email-card" });
 
@@ -261,10 +264,14 @@ function setupEmailSocket() {
       } catch (err) {
         reportError("Failed to request unread emails", err, "emailSendFailed");
       }
+      // Keep emails of queued policies reserved; complete delivered ones.
+      syncOutboxEmails(emailSocket);
     },
     // The connection dropped: the server never answers a claim sent on it, so
     // fail it now instead of leaving the card stuck in its busy state.
     close: () => {
+      // The server released this connection's claims: re-claim on reconnect.
+      resetOutboxEmailClaims();
       if (!pendingClaimEmail) return;
       console.error(
         `Email WebSocket closed before claim_email "${pendingClaimEmail.messageId}" was answered`
@@ -309,6 +316,13 @@ function setupEmailSocket() {
     },
   });
   emailSocket.connect();
+
+  // Queue changes: hide cards of newly queued email policies and complete the
+  // emails of policies the outbox just delivered.
+  onOutboxState(() => {
+    for (const messageId of outboxEmailIds()) removeEmailCard(messageId);
+    syncOutboxEmails(emailSocket);
+  });
 }
 
 function fetchUnreadEmails() {
