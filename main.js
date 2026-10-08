@@ -11,6 +11,7 @@ import {
   nativeTheme,
   dialog,
   shell,
+  powerMonitor,
 } from "electron";
 import path from "path";
 import fs from "fs";
@@ -101,7 +102,17 @@ const SetupAutoUpdater = () => {
     console.error("Auto-update error:", err);
   });
 
-  autoUpdater.on("update-downloaded", (info) => {
+  // Remember which version the user was already asked about, so a periodic
+  // re-check (which re-emits "update-downloaded" for the cached download) does
+  // not nag them again after they chose "Later". A newer release still prompts.
+  let promptedVersion = null;
+  let promptOpen = false;
+
+  autoUpdater.on("update-downloaded", async (info) => {
+    if (promptOpen || info.version === promptedVersion) return;
+    promptedVersion = info.version;
+    promptOpen = true;
+
     const options = {
       type: "info",
       buttons: ["Restart now", "Later"],
@@ -109,21 +120,57 @@ const SetupAutoUpdater = () => {
       cancelId: 1,
       title: "Update available",
       message: `Version ${info.version} has been downloaded.`,
-      detail: "Restart the application to apply the update.",
+      detail:
+        "Restart the application to apply the update. If you choose Later, it will be installed automatically the next time the app is closed.",
     };
-    // `win` may be closed/destroyed by the time the download finishes, so fall
-    // back to a parent-less dialog instead of crashing.
-    const choice =
-      win && !win.isDestroyed()
-        ? dialog.showMessageBoxSync(win, options)
-        : dialog.showMessageBoxSync(options);
-    if (choice === 0) autoUpdater.quitAndInstall();
+    try {
+      // Async dialog so the main process (IPC, printing, …) is not blocked
+      // while the prompt is waiting for the user. `win` may be destroyed by the
+      // time the download finishes, so fall back to a parent-less dialog.
+      const { response } =
+        win && !win.isDestroyed()
+          ? await dialog.showMessageBox(win, options)
+          : await dialog.showMessageBox(options);
+      if (response === 0) autoUpdater.quitAndInstall();
+    } catch (err) {
+      console.error("Auto-update: failed to show the update prompt:", err);
+    } finally {
+      promptOpen = false;
+    }
   });
 
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  // Check for new releases while the app keeps running, so users do not have
+  // to restart it just to discover that an update is live.
+  const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000; // regular background poll
+  const MIN_CHECK_GAP_MS = 60 * 1000; // throttle for focus/resume triggers
+  let checking = false;
+  let lastCheckAt = 0;
+
+  const check = async () => {
+    if (checking) return;
+    checking = true;
+    lastCheckAt = Date.now();
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch {
+      // Already logged by the "error" listener above.
+    } finally {
+      checking = false;
+    }
+  };
+
+  // Extra checks on window focus / wake-from-sleep, throttled so they never
+  // hammer the release server.
+  const checkIfStale = () => {
+    if (Date.now() - lastCheckAt >= MIN_CHECK_GAP_MS) check();
+  };
+
   check();
-  // Re-check every hour while the app stays open.
-  setInterval(check, 60 * 60 * 1000);
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+  app.on("browser-window-focus", checkIfStale);
+  // Timers do not run while the PC sleeps; check as soon as it wakes up.
+  powerMonitor.on("resume", checkIfStale);
+  powerMonitor.on("unlock-screen", checkIfStale);
 };
 
 app.whenReady().then(() => {
