@@ -36,19 +36,78 @@ function emailCardsContainer() {
     container.appendChild(el("p", t("noUnreadEmails"), { class: "muted" }));
     return container;
   }
-  for (const [, entry] of emailCards) container.appendChild(entry.node);
+  // Oldest first: the card that has waited longest is the one to process next.
+  const entries = Array.from(emailCards.values()).sort((a, b) =>
+    compareEmailArrival(a.arrivalMs, b.arrivalMs)
+  );
+  for (const entry of entries) container.appendChild(entry.node);
+  refreshEmailCardAges();
   return container;
 }
+
+function emailWaitingLabel(arrivalMs, now) {
+  const minutes = emailWaitingMinutes(arrivalMs, now);
+  if (minutes < 1) return t("email.waitingNow");
+  if (minutes < 60) return t("email.waitingMin").replace("{n}", minutes);
+  return t("email.waitingHours")
+    .replace("{h}", Math.floor(minutes / 60))
+    .replace("{m}", minutes % 60);
+}
+
+// Update every card's arrival time / waiting label and overdue highlight.
+// Also re-translates the labels, so it runs on every dashboard render.
+function refreshEmailCardAges() {
+  const now = Date.now();
+  for (const entry of emailCards.values()) {
+    const overdue = isEmailOverdue(entry.arrivalMs, now);
+    entry.node.classList.toggle("email-card-overdue", overdue);
+    entry.timeNode.textContent = t("email.arrived").replace(
+      "{t}",
+      formatEmailArrival(entry.arrivalMs, now)
+    );
+    entry.waitNode.textContent = emailWaitingLabel(entry.arrivalMs, now);
+    entry.timeWrap.title = overdue ? t("email.overdue") : "";
+  }
+}
+
+// Ages change while the dashboard sits open: refresh them periodically.
+// Cheap (text/class updates only) and harmless when the dashboard is hidden.
+const EMAIL_AGE_REFRESH_MS = 30 * 1000;
+setInterval(refreshEmailCardAges, EMAIL_AGE_REFRESH_MS);
 
 function addEmailCard(email) {
   if (!email || !email.messageId || emailCards.has(email.messageId)) return;
 
   const card = el("div", null, { class: "email-card" });
 
-  const openBtn = el("button", emailTitle(email), {
+  const openBtn = el("button", null, {
     class: "email-card-open",
     type: "button",
   });
+
+  // Replies / forwards look different from a fresh request: a coloured edge
+  // plus a badge saying how many emails the thread contains.
+  const thread = emailThreadInfo(email);
+  if (thread.kind) {
+    card.classList.add(`email-card-${thread.kind}`);
+    let badgeText = t(thread.kind === "forward" ? "email.forward" : "email.reply");
+    if (thread.count > 1) {
+      badgeText += ` · ${t("email.threadCount").replace("{n}", thread.count)}`;
+    }
+    openBtn.appendChild(el("span", badgeText, { class: "email-card-badge" }));
+  }
+  openBtn.appendChild(el("span", emailTitle(email), { class: "email-card-title" }));
+
+  // Arrival time (when this PC first saw the email) + how long the card has
+  // been waiting (filled in and kept current by refreshEmailCardAges).
+  const arrivalMs = emailFirstSeenMs(localStorage, email.messageId);
+  const timeWrap = el("span", null, { class: "email-card-time" });
+  const timeNode = el("span", null, { class: "email-card-arrived" });
+  const waitNode = el("span", null, { class: "email-card-waiting" });
+  timeWrap.appendChild(timeNode);
+  timeWrap.appendChild(waitNode);
+  openBtn.appendChild(timeWrap);
+
   openBtn.addEventListener("click", () => openEmailInNewForm(email));
 
   const xBtn = el("button", "✕", {
@@ -65,7 +124,15 @@ function addEmailCard(email) {
   card.appendChild(openBtn);
   card.appendChild(xBtn);
 
-  emailCards.set(email.messageId, { email, node: card });
+  emailCards.set(email.messageId, {
+    email,
+    node: card,
+    arrivalMs,
+    timeWrap,
+    timeNode,
+    waitNode,
+  });
+  refreshEmailCardAges();
 
   // If the dashboard is the active view, re-render it in place.
   if (activeNav && activeNav.load === workerDashboard) {

@@ -89,12 +89,23 @@
 }
 button.reply-button {
   background: var(--warning);
+  opacity: 1;
+  transition: background 150ms ease, opacity 150ms ease;
 }
 button.reply-button:hover {
   background: #b9891b;
 }
 button.reply-button:disabled {
   background: #4a5563;
+}
+/* Nothing typed in the reply input yet: keep the button's colour but fade it
+   right down and make it unclickable. It returns to full opacity as soon as
+   the worker starts typing. */
+button.reply-button.reply-empty,
+button.reply-button.reply-empty:hover {
+  background: var(--warning);
+  opacity: 0.2;
+  cursor: not-allowed;
 }
 
 /* File drop area */
@@ -207,6 +218,64 @@ button.reply-button:disabled {
   max-height: 300px;
   overflow-y: auto;
 }
+/* Email thread: a reply/forward is split into one box per email (newest
+   first). A single email keeps the plain meta + body look above. */
+.email-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.email-thread .email-body {
+  margin: 0;
+}
+.email-side-thread .email-message {
+  border: 1px solid var(--panel-border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+}
+.email-side-thread .email-message-latest {
+  border-left-color: var(--accent);
+  background: rgba(79, 140, 255, 0.06);
+}
+.email-side-thread .email-message-quoted {
+  position: relative;
+  margin-left: 12px;
+  border-left-color: var(--warning);
+  border-style: dashed;
+  border-left-style: solid;
+  background: var(--bg-soft);
+}
+/* Small connector so each earlier email reads as "quoted by" the one above. */
+.email-side-thread .email-message-quoted::before {
+  content: "";
+  position: absolute;
+  top: -15px;
+  left: 14px;
+  height: 14px;
+  border-left: 2px dotted var(--panel-border);
+}
+.email-side-thread .email-message-quoted .email-body {
+  background: #222833;
+  color: #c9d1dc;
+  max-height: 220px;
+}
+.email-message-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+.email-message-quoted .email-message-label {
+  color: var(--warning);
+}
+.email-message .email-meta {
+  margin-bottom: 8px;
+}
+
 .email-attachments {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

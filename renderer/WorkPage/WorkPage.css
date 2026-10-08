@@ -211,6 +211,105 @@ pre {
 .email-card-open:hover {
   background: transparent;
 }
+.email-card-title {
+  display: block;
+}
+/* Reply / forward cards: coloured left edge + badge, so a reply is never
+   mistaken for a fresh request. */
+.email-card.email-card-reply,
+.email-card.email-card-forward {
+  border-left: 4px solid var(--warning);
+  background: linear-gradient(
+    90deg,
+    rgba(210, 153, 34, 0.1),
+    var(--panel) 60%
+  );
+}
+.email-card.email-card-forward {
+  border-left-color: #a371f7;
+  background: linear-gradient(
+    90deg,
+    rgba(163, 113, 247, 0.1),
+    var(--panel) 60%
+  );
+}
+.email-card.email-card-reply:hover,
+.email-card.email-card-forward:hover {
+  background: var(--bg-soft);
+}
+.email-card-badge {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--warning);
+  background: rgba(210, 153, 34, 0.16);
+  border: 1px solid rgba(210, 153, 34, 0.45);
+}
+.email-card-forward .email-card-badge {
+  color: #c4a5fb;
+  background: rgba(163, 113, 247, 0.16);
+  border-color: rgba(163, 113, 247, 0.45);
+}
+/* Arrival time + waiting duration under the card title. */
+.email-card-time {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.email-card-arrived {
+  font-variant-numeric: tabular-nums;
+}
+.email-card-waiting {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(154, 163, 178, 0.12);
+}
+/* Overdue: waiting more than 10 minutes. Red border with a slow pulsing glow
+   and a red waiting label, so these cards stand out from fresh ones. The
+   doubled class beats the reply/forward border colours. */
+.email-card.email-card-overdue {
+  border-color: var(--danger);
+  animation: email-card-overdue-pulse 2.4s ease-in-out infinite;
+}
+.email-card.email-card-overdue.email-card-reply,
+.email-card.email-card-overdue.email-card-forward {
+  border-left-color: var(--danger);
+}
+.email-card-overdue .email-card-time {
+  color: #f0a29d;
+}
+.email-card-overdue .email-card-waiting {
+  color: #fff;
+  font-weight: 600;
+  background: var(--danger);
+}
+.email-card-overdue .email-card-waiting::before {
+  content: "⏱ ";
+}
+@keyframes email-card-overdue-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(229, 83, 75, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(229, 83, 75, 0.9),
+      0 0 14px 2px rgba(229, 83, 75, 0.45);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .email-card.email-card-overdue {
+    animation: none;
+    box-shadow: 0 0 0 1px var(--danger);
+  }
+}
 /* Claim request in flight: red border on the card while waiting for the
    server. The doubled class beats .email-card:hover's accent border. Only the
    text is dimmed so the border stays fully visible. */
@@ -218,6 +317,7 @@ pre {
 .email-card.email-card-busy:hover {
   border-color: var(--danger);
   box-shadow: 0 0 0 1px var(--danger);
+  animation: none;
 }
 .email-card-busy .email-card-open {
   opacity: 0.6;

@@ -234,6 +234,44 @@ function removeEmailPaymentOptions() {
   }
 }
 
+// One email of a (possibly single-email) thread: label, sender/date, body.
+// The first segment is the email that was actually received; the following
+// ones are the earlier emails it quotes.
+function renderEmailSegment(segment, index, thread) {
+  const isLatest = index === 0;
+  const box = el("section", null, {
+    class: `email-message ${isLatest ? "email-message-latest" : "email-message-quoted"}`,
+  });
+
+  if (thread.count > 1) {
+    const label = isLatest
+      ? t("email.latestMessage")
+      : t("email.earlierMessage").replace("{n}", index);
+    box.appendChild(el("div", label, { class: "email-message-label" }));
+  }
+
+  // The received email shows the real message headers; earlier ones show
+  // what could be read from their quote header.
+  const from = isLatest ? PendingEmail.from : segment.from;
+  const date = isLatest ? PendingEmail.date : segment.date;
+  const meta = el("div", null, { class: "email-meta" });
+  if (isLatest || from) {
+    meta.appendChild(el("div", `${t("email.from")} ${from || "?"}`));
+  }
+  if (isLatest || date) {
+    meta.appendChild(el("div", `${t("email.date")} ${date || "?"}`));
+  }
+  if (!isLatest && !from && !date && segment.attribution) {
+    meta.appendChild(el("div", segment.attribution));
+  }
+  if (meta.childNodes.length) box.appendChild(meta);
+
+  box.appendChild(
+    el("pre", segment.text || t("email.emptyBody"), { class: "email-body" })
+  );
+  return box;
+}
+
 function renderEmailSide() {
   if (!PendingEmail || !EmailSide || !EmailSideBody || !EmailSideTitle) {
     return;
@@ -245,15 +283,16 @@ function renderEmailSide() {
   EmailSideTitle.textContent = emailSubject(PendingEmail);
   EmailSideBody.replaceChildren();
 
-  const meta = el("div", null, { class: "email-meta" });
-  meta.appendChild(el("div", `${t("email.from")} ${PendingEmail.from || "?"}`));
-  meta.appendChild(el("div", `${t("email.date")} ${PendingEmail.date || "?"}`));
-  EmailSideBody.appendChild(meta);
-
-  const body = el("pre", PendingEmail.body || t("email.emptyBody"), {
-    class: "email-body",
+  // A reply carries the earlier email(s) quoted inside its body. Show every
+  // email in its own box (newest first) so it is clear where one ends and the
+  // next starts, instead of one combined block of text.
+  const thread = emailThreadInfo(PendingEmail);
+  EmailSide.classList.toggle("email-side-thread", thread.count > 1);
+  const threadNode = el("div", null, { class: "email-thread" });
+  thread.segments.forEach((segment, index) => {
+    threadNode.appendChild(renderEmailSegment(segment, index, thread));
   });
-  EmailSideBody.appendChild(body);
+  EmailSideBody.appendChild(threadNode);
 
   const attachments = PendingEmail.attachments || [];
   if (attachments.length) {
@@ -1123,6 +1162,21 @@ InsuranceForm.addEventListener("submit", async function (e) {
   }
 });
 
+// True while a reply request is in flight (the button stays disabled even if
+// the worker keeps typing).
+let replySending = false;
+
+// The reply button is only clickable once something has been typed in the
+// reply input. Whitespace alone does not count: sendReply rejects it anyway.
+// The empty state gets its own class (faded to 0.2 in the CSS) so it looks
+// different from the normal disabled "sending" state.
+function syncReplyButton() {
+  if (!ReplyButton) return;
+  const isEmpty = !ReplyInput || !ReplyInput.value.trim();
+  ReplyButton.classList.toggle("reply-empty", isEmpty);
+  ReplyButton.disabled = isEmpty || replySending;
+}
+
 async function sendReply() {
   try {
     if (!PendingEmail || !PendingEmail.messageId) {
@@ -1139,7 +1193,8 @@ async function sendReply() {
 
     if (!confirm(t("add.replyConfirm"))) return;
 
-    if (ReplyButton) ReplyButton.disabled = true;
+    replySending = true;
+    syncReplyButton();
     await api("/worker/insurances/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1153,11 +1208,16 @@ async function sendReply() {
   } catch (error) {
     reportError("Error sending reply", error, "emailSendFailed");
   } finally {
-    if (ReplyButton) ReplyButton.disabled = false;
+    replySending = false;
+    // Re-evaluates the input: after a successful send it was cleared, so the
+    // button goes back to its faded, unclickable state.
+    syncReplyButton();
   }
 }
 
 if (ReplyButton) ReplyButton.addEventListener("click", sendReply);
+if (ReplyInput) ReplyInput.addEventListener("input", syncReplyButton);
+syncReplyButton();
 
 configureWalkInMode();
 renderEmailSide();
