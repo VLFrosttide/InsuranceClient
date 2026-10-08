@@ -12,5 +12,10 @@ contextBridge.exposeInMainWorld("bridge", {
   OpenImageExternal: (dataUrl) => {
     ipcRenderer.send("OpenImageExternal", dataUrl);
   },
+  // Open any email attachment (PDF, document, …) with the OS default app.
+  // file: { filename, mimeType, base64 }
+  OpenAttachmentExternal: (file) => {
+    ipcRenderer.send("OpenAttachmentExternal", file);
+  },
 });
 // GetIconPath: (callback) => ipcRenderer.on("GetIconPath", callback),

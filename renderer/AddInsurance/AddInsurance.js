@@ -139,10 +139,48 @@ if (!OpenedFromEmail && StartDateInput) {
 let emailSocket = null;
 
 // The server sends email attachments as metadata only ({ id, filename,
-// mimeType, size }). The image bytes are fetched lazily over the WebSocket via
-// a "get_attachment" message. This maps an attachment id to its on-screen <img>
-// so the get_attachment reply can fill the image in once the bytes arrive.
-const emailAttachmentImages = new Map(); // id -> { img, att, requested }
+// mimeType, size }). The bytes of EVERY attachment (images, PDFs, documents…)
+// are fetched lazily over the WebSocket via a "get_attachment" message. This
+// maps an attachment id to its on-screen element so the get_attachment reply
+// can fill it in once the bytes arrive: images get an <img> preview, any other
+// file gets a clickable tile that opens it with the system's default app.
+const emailAttachmentEntries = new Map(); // id -> { img|tile, att, requested, base64 }
+
+function isImageAttachment(att) {
+  return typeof att.mimeType === "string" && att.mimeType.startsWith("image/");
+}
+
+// Short type label for a non-image attachment tile, e.g. "PDF" or "DOCX".
+function attachmentTypeLabel(att) {
+  const name = String(att.filename || "");
+  const dot = name.lastIndexOf(".");
+  if (dot > 0 && dot < name.length - 1) {
+    return name.slice(dot + 1).slice(0, 5).toUpperCase();
+  }
+  const sub = String(att.mimeType || "").split("/")[1] || "";
+  return (sub.split(/[.+-]/).pop() || "FILE").slice(0, 5).toUpperCase();
+}
+
+// Open a fetched (non-image) attachment with the OS default application.
+function openAttachmentExternal(entry) {
+  if (!entry || !entry.base64) return;
+  if (
+    window.bridge &&
+    typeof window.bridge.OpenAttachmentExternal === "function"
+  ) {
+    window.bridge.OpenAttachmentExternal({
+      filename: entry.att.filename || "attachment",
+      mimeType: entry.att.mimeType || "application/octet-stream",
+      base64: entry.base64,
+    });
+    return;
+  }
+  // Plain browser fallback (no Electron bridge): download/open via data URL.
+  const a = document.createElement("a");
+  a.href = `data:${entry.att.mimeType || "application/octet-stream"};base64,${entry.base64}`;
+  a.download = entry.att.filename || "attachment";
+  a.click();
+}
 
 function emailSubject(email) {
   return email.subject || email.from || t("email.noSubject");
@@ -224,15 +262,14 @@ function renderEmailSide() {
     const gallery = el("div", null, { class: "email-attachments" });
     for (const att of attachments) {
       const wrap = el("div", null, { class: "email-attachment" });
-      const isImage =
-        typeof att.mimeType === "string" && att.mimeType.startsWith("image/");
+      const isImage = isImageAttachment(att);
       if (isImage && att.id != null) {
         // The card only carries attachment metadata; the image bytes are
         // fetched lazily via get_attachment and filled in on its reply.
         const img = el("img");
         img.alt = att.filename || t("email.attachment");
         img.classList.add("attachment-loading");
-        emailAttachmentImages.set(att.id, { img, att, requested: false });
+        emailAttachmentEntries.set(att.id, { img, att, requested: false });
         img.addEventListener("click", (e) => {
           if (!img.src) return;
           if (e.ctrlKey || e.metaKey) {
@@ -242,6 +279,18 @@ function renderEmailSide() {
           }
         });
         wrap.appendChild(img);
+      } else if (att.id != null) {
+        // PDFs and any other file type: a tile that opens the file with the
+        // system's default application once its bytes have been fetched.
+        const tile = el("button", attachmentTypeLabel(att), {
+          class: "attachment-file attachment-loading",
+          type: "button",
+          title: att.filename || t("email.attachment"),
+        });
+        const entry = { tile, att, requested: false, base64: null };
+        emailAttachmentEntries.set(att.id, entry);
+        tile.addEventListener("click", () => openAttachmentExternal(entry));
+        wrap.appendChild(tile);
       } else {
         wrap.appendChild(
           el("span", att.filename || t("email.attachment"), { class: "muted" })
@@ -269,9 +318,7 @@ function requestEmailAttachments() {
   if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
   for (const att of PendingEmail.attachments || []) {
     if (att.id == null) continue;
-    if (typeof att.mimeType !== "string" || !att.mimeType.startsWith("image/"))
-      continue;
-    const entry = emailAttachmentImages.get(att.id);
+    const entry = emailAttachmentEntries.get(att.id);
     if (!entry || entry.requested) continue;
     try {
       emailSocket.send({
@@ -314,7 +361,7 @@ function setupEmailSocket() {
       } catch (err) {
         reportError("Failed to claim email", err, "emailSendFailed");
       }
-      // Attachment bytes are not included on the card; fetch each image lazily.
+      // Attachment bytes are not included on the card; fetch each one lazily.
       requestEmailAttachments();
     },
     claim_email: (msg) => {
@@ -332,8 +379,23 @@ function setupEmailSocket() {
       toast(message, "error");
     },
     get_attachment: (msg) => {
-      const entry = emailAttachmentImages.get(msg.id);
-      if (!entry || !entry.img) return;
+      const entry = emailAttachmentEntries.get(msg.id);
+      if (!entry) return;
+      if (entry.tile) {
+        // Non-image attachment (PDF, document…): keep the bytes so a click on
+        // the tile opens the file with the system's default application.
+        if (msg.ok && msg.base64) {
+          entry.base64 = msg.base64;
+          entry.tile.classList.remove("attachment-loading");
+        } else {
+          // Too large to inline / fetch failed: the tile cannot be opened.
+          entry.tile.classList.remove("attachment-loading");
+          entry.tile.classList.add("attachment-unavailable");
+          entry.tile.disabled = true;
+        }
+        return;
+      }
+      if (!entry.img) return;
       if (
         msg.ok &&
         msg.base64 &&

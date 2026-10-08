@@ -328,3 +328,54 @@ ipcMain.on("OpenImageExternal", (event, dataUrl) => {
     });
   });
 });
+
+// Open any email attachment (PDF, Word, Excel, …) with the system's default
+// application. The bytes are written to a temp file that keeps the original
+// (sanitized) file name and extension, so the OS picks the right program.
+ipcMain.on("OpenAttachmentExternal", (event, file) => {
+  if (!file || typeof file.base64 !== "string" || !file.base64) {
+    console.error("[OpenAttachmentExternal] Invalid attachment data received.");
+    return;
+  }
+
+  let name = String(file.filename || "attachment")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+    .replace(/[. ]+$/, "")
+    .trim();
+  if (!name || name === "." || name === "..") name = "attachment";
+  if (!path.extname(name) && file.mimeType === "application/pdf") name += ".pdf";
+
+  let buffer;
+  try {
+    buffer = Buffer.from(file.base64, "base64");
+  } catch (err) {
+    console.error("[OpenAttachmentExternal] Failed to decode base64 data.", err);
+    return;
+  }
+
+  // A fresh sub-folder per open keeps the original file name without
+  // colliding with (or overwriting) a file that is still open elsewhere.
+  const dir = path.join(
+    app.getPath("temp"),
+    "insurance-attachments",
+    String(Date.now())
+  );
+  fs.mkdir(dir, { recursive: true }, (err) => {
+    if (err) {
+      console.error("[OpenAttachmentExternal] Failed to create temp directory:", err);
+      return;
+    }
+    const filePath = path.join(dir, name);
+    fs.writeFile(filePath, buffer, (writeErr) => {
+      if (writeErr) {
+        console.error("[OpenAttachmentExternal] Failed to write temp file:", writeErr);
+        return;
+      }
+      shell.openPath(filePath).then((errorMessage) => {
+        if (errorMessage) {
+          console.error("[OpenAttachmentExternal] Could not open the file:", errorMessage);
+        }
+      });
+    });
+  });
+});

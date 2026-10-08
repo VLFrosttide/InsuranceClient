@@ -3,10 +3,10 @@
 // Node test for which parts of an incoming broker email are shown to workers
 // as attachments.
 //
-// Bug: graphics embedded in the email BODY (signature logos, social icons -
-// HTML <img src="cid:...">) are reported by Gmail as parts with a filename and
-// attachmentId, just like real attachments. They were shown in the
-// "Attached pictures" gallery and pushed the actual attachment out of sight.
+// Rule: EVERY file part is shown - PDFs, documents, images and graphics
+// embedded in the HTML body (<img src="cid:...">). An earlier filter that hid
+// cid:-referenced body graphics also hid real PDFs that mail clients reference
+// from the body, so the filter was dropped.
 //
 // This loads the REAL server file (Test/srv/Mail_walkParts.js - the mirror of
 // the deployed InsuranceServer/Mail/walkParts.js) and feeds it Gmail
@@ -27,7 +27,7 @@ vm.runInContext(fs.readFileSync(WALK_PARTS_JS, "utf8"), CTX, {
   filename: "Mail_walkParts.js",
 });
 const walkParts = CTX.module.exports;
-const { selectAttachments, BODY_IMAGE_FALLBACK_MIN_SIZE } = walkParts;
+const { selectAttachments } = walkParts;
 
 // --- tiny assert helper ------------------------------------------------------
 let passed = 0;
@@ -96,9 +96,9 @@ const LOGO2 = () =>
   });
 
 // --- tests -------------------------------------------------------------------
-console.log("email attachments vs. body graphics");
+console.log("email attachments: every file part is shown");
 
-check("Outlook signature logos are hidden, the real attachment is shown", () => {
+check("Outlook signature logos AND the real attachment are all shown", () => {
   const payload = {
     mimeType: "multipart/mixed",
     parts: [
@@ -119,12 +119,30 @@ check("Outlook signature logos are hidden, the real attachment is shown", () => 
       filePart("talon.jpg", "image/jpeg", 850000),
     ],
   };
-  assertEqual(shownFilenames(payload), ["talon.jpg"], "shown");
+  assertEqual(
+    shownFilenames(payload),
+    ["image001.png", "image002.jpg", "talon.jpg"],
+    "shown"
+  );
 });
 
-check("a real attachment that carries a Content-ID is still shown", () => {
-  // Outlook gives Content-IDs to ordinary attachments too; only a reference
-  // from the HTML body makes a part a body graphic.
+check("a PDF referenced from the HTML body via cid: is shown", () => {
+  // Apple/iOS Mail and Outlook display PDFs inline and reference them from
+  // the body - they must never be filtered out.
+  const payload = {
+    mimeType: "multipart/mixed",
+    parts: [
+      textPart("text/html", '<p>Policy:</p><img src="cid:doc-1@mac">'),
+      filePart("policy.pdf", "application/pdf", 250000, {
+        cid: "doc-1@mac",
+        disposition: "inline",
+      }),
+    ],
+  };
+  assertEqual(shownFilenames(payload), ["policy.pdf"], "shown");
+});
+
+check("a real attachment that carries a Content-ID is shown", () => {
   const payload = {
     mimeType: "multipart/mixed",
     parts: [
@@ -135,7 +153,11 @@ check("a real attachment that carries a Content-ID is still shown", () => {
       }),
     ],
   };
-  assertEqual(shownFilenames(payload), ["passport.pdf"], "shown");
+  assertEqual(
+    shownFilenames(payload),
+    ["image001.png", "passport.pdf"],
+    "shown"
+  );
 });
 
 check("an Apple Mail attachment marked 'inline' is still shown", () => {
@@ -151,17 +173,19 @@ check("an Apple Mail attachment marked 'inline' is still shown", () => {
   assertEqual(shownFilenames(payload), ["IMG_1234.jpg"], "shown");
 });
 
-check("an email with only signature graphics shows no attachments", () => {
+check("an email with only body graphics shows them all", () => {
   const payload = {
     mimeType: "multipart/related",
     parts: [textPart("text/html", SIGNATURE_HTML), LOGO1(), LOGO2()],
   };
-  assertEqual(shownFilenames(payload), [], "shown");
+  assertEqual(
+    shownFilenames(payload),
+    ["image001.png", "image002.jpg"],
+    "shown"
+  );
 });
 
-check("a photo pasted into the body is kept when it is the only image", () => {
-  // iOS / Gmail mobile place pasted photos in the body as cid: images; with
-  // no regular attachment, a large embedded photo is the broker's document.
+check("photos pasted into the body are shown regardless of size", () => {
   const html =
     '<div>Talon:</div><img src="cid:photo-1@mobile">' +
     '<img src="cid:logo@mobile">';
@@ -169,7 +193,7 @@ check("a photo pasted into the body is kept when it is the only image", () => {
     mimeType: "multipart/related",
     parts: [
       textPart("text/html", html),
-      filePart("photo.jpg", "image/jpeg", BODY_IMAGE_FALLBACK_MIN_SIZE + 1, {
+      filePart("photo.jpg", "image/jpeg", 150000, {
         cid: "photo-1@mobile",
         disposition: "inline",
       }),
@@ -179,7 +203,7 @@ check("a photo pasted into the body is kept when it is the only image", () => {
       }),
     ],
   };
-  assertEqual(shownFilenames(payload), ["photo.jpg"], "shown");
+  assertEqual(shownFilenames(payload), ["photo.jpg", "logo.png"], "shown");
 });
 
 check("plain-text email with attachments is unaffected", () => {
