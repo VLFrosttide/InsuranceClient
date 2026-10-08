@@ -27,6 +27,17 @@
     <div id="AddInsuranceLayout">
       <form id="InsuranceForm" autocomplete="off">
         <div class="form-grid">
+              <div class="field">
+            <label for="CarNumberInput" data-i18n="add.carNumber"
+              >Номер автомобил</label
+            >
+            <input
+              id="CarNumberInput"
+              class="FormInput ClearForm"
+              type="text"
+              required
+            />
+          </div>
           <div class="field">
             <label for="PolicyNumberInput" data-i18n="add.policyNumber"
               >Полица номер</label
@@ -47,17 +58,7 @@
               type="number"
             />
           </div>
-          <div class="field">
-            <label for="CarNumberInput" data-i18n="add.carNumber"
-              >Номер автомобил</label
-            >
-            <input
-              id="CarNumberInput"
-              class="FormInput ClearForm"
-              type="text"
-              required
-            />
-          </div>
+      
           <div class="field">
             <label for="DurationInput" data-i18n="add.duration">Срок</label>
             <select id="DurationInput" class="FormInput">
