@@ -211,6 +211,24 @@ pre {
 .email-card-open:hover {
   background: transparent;
 }
+/* Claim request in flight: red border on the card while waiting for the
+   server. The doubled class beats .email-card:hover's accent border. Only the
+   text is dimmed so the border stays fully visible. */
+.email-card.email-card-busy,
+.email-card.email-card-busy:hover {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger);
+}
+.email-card-busy .email-card-open {
+  opacity: 0.6;
+}
+/* Animated "busy" cursor (arrow + spinner on Windows) for the whole page
+   while a claim is pending, so it shows even if the pointer leaves the card.
+   The `*` selector overrides the per-element `cursor: pointer` on buttons. */
+body.email-claim-pending,
+body.email-claim-pending * {
+  cursor: progress !important;
+}
 .email-card-x {
   position: absolute;
   top: 6px;

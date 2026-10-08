@@ -179,6 +179,7 @@ const I18N = {
     deleteConfirm: "Delete",
     emailClaimed: "This email was already opened by another worker",
     emailConnUnavailable: "Email connection unavailable",
+    emailClaimTimeout: "The server did not respond. Please try again.",
     emailSendFailed: "Failed to send email",
     name: "Name",
     rangeStart: "Range start",
@@ -464,6 +465,7 @@ const I18N = {
     insuranceDeleted: "Застраховката е изтрита",
     emailClaimed: "Този имейл вече е отворен от друг служител",
     emailConnUnavailable: "Връзката с имейл е недостъпна",
+    emailClaimTimeout: "Сървърът не отговори. Опитайте отново.",
     emailSendFailed: "Неуспешно изпращане на имейл",
     name: "Име",
     rangeStart: "Начало на диапазон",
@@ -926,6 +928,8 @@ class UnreadEmailSocket {
     });
 
     ws.addEventListener("message", (event) => {
+      // Ignore late messages from a socket superseded by reconnectNow().
+      if (this.ws !== ws) return;
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -965,6 +969,8 @@ class UnreadEmailSocket {
     });
 
     ws.addEventListener("close", () => {
+      // A socket dropped by reconnectNow() must not clobber its replacement.
+      if (this.ws !== ws) return;
       this.ws = null;
       this.authed = false;
       if (this.handlers.close) this.handlers.close();
@@ -1031,6 +1037,45 @@ class UnreadEmailSocket {
     } finally {
       this.probing = false;
     }
+  }
+
+  // True when a message sent now goes straight to the server instead of being
+  // queued. Request/response flows (e.g. claiming an email) need this: a
+  // queued request gives the user no feedback until the socket reconnects.
+  isReady() {
+    return Boolean(
+      this.authed && this.ws && this.ws.readyState === WebSocket.OPEN
+    );
+  }
+
+  // Skip the remaining backoff delay when no connection attempt is in
+  // progress (the user is actively waiting on the socket).
+  ensureConnected() {
+    if (this.manuallyClosed || this.ws) return;
+    this.reconnectNow();
+  }
+
+  // Drop the current connection - which may be half-open: readyState still
+  // OPEN while the network path is dead, so sends vanish silently - and open
+  // a fresh one immediately.
+  reconnectNow() {
+    if (this.manuallyClosed) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const old = this.ws;
+    this.ws = null;
+    this.authed = false;
+    if (old) {
+      try {
+        old.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.reconnectDelay = 1000;
+    this.connect();
   }
 
   scheduleReconnect() {

@@ -105,22 +105,114 @@ function markEmailIrrelevant(email) {
   toast(t("email.irrelevantMarked"), "success");
 }
 
+// How long to wait for the server's claim_email answer before giving up. A
+// half-open socket (readyState OPEN, network path dead) silently swallows the
+// request, so without this the click would appear to do nothing at all.
+const CLAIM_TIMEOUT_MS = 3500;
+let claimTimer = null;
+// performance.now() timestamp of when the pending claim was sent.
+let claimSentAt = 0;
+
+// Claim round-trip times are kept in localStorage: a successful claim
+// navigates to AddInsurance, which would wipe any in-memory history.
+const CLAIM_TIMINGS_KEY = "claimResponseTimes";
+const CLAIM_TIMINGS_MAX = 50;
+
+function loadClaimTimings() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CLAIM_TIMINGS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Number.isFinite) : [];
+  } catch {
+    return [];
+  }
+}
+
+// Log one claim round trip plus a summary of recent ones.
+function logClaimResponseTime(messageId, ok, ms) {
+  const samples = loadClaimTimings();
+  samples.push(ms);
+  while (samples.length > CLAIM_TIMINGS_MAX) samples.shift();
+  try {
+    localStorage.setItem(CLAIM_TIMINGS_KEY, JSON.stringify(samples));
+  } catch (err) {
+    console.warn("Failed to store claim response time:", err);
+  }
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  const pick = (p) =>
+    sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+  const avg = sorted.reduce((sum, v) => sum + v, 0) / sorted.length;
+  console.log(
+    `[claim_email] server responded in ${ms.toFixed(0)} ms ` +
+      `(${ok ? "claimed" : "rejected"}, "${messageId}") | ` +
+      `last ${sorted.length}: median ${pick(0.5).toFixed(0)} ms, ` +
+      `avg ${avg.toFixed(0)} ms, p95 ${pick(0.95).toFixed(0)} ms, ` +
+      `min ${sorted[0].toFixed(0)} ms, max ${sorted[sorted.length - 1].toFixed(0)} ms ` +
+      `(timeout ${CLAIM_TIMEOUT_MS} ms)`
+  );
+}
+
+function setCardBusy(messageId, busy) {
+  const entry = emailCards.get(messageId);
+  if (entry) entry.node.classList.toggle("email-card-busy", busy);
+  document.body.classList.toggle("email-claim-pending", busy);
+}
+
+function clearPendingClaim() {
+  clearTimeout(claimTimer);
+  claimTimer = null;
+  if (pendingClaimEmail) setCardBusy(pendingClaimEmail.messageId, false);
+  pendingClaimEmail = null;
+}
+
 function openEmailInNewForm(email) {
   if (!emailSocket) {
     console.error("Cannot open email: email WebSocket is not available");
     toast(t("emailConnUnavailable"), "error");
     return;
   }
+  // A claim is already in flight; ignore repeated clicks until it resolves.
+  if (pendingClaimEmail) return;
+
+  // The socket is down or still authenticating. Sending now would only queue
+  // the claim and the click would look dead, so tell the worker and kick off
+  // an immediate reconnect instead of waiting out the backoff delay.
+  if (!emailSocket.isReady()) {
+    console.warn(
+      `Cannot claim email "${email.messageId}": email WebSocket is not connected`
+    );
+    toast(t("emailConnUnavailable"), "error");
+    emailSocket.ensureConnected();
+    return;
+  }
 
   // Only navigate once the server confirms this client won the claim. If
   // another worker clicked the same card first, we show an error instead.
   pendingClaimEmail = email;
+  setCardBusy(email.messageId, true);
+  claimSentAt = performance.now();
   try {
     emailSocket.send({ type: "claim_email", messageId: email.messageId });
   } catch (err) {
-    pendingClaimEmail = null;
+    clearPendingClaim();
     reportError("Failed to claim email", err, "emailSendFailed");
+    return;
   }
+
+  claimTimer = setTimeout(() => {
+    if (!pendingClaimEmail || pendingClaimEmail.messageId !== email.messageId) {
+      return;
+    }
+    console.error(
+      `No claim_email response for "${email.messageId}" within ` +
+        `${CLAIM_TIMEOUT_MS} ms; the connection looks dead, reconnecting`
+    );
+    clearPendingClaim();
+    toast(t("emailClaimTimeout"), "error");
+    // The connection is most likely half-open: replace it. auth_ok then
+    // re-syncs the card list with the server.
+    emailSocket.reconnectNow();
+  }, CLAIM_TIMEOUT_MS);
 }
 
 function openClaimedEmail(email) {
@@ -170,13 +262,28 @@ function setupEmailSocket() {
         reportError("Failed to request unread emails", err, "emailSendFailed");
       }
     },
+    // The connection dropped: the server never answers a claim sent on it, so
+    // fail it now instead of leaving the card stuck in its busy state.
+    close: () => {
+      if (!pendingClaimEmail) return;
+      console.error(
+        `Email WebSocket closed before claim_email "${pendingClaimEmail.messageId}" was answered`
+      );
+      clearPendingClaim();
+      toast(t("emailConnUnavailable"), "error");
+    },
     list_emails: (msg) => reconcileEmailCards(msg.data),
     claim_email: (msg) => {
       if (!pendingClaimEmail || pendingClaimEmail.messageId !== msg.messageId) {
         return;
       }
       const email = pendingClaimEmail;
-      pendingClaimEmail = null;
+      logClaimResponseTime(
+        email.messageId,
+        Boolean(msg.ok),
+        performance.now() - claimSentAt
+      );
+      clearPendingClaim();
       if (msg.ok) {
         openClaimedEmail(email);
       } else {
