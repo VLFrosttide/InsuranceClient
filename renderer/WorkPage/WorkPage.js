@@ -836,6 +836,18 @@ function openInsuranceEditor(insurance, onDone) {
       label: t("add.policyNumber"),
       value: insurance.PolicyNumber,
     },
+    // Plain text inputs (not "number"): buildForm would turn a number input
+    // into Number(...), dropping leading zeros and turning "" into 0.
+    {
+      key: "BlancNumber",
+      label: t("add.blancNumber"),
+      value: insurance.BlancNumber,
+    },
+    {
+      key: "CarNumber",
+      label: t("add.carNumber"),
+      value: insurance.CarNumber,
+    },
     { key: "Price", label: t("price"), type: "number", value: insurance.Price },
     {
       key: "CurrencyType",
@@ -888,6 +900,18 @@ function openInsuranceEditor(insurance, onDone) {
   const form = buildForm(
     spec,
     async (payload) => {
+      // Both numbers are required, exactly like on the add form. Throwing
+      // keeps the modal open and buildForm toasts the message.
+      if ("BlancNumber" in payload) {
+        payload.BlancNumber = String(payload.BlancNumber ?? "").trim();
+        if (!payload.BlancNumber) throw new Error(t("add.blancNumberRequired"));
+      }
+      if ("CarNumber" in payload) {
+        payload.CarNumber = String(payload.CarNumber ?? "").trim();
+        if (!payload.CarNumber) throw new Error(t("add.carNumberRequired"));
+      }
+      // The URL always names the policy by its CURRENT (stored) blank number;
+      // a new one travels in the body and is adopted below once saved.
       const data = await api(`/insurances/${insurance.BlancNumber}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

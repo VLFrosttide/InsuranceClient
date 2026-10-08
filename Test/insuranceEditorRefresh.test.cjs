@@ -189,6 +189,47 @@ function open(row, response, onDone) {
     eq(e.specValue("CurrencyType"), "EUR", "currency");
   });
 
+  await check("the form offers the blank number and the car number", async () => {
+    const e = open({ ...storedRow(), CarNumber: "CB1234AB" });
+    eq(e.specValue("BlancNumber"), "1234567", "blank number");
+    eq(e.specValue("CarNumber"), "CB1234AB", "car number");
+    const types = lastSpec
+      .filter((s) => s.key === "BlancNumber" || s.key === "CarNumber")
+      .map((s) => s.type);
+    eq(types, [undefined, undefined], "plain text inputs (not number)");
+  });
+
+  await check("a changed blank number is sent in the body, old one in the URL", async () => {
+    const row = storedRow();
+    const e = open(row, {
+      message: "Insurance updated",
+      insurance: { ...row, BlancNumber: "7654321", CarNumber: "X1" },
+    });
+    await e.save({ BlancNumber: " 7654321 ", CarNumber: " X1 " });
+    eq(apiCalls[0].url, "/insurances/1234567", "URL uses the stored number");
+    eq(
+      JSON.parse(apiCalls[0].opts.body),
+      { BlancNumber: "7654321", CarNumber: "X1" },
+      "trimmed values in the body"
+    );
+    eq(e.row.BlancNumber, "7654321", "the row adopts the new blank number");
+  });
+
+  await check("an empty blank or car number is refused before any request", async () => {
+    for (const payload of [{ BlancNumber: "  " }, { CarNumber: "" }]) {
+      const e = open(storedRow());
+      let msg = null;
+      try {
+        await e.save(payload);
+      } catch (err) {
+        msg = err.message;
+      }
+      ok(msg, `save must fail for ${JSON.stringify(payload)}`);
+      eq(apiCalls.length, 0, "no request was sent");
+      eq(closedCount, 0, "the modal stays open");
+    }
+  });
+
   await check("saving PATCHes the policy with the edited values", async () => {
     const e = open(storedRow());
     await e.save({ Price: 120, PaymentType: "Card" });

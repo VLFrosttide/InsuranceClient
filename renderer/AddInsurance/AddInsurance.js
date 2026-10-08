@@ -1014,15 +1014,27 @@ InsuranceForm.addEventListener("submit", async function (e) {
     else FormObject[el.id] = el.value;
   }
 
-  const carNumber = FormObject.CarNumberInput
-    ? String(FormObject.CarNumberInput).trim()
-    : "";
-  if (!carNumber) {
-    setMessage(t("add.carNumberRequired"), true);
-    const CarNumberInputEl = document.getElementById("CarNumberInput");
-    if (CarNumberInputEl) CarNumberInputEl.focus();
-    return;
+  // Car number, policy number and blank number are required for every policy
+  // - walk-ins and email cards alike. Whitespace alone does not count. The
+  // first empty one (in form order) is reported and focused.
+  const requiredNumbers = [
+    ["CarNumberInput", "add.carNumberRequired"],
+    ["PolicyNumberInput", "add.policyNumberRequired"],
+    ["BlancNumberInput", "add.blancNumberRequired"],
+  ];
+  const trimmed = {};
+  for (const [id, messageKey] of requiredNumbers) {
+    trimmed[id] = FormObject[id] ? String(FormObject[id]).trim() : "";
+    if (!trimmed[id]) {
+      setMessage(t(messageKey), true);
+      const inputEl = document.getElementById(id);
+      if (inputEl) inputEl.focus();
+      return;
+    }
   }
+  const carNumber = trimmed.CarNumberInput;
+  const policyNumber = trimmed.PolicyNumberInput;
+  const blancNumber = trimmed.BlancNumberInput;
 
   // Email insurances must have an explicit starting date (walk-ins come
   // pre-filled with today). Show the error and open the calendar so the
@@ -1055,8 +1067,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
   }
 
   const payload = {
-    PolicyNumber: FormObject.PolicyNumberInput,
-    BlancNumber: FormObject.BlancNumberInput,
+    PolicyNumber: policyNumber,
+    BlancNumber: blancNumber,
     CarNumber: carNumber,
     Duration: FormObject.DurationInput,
     // The branch is no longer typed on this form. It is selected at login and

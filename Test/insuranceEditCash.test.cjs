@@ -205,11 +205,19 @@ const STUBS = {
 // The UPDATE applies its SET clause onto it, so the final SELECT (and therefore
 // the JSON response) reflects what the endpoint wrote.
 let row = null;
+// Blank numbers already used by OTHER policies, so changing a policy's blank
+// number to one of them is reported as a clash.
+let takenBlancs = [];
 
 const fakeDb = {
   query: async (sql, params) => {
     const flat = String(sql).replace(/\s+/g, " ").trim();
     queries.push({ sql: flat, params: params || [], inTx: txDepth > 0 });
+
+    if (flat.startsWith("SELECT BlancNumber FROM insurance")) {
+      const wanted = String((params || [])[0]);
+      return [takenBlancs.includes(wanted) ? [{ BlancNumber: wanted }] : []];
+    }
 
     if (flat.startsWith("SELECT * FROM insurance")) {
       return [row ? [{ ...row }] : []];
@@ -771,6 +779,35 @@ async function patch(body, opts = {}) {
     };
   }
 
+  await check("car, policy and blank number are required for walk-ins and email cards", async () => {
+    const email = { PaymentType: "Broker", EmailFrom: "Broker <broker@example.com>" };
+    const walkIn = { PaymentType: "Cash" };
+    const cases = [
+      ["BlancNumber", "BlancNumber is required"],
+      ["CarNumber", "CarNumber is required"],
+      ["PolicyNumber", "PolicyNumber is required"],
+    ];
+    for (const [mode, extra] of [["walk-in", walkIn], ["email", email]]) {
+      for (const [field, error] of cases) {
+        for (const blank of ["", "   ", undefined]) {
+          const r = await create({ ...extra, [field]: blank });
+          const what = `${mode} with ${field}=${JSON.stringify(blank)}`;
+          eq(r.status, 400, `status for ${what}`);
+          eq(r.body, { error }, `error for ${what}`);
+          eq(r.inserts.length, 0, `nothing inserted for ${what}`);
+          eq(r.movements, [], `no money moved for ${what}`);
+          eq(r.brokerDeltas, [], `broker untouched for ${what}`);
+        }
+      }
+    }
+  });
+
+  await check("a walk-in with all three numbers is created", async () => {
+    const r = await create({ PaymentType: "Cash" });
+    eq(r.status, 201, "status");
+    eq(r.inserts.length, 1, "one insert");
+  });
+
   await check("an email policy is stored as Broker and only charges the broker", async () => {
     const r = await create({
       PaymentType: "Broker",
@@ -933,6 +970,83 @@ async function patch(body, opts = {}) {
       { row: { BrokerId: null, Broker: "Euroins" } }
     );
     eq(r.row.Broker, "Euroins", "the legacy broker is kept");
+  });
+
+  // -------------------------------------------------------------------------
+  // Blank number / car number corrections.
+  // -------------------------------------------------------------------------
+  await check("the car number can be corrected without moving money", async () => {
+    const r = await patch({ CarNumber: "  CB1234AB " });
+    eq(r.status, 200, "status");
+    eq(r.row.CarNumber, "CB1234AB", "stored (trimmed) car number");
+    eq(r.movements, [], "no movements expected");
+  });
+
+  await check("an empty car number is rejected", async () => {
+    const r = await patch({ CarNumber: "   " }, { row: { CarNumber: "X1" } });
+    eq(r.status, 400, "status");
+    eq(r.body, { error: "CarNumber is required" }, "error");
+    eq(r.updated.length, 0, "nothing was written");
+  });
+
+  await check("the blank number can be changed to an unused one", async () => {
+    takenBlancs = [];
+    const r = await patch({ BlancNumber: " 7654321 " });
+    eq(r.status, 200, "status");
+    eq(r.row.BlancNumber, "7654321", "stored blank number");
+    eq(r.updated.length, 1, "one update");
+    eq(
+      r.updated[0].params[r.updated[0].params.length - 1],
+      "1234567",
+      "the row is located by its OLD blank number"
+    );
+    eq(r.body.insurance.BlancNumber, "7654321", "response carries the new number");
+    eq(r.movements, [], "no movements expected");
+  });
+
+  await check("re-sending the same blank number is not an update of the key", async () => {
+    takenBlancs = ["1234567"];
+    const r = await patch({ BlancNumber: "1234567", PolicyNumber: "P-9" });
+    takenBlancs = [];
+    eq(r.status, 200, "status");
+    const setClause = r.updated[0].sql.split(" WHERE ")[0];
+    ok(!setClause.includes("BlancNumber"), "BlancNumber is not in the SET clause");
+    eq(r.row.PolicyNumber, "P-9", "the other field was still saved");
+  });
+
+  await check("a blank number already used by another policy is rejected", async () => {
+    takenBlancs = ["999"];
+    const r = await patch({ BlancNumber: "999", Price: 150 });
+    takenBlancs = [];
+    eq(r.status, 409, "status");
+    eq(
+      r.body,
+      { error: "Insurance with this BlancNumber already exists" },
+      "error"
+    );
+    eq(r.updated.length, 0, "nothing was written");
+    eq(r.movements, [], "no money moved");
+  });
+
+  await check("an empty blank number is rejected", async () => {
+    const r = await patch({ BlancNumber: "" });
+    eq(r.status, 400, "status");
+    eq(r.body, { error: "BlancNumber is required" }, "error");
+    eq(r.updated.length, 0, "nothing was written");
+  });
+
+  await check("a new blank number with a new price books the money under it", async () => {
+    takenBlancs = [];
+    const r = await patch({ BlancNumber: "555", Price: 120 });
+    eq(r.status, 200, "status");
+    eq(
+      r.movements,
+      [
+        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "cash increase 120 EUR @ Офис Харманли (555) by admin1",
+      ],
+      "movements"
+    );
   });
 
   // -------------------------------------------------------------------------
