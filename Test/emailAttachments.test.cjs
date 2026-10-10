@@ -8,23 +8,22 @@
 // cid:-referenced body graphics also hid real PDFs that mail clients reference
 // from the body, so the filter was dropped.
 //
-// This loads the REAL server file (Test/srv/Mail_walkParts.js - the mirror of
-// the deployed InsuranceServer/Mail/walkParts.js) and feeds it Gmail
-// `format: "full"` payload shapes.
+// This loads the REAL server file (InsuranceServer/Mail/walkParts.js, see
+// Test/serverPath.cjs) and feeds it Gmail `format: "full"` payload shapes.
 //
 // Run with:  node Test/emailAttachments.test.cjs   (or: npm test)
 
 const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
+const { serverFile } = require("./serverPath.cjs");
 
-// The client package is "type": "module", so the CommonJS server mirror cannot
+// The client package is "type": "module", so the CommonJS server file cannot
 // be require()d directly; run it in a vm with a CommonJS `module` instead.
-const WALK_PARTS_JS = path.join(__dirname, "srv", "Mail_walkParts.js");
+const WALK_PARTS_JS = serverFile("Mail", "walkParts.js");
 const CTX = { module: { exports: {} }, Buffer, console };
 vm.createContext(CTX);
 vm.runInContext(fs.readFileSync(WALK_PARTS_JS, "utf8"), CTX, {
-  filename: "Mail_walkParts.js",
+  filename: "Mail/walkParts.js",
 });
 const walkParts = CTX.module.exports;
 const { selectAttachments } = walkParts;

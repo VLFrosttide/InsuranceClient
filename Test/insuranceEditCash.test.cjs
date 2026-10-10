@@ -11,9 +11,9 @@
 // time an old policy is corrected.
 //
 // Like insuranceSearchFilter.test.cjs, this loads the REAL server file
-// (Test/srv/Requests_TierEndpoints.js - the mirror of the deployed
-// InsuranceServer/Requests/TierEndpoints.js) in a vm with its requires stubbed,
-// registers the routes on a fake router, and then calls the PATCH handler
+// (InsuranceServer/Requests/TierEndpoints.js, see Test/serverPath.cjs) in a vm
+// with its requires stubbed, registers the routes on a fake router, and then
+// calls the PATCH handler
 // directly with a fake req/res and a fake DB. The cash/card helpers are stubbed
 // with recorders, so the test asserts exactly which movements the endpoint asks
 // for - and that nothing moves when nothing money-related changed.
@@ -21,11 +21,10 @@
 // Run with:  node Test/insuranceEditCash.test.cjs   (or: npm test)
 
 const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
+const { serverFile } = require("./serverPath.cjs");
 
-const ROOT = path.join(__dirname, "..");
-const TIER_JS = path.join(ROOT, "Test", "srv", "Requests_TierEndpoints.js");
+const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 
 // --- fakes -------------------------------------------------------------------
 const routes = [];
@@ -152,27 +151,28 @@ const STUBS = {
     },
   },
   "./CardPayments.js": {
-    recordCardPayment: async (conn, username, amount, reason) => {
+    // The card balance is per branch: the real helpers take the branch first.
+    recordCardPayment: async (conn, branch, username, amount, reason) => {
       const decimal = checkPositive(amount, reason);
       movements.push({
         where: "card",
         type: "increase",
         amount: decimal,
         currency: "",
-        branch: "",
+        branch,
         username,
         reason: reason.trim(),
       });
       return decimal;
     },
-    reduceCardBalance: async (conn, username, amount, reason) => {
+    reduceCardBalance: async (conn, branch, username, amount, reason) => {
       const decimal = checkPositive(amount, reason);
       movements.push({
         where: "card",
         type: "reduce",
         amount: decimal,
         currency: "",
-        branch: "",
+        branch,
         username,
         reason: reason.trim(),
       });
@@ -256,7 +256,7 @@ CTX.require = (id) => {
 };
 vm.createContext(CTX);
 vm.runInContext(fs.readFileSync(TIER_JS, "utf8"), CTX, {
-  filename: "Requests_TierEndpoints.js",
+  filename: "Requests/TierEndpoints.js",
 });
 
 if (typeof mod.exports.createTierRouter !== "function") {
@@ -718,6 +718,97 @@ async function patch(body, opts = {}) {
   });
 
   // -------------------------------------------------------------------------
+  // Editing the options chosen at creation (non-Turk / card payment fee).
+  // The edit modal adds/removes the fee from the price it sends, so the money
+  // follows the new price through the usual reverse + re-apply.
+  // -------------------------------------------------------------------------
+  await check("ticking non-Turk stores the flag and adds the fee to the drawer", async () => {
+    const r = await patch({ NonTurk: true, Price: 105 });
+    eq(r.status, 200, "status");
+    eq(r.row.NonTurk, 1, "stored flag");
+    eq(
+      r.movements,
+      [
+        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "cash increase 105 EUR @ Офис Харманли (1234567) by admin1",
+      ],
+      "movements"
+    );
+  });
+
+  await check("unticking non-Turk stores the flag and takes the fee back", async () => {
+    const r = await patch({ NonTurk: false, Price: 95 }, { row: { NonTurk: 1 } });
+    eq(r.row.NonTurk, 0, "stored flag");
+    eq(
+      r.movements,
+      [
+        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "cash increase 95 EUR @ Офис Харманли (1234567) by admin1",
+      ],
+      "movements"
+    );
+  });
+
+  await check("re-sending unchanged options moves nothing", async () => {
+    const r = await patch({ NonTurk: false, CardFee: false, Price: 100 });
+    eq(r.status, 200, "status");
+    eq(r.movements, [], "no movements expected");
+  });
+
+  await check("ticking the card fee on a card policy moves the card balance", async () => {
+    const r = await patch(
+      { PaymentType: "Card", CardFee: true, Price: 102 },
+      { row: { PaymentType: "Card" } }
+    );
+    eq(r.row.CardFee, 1, "stored flag");
+    eq(
+      r.movements,
+      [
+        "card reduce 100 (Edit 1234567) by admin1",
+        "total/Card reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "card increase 102 (1234567) by admin1",
+        "total/Card increase 102 EUR @ Офис Харманли (1234567) by admin1",
+      ],
+      "movements"
+    );
+  });
+
+  await check("a card fee is never stored for a cash payment", async () => {
+    const r = await patch({ PaymentType: "Cash", CardFee: true });
+    eq(r.row.CardFee, 0, "stored flag");
+  });
+
+  await check("an email policy cannot be flagged non-Turk", async () => {
+    for (const v of [true, 1, "1", "true"]) {
+      const r = await patch({ NonTurk: v, Price: 105 }, { row: BROKER_ROW });
+      eq(r.status, 400, `status for ${JSON.stringify(v)}`);
+      eq(
+        r.body,
+        { error: "The non-Turk tax only applies to walk-in policies" },
+        "error"
+      );
+      eq(r.updated.length, 0, "nothing is updated");
+      eq(r.movements, [], "no money moves");
+      eq(r.brokerDeltas, [], "the broker is not charged");
+    }
+  });
+
+  await check("a legacy non-Turk flag on an email policy can be cleared", async () => {
+    const r = await patch(
+      { NonTurk: false, Price: 95 },
+      { row: { ...BROKER_ROW, NonTurk: 1 } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.NonTurk, 0, "flag cleared");
+    eq(r.brokerDeltas, ["-5 -> broker 7"], "the broker gets the 5 back");
+  });
+
+  await check("an email policy edit without NonTurk is unaffected", async () => {
+    const r = await patch({ Price: 120 }, { row: { ...BROKER_ROW, NonTurk: 1 } });
+    eq(r.status, 200, "status");
+  });
+
+  // -------------------------------------------------------------------------
   // POST /worker/insurances - card payments are only for walk-ins.
   // -------------------------------------------------------------------------
   const createRoute = routes.find(
@@ -772,10 +863,13 @@ async function patch(body, opts = {}) {
       movements: movements.map(describe),
       brokerDeltas: brokerDeltas.map((d) => `${d.delta} -> broker ${d.brokerId}`),
       inserts,
-      // PaymentType is the 11th bound value of the INSERT (see the endpoint),
-      // CardFee the 15th.
-      storedPayment: inserts.length ? inserts[0].params[10] : undefined,
-      storedCardFee: inserts.length ? inserts[0].params[14] : undefined,
+      // Column order of the real INSERT:
+      //   Author, CreationDate, PolicyNumber, BlancNumber, CarNumber, Price,
+      //   CurrencyType, Duration, Broker, Branch, Otomobil, PaymentType,
+      //   StartDate, BrokerId, NonTurk, CardFee
+      // so PaymentType is index 11 and CardFee index 15.
+      storedPayment: inserts.length ? inserts[0].params[11] : undefined,
+      storedCardFee: inserts.length ? inserts[0].params[15] : undefined,
     };
   }
 
@@ -857,6 +951,39 @@ async function patch(body, opts = {}) {
     eq(r.brokerDeltas, ["50 -> broker 7"], "the broker balance pays for it");
   });
 
+  await check("creating an email policy with the non-Turk tax is rejected", async () => {
+    const r = await create({
+      PaymentType: "Broker",
+      EmailFrom: "Broker <broker@example.com>",
+      NonTurk: true,
+    });
+    eq(r.status, 400, "status");
+    eq(
+      r.body,
+      { error: "The non-Turk tax only applies to walk-in policies" },
+      "error"
+    );
+    eq(r.inserts.length, 0, "nothing is inserted");
+    eq(r.movements, [], "no money moves");
+    eq(r.brokerDeltas, [], "the broker is not charged");
+  });
+
+  await check("an email policy with NonTurk=false is still created", async () => {
+    const r = await create({
+      PaymentType: "Broker",
+      EmailFrom: "broker@example.com",
+      NonTurk: false,
+    });
+    eq(r.status, 201, "status");
+    eq(r.inserts[0].params[14], 0, "stored NonTurk");
+  });
+
+  await check("a walk-in keeps the non-Turk tax", async () => {
+    const r = await create({ PaymentType: "Cash", EmailFrom: "", NonTurk: true });
+    eq(r.status, 201, "status");
+    eq(r.inserts[0].params[14], 1, "stored NonTurk");
+  });
+
   await check("an email from an unknown sender is rejected", async () => {
     const r = await create({
       PaymentType: "Broker",
@@ -913,20 +1040,21 @@ async function patch(body, opts = {}) {
   // -------------------------------------------------------------------------
   // Walk-ins record their branch as the broker.
   //
-  // Broker is the 8th bound value of the INSERT, BrokerId the 13th.
+  // With the CreationDate column in the INSERT, Broker is the 9th bound value
+  // (index 8) and BrokerId the 14th (index 13).
   // -------------------------------------------------------------------------
   await check("a walk-in records its branch as the broker", async () => {
     const r = await create({ PaymentType: "Cash", EmailFrom: "" });
     eq(r.status, 201, "status");
-    eq(r.inserts[0].params[7], "Офис Харманли", "stored broker");
-    eq(r.inserts[0].params[12], null, "BrokerId stays empty");
+    eq(r.inserts[0].params[8], "Офис Харманли", "stored broker");
+    eq(r.inserts[0].params[13], null, "BrokerId stays empty");
     eq(r.brokerDeltas, [], "no broker balance is charged");
   });
 
   await check("a card walk-in also records its branch as the broker", async () => {
     const r = await create({ Cash: false, EmailFrom: "", Branch: "ГКПП Лесово" });
     eq(r.status, 201, "status");
-    eq(r.inserts[0].params[7], "ГКПП Лесово", "stored broker");
+    eq(r.inserts[0].params[8], "ГКПП Лесово", "stored broker");
     eq(r.storedPayment, "Card", "still a card payment");
   });
 
@@ -936,8 +1064,8 @@ async function patch(body, opts = {}) {
       EmailFrom: "broker@example.com",
     });
     eq(r.status, 201, "status");
-    eq(r.inserts[0].params[7], "Euroins", "stored broker");
-    eq(r.inserts[0].params[12], 7, "BrokerId");
+    eq(r.inserts[0].params[8], "Euroins", "stored broker");
+    eq(r.inserts[0].params[13], 7, "BrokerId");
   });
 
   await check("moving a walk-in to another branch moves its broker too", async () => {

@@ -77,6 +77,50 @@ const CreateWindow = () => {
       event.preventDefault();
     }
   });
+
+  // Right-click context menu with a "Copy" action, available on every page of
+  // the app. The application menu is removed, so Electron shows no menu on
+  // right-click by default; build one on demand instead.
+  win.webContents.on("context-menu", (event, params) => {
+    ShowContextMenu(win, params);
+  });
+};
+
+// Labels for the right-click menu, following the language chosen in the UI
+// (stored by renderer/common.js in localStorage under "lang", default "bg").
+const CONTEXT_MENU_LABELS = {
+  bg: { copy: "Копирай" },
+  en: { copy: "Copy" },
+};
+
+const ShowContextMenu = async (targetWin, params) => {
+  let lang = "bg";
+  try {
+    const stored = await targetWin.webContents.executeJavaScript(
+      'localStorage.getItem("lang")',
+      true
+    );
+    if (stored && CONTEXT_MENU_LABELS[stored]) lang = stored;
+  } catch {
+    // Page not ready / navigating — fall back to the default language.
+  }
+
+  if (targetWin.isDestroyed()) return;
+
+  const labels = CONTEXT_MENU_LABELS[lang];
+  const hasSelection =
+    Boolean(params.selectionText && params.selectionText.trim()) ||
+    Boolean(params.editFlags && params.editFlags.canCopy);
+
+  const menu = Menu.buildFromTemplate([
+    {
+      label: labels.copy,
+      role: "copy",
+      accelerator: "CmdOrCtrl+C",
+      enabled: hasSelection,
+    },
+  ]);
+  menu.popup({ window: targetWin, x: params.x, y: params.y });
 };
 
 // Auto-update from GitHub Releases. Only runs in the packaged app.

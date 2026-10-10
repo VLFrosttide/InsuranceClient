@@ -535,12 +535,66 @@ function emailListEditor(initial) {
   return wrap;
 }
 
+// Editable list of blanc batches: one "start - end" row per batch, a remove
+// button per row and an "add batch" button. `.getValues()` returns
+// [{ RangeStart, RangeEnd }] for every row with at least one field filled in
+// (the server validates the numbers and rejects overlapping ranges).
+function batchListEditor(initial) {
+  const wrap = el("div", null, { class: "batch-list-editor" });
+  const rows = el("div", null, { class: "batch-list-rows" });
+  wrap.appendChild(rows);
+
+  function addRow(batch, focus) {
+    const row = el("div", null, { class: "batch-list-row" });
+    const start = input("number", batch ? batch.RangeStart : "", t("rangeStart"));
+    const end = input("number", batch ? batch.RangeEnd : "", t("rangeEnd"));
+    start.min = "0";
+    end.min = "0";
+    start.dataset.role = "start";
+    end.dataset.role = "end";
+    const rm = el("button", "✕", {
+      class: "small danger",
+      type: "button",
+      title: t("delete"),
+    });
+    rm.addEventListener("click", () => row.remove());
+    row.appendChild(start);
+    row.appendChild(el("span", "–", { class: "muted" }));
+    row.appendChild(end);
+    row.appendChild(rm);
+    rows.appendChild(row);
+    if (focus) start.focus();
+  }
+
+  (initial || []).forEach((b) => addRow(b));
+  if (!initial || initial.length === 0) addRow(null);
+
+  const addBtn = el("button", t("addBatch"), {
+    class: "small secondary",
+    type: "button",
+  });
+  addBtn.addEventListener("click", () => addRow(null, true));
+  wrap.appendChild(addBtn);
+
+  wrap.getValues = () => {
+    const out = [];
+    rows.querySelectorAll(".batch-list-row").forEach((r) => {
+      const s = r.querySelector('[data-role="start"]').value.trim();
+      const e = r.querySelector('[data-role="end"]').value.trim();
+      if (s || e) out.push({ RangeStart: s, RangeEnd: e });
+    });
+    return out;
+  };
+  return wrap;
+}
+
 function buildForm(spec, onSubmit, submitLabel) {
   const form = el("form");
   const values = {};
   for (const s of spec) {
     let control;
     if (s.type === "emails") control = emailListEditor(s.value);
+    else if (s.type === "batches") control = batchListEditor(s.value);
     else if (s.type === "select") control = select(s.options, s.value);
     else if (s.type === "textarea") control = textarea(s.value, s.placeholder);
     else if (s.type === "checkbox") {
@@ -560,8 +614,9 @@ function buildForm(spec, onSubmit, submitLabel) {
     const payload = {};
     for (const s of spec) {
       const c = values[s.key];
-      if (s.type === "emails") payload[s.key] = c.getValues();
-      else if (c.type === "checkbox") payload[s.key] = c.checked;
+      if (s.type === "emails" || s.type === "batches") {
+        payload[s.key] = c.getValues();
+      } else if (c.type === "checkbox") payload[s.key] = c.checked;
       else if (s.type === "number") payload[s.key] = Number(c.value);
       else payload[s.key] = c.value;
     }
@@ -768,6 +823,64 @@ function wireEditPriceRecalc(form, insurance) {
   if (!priceInput || !durationInput || !vehicleInput) return;
   const branchInput = control("Branch");
   const paymentInput = control("PaymentType");
+  // Fee checkboxes. Both only exist for walk-ins: email policies are
+  // broker-paid (no card fee) and the non-Turk tax only applies to walk-ins.
+  const nonTurkInput = control("NonTurk");
+  const cardFeeInput = control("CardFee");
+
+  // Fees currently selected in the form. A missing box (email policy) means
+  // no fee; the card fee only counts while the payment is by card.
+  function selectedFees() {
+    return {
+      nonTurk: !!nonTurkInput && !!nonTurkInput.checked,
+      cardFee:
+        !!cardFeeInput &&
+        !!cardFeeInput.checked &&
+        !!paymentInput &&
+        paymentInput.value === "Card",
+    };
+  }
+
+  // Like the add form: the card fee is only allowed when the payment is NOT
+  // cash, so paying in cash clears and locks the box.
+  function syncCardFeeState() {
+    if (!cardFeeInput) return;
+    const byCard = !!paymentInput && paymentInput.value === "Card";
+    if (!byCard) cardFeeInput.checked = false;
+    cardFeeInput.disabled = !byCard;
+  }
+
+  // Adds `delta` to the price field (never below 0). An empty price is left
+  // alone - there is nothing to put the fee on top of.
+  function shiftPrice(delta) {
+    const raw = String(priceInput.value ?? "").trim().replace(",", ".");
+    if (!raw) return;
+    const current = Number(raw);
+    if (!Number.isFinite(current)) return;
+    const next = Math.max(0, Math.round((current + delta) * 100) / 100);
+    priceInput.value = next.toFixed(2);
+  }
+
+  syncCardFeeState();
+  // Fees already included in the price shown in the field.
+  let appliedFees = selectedFees();
+
+  // A fee checkbox (or the payment type) changed: add/remove exactly that fee
+  // from the current price, so a hand-corrected price is kept as well. The
+  // server moves current cash / the card balance by the price difference.
+  function onFeesChanged() {
+    syncCardFeeState();
+    const fees = selectedFees();
+    let delta = 0;
+    if (fees.nonTurk !== appliedFees.nonTurk) {
+      delta += fees.nonTurk ? EDIT_NON_TURK_FEE : -EDIT_NON_TURK_FEE;
+    }
+    if (fees.cardFee !== appliedFees.cardFee) {
+      delta += fees.cardFee ? EDIT_CARD_FEE : -EDIT_CARD_FEE;
+    }
+    appliedFees = fees;
+    if (delta) shiftPrice(delta);
+  }
 
   const cache = {};
   let latest = 0;
@@ -788,19 +901,13 @@ function wireEditPriceRecalc(form, insurance) {
     // A newer change started while this one was loading; let it win.
     if (request !== latest) return;
 
+    syncCardFeeState();
+    const fees = selectedFees();
     const price = editedPolicyPrice(
       pricing,
       vehicleInput.value,
       durationInput.value,
-      {
-        nonTurk: editFlag(insurance.NonTurk),
-        // Email policies have no payment field: they are broker-paid and the
-        // server clears their card fee.
-        cardFee:
-          editFlag(insurance.CardFee) &&
-          !!paymentInput &&
-          paymentInput.value === "Card",
-      }
+      fees
     );
     if (price === null) {
       // Keep the current price; the worker can still correct it by hand.
@@ -808,10 +915,15 @@ function wireEditPriceRecalc(form, insurance) {
       return;
     }
     priceInput.value = price.toFixed(2);
+    // The recalculated price already contains exactly these fees.
+    appliedFees = fees;
   }
 
   durationInput.addEventListener("change", recalc);
   vehicleInput.addEventListener("change", recalc);
+  if (nonTurkInput) nonTurkInput.addEventListener("change", onFeesChanged);
+  if (cardFeeInput) cardFeeInput.addEventListener("change", onFeesChanged);
+  if (paymentInput) paymentInput.addEventListener("change", onFeesChanged);
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +1006,25 @@ function openInsuranceEditor(insurance, onDone) {
         { label: t("payment.Cash"), value: "Cash" },
       ],
       value: insurance.PaymentType === "Cash" ? "Cash" : "Card",
+    });
+  }
+  // The options chosen when the policy was created. Toggling one adds or
+  // removes its fee from the price (see wireEditPriceRecalc), and the server
+  // moves current cash / the card balance by the difference. Both only apply
+  // to walk-ins: email policies are broker-paid (no card fee) and the
+  // non-Turk tax is a walk-in charge.
+  if (!isEmailPolicy) {
+    spec.push({
+      key: "NonTurk",
+      label: t("add.nonTurk"),
+      type: "checkbox",
+      value: editFlag(insurance.NonTurk),
+    });
+    spec.push({
+      key: "CardFee",
+      label: t("add.cardFee"),
+      type: "checkbox",
+      value: editFlag(insurance.CardFee) && insurance.PaymentType === "Card",
     });
   }
 
@@ -1474,6 +1605,11 @@ async function currentCashView(overrideBranch, overrideDate) {
     balance.appendChild(list);
   }
 
+  // The branch's card balance - cleared together with the cash by "Reset to 0".
+  const cardCard = el("div", null, { class: "balance-card" });
+  cardCard.appendChild(el("h3", t("cardBalance")));
+  cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
+
   const actions = el("div", null, { class: "row" });
   const incBtn = el("button", t("increase"));
   const redBtn = el("button", t("reduce"), { class: "secondary" });
@@ -1639,6 +1775,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   Content.replaceChildren(
     heading,
     balance,
+    cardCard,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
     dateRow,
@@ -1760,36 +1897,26 @@ async function totalCashView(overrideBranch) {
   );
 }
 
+// Card balance overview (admin only): every branch's card balance, read-only.
+// A branch's card balance is cleared only by that branch's "Reset to 0" on the
+// Current cash screen, together with its cash. Workers see their own branch's
+// card balance there instead.
 async function cardView() {
   const data = await api("/cardpayments");
   const card = el("div", null, { class: "balance-card" });
-  card.appendChild(el("h3", t("cardBalance")));
+  card.appendChild(el("h3", t("cardBalanceTotal")));
   card.appendChild(el("p", money(data.cardBalance), { class: "big" }));
 
-  const children = [el("h2", t("cardPayments")), card];
+  const branchLabel = (b) => (b ? b : t("unassignedBranch"));
+  const branchTable = renderTable(data.branches || [], [
+    { key: "Branch", label: t("branch"), format: (v) => branchLabel(v) },
+    { key: "CardBalance", label: t("cardBalance"), format: (v) => money(v) },
+  ]);
 
-  // Clearing the card balance is a destructive, admin-only action.
-  if (userRole === "1") {
-    const actions = el("div", null, { class: "row" });
-    const clearBtn = el("button", t("clearBalance"), { class: "danger" });
-    clearBtn.addEventListener("click", async () => {
-      if (!confirm(t("clearCardBalanceConfirm"))) return;
-      try {
-        await api("/cardpayments/reset", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        });
-        toast(t("cardBalanceCleared"), "success");
-        cardView();
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
-    actions.appendChild(clearBtn);
-    children.push(actions);
-  }
+  const children = [el("h2", t("cardPayments")), card, branchTable];
 
   const resetTable = renderTable(data.resets, [
+    { key: "Branch", label: t("branch"), format: (v) => branchLabel(v) },
     { key: "Username", label: t("user") },
     { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
     { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
@@ -1873,6 +2000,12 @@ async function brokersView() {
           ...sortHeader("CashBalance"),
         },
         {
+          key: "batches",
+          label: t("blancBatches"),
+          format: (v) => formatBlancBatches(v),
+        },
+        {
+          // Calculated by the server from ALL of the broker's batch ranges.
           key: "InactivePolicies",
           label: t("inactive"),
           cellClass: (b) =>
@@ -1897,6 +2030,11 @@ async function brokersView() {
                 label: t("edit"),
                 class: "secondary",
                 onClick: (b) => brokerEditForm(b),
+              },
+              {
+                label: t("blancBatches"),
+                class: "secondary",
+                onClick: (b) => brokerBatchesView(b),
               },
               {
                 label: t("delete"),
@@ -1968,23 +2106,12 @@ function brokerCreateForm() {
     [
       { key: "Name", label: t("name"), value: "" },
       { key: "CashBalance", label: t("balance"), type: "number", value: 0 },
+      // Inactive blancs are not entered: they are calculated from the batches.
       {
-        key: "PolicyRangeStart",
-        label: t("rangeStart"),
-        type: "number",
-        value: "",
-      },
-      {
-        key: "PolicyRangeEnd",
-        label: t("rangeEnd"),
-        type: "number",
-        value: "",
-      },
-      {
-        key: "InactivePolicies",
-        label: t("inactive"),
-        type: "number",
-        value: 0,
+        key: "batches",
+        label: t("blancBatches"),
+        type: "batches",
+        value: [],
       },
       { key: "emails", label: "Emails", type: "emails", value: [] },
     ],
@@ -2059,24 +2186,8 @@ async function brokerEditForm(broker) {
         type: "number",
         value: broker.CashBalance,
       },
-      {
-        key: "PolicyRangeStart",
-        label: t("rangeStart"),
-        type: "number",
-        value: broker.PolicyRangeStart,
-      },
-      {
-        key: "PolicyRangeEnd",
-        label: t("rangeEnd"),
-        type: "number",
-        value: broker.PolicyRangeEnd,
-      },
-      {
-        key: "InactivePolicies",
-        label: t("inactive"),
-        type: "number",
-        value: broker.InactivePolicies,
-      },
+      // Blanc ranges are managed per batch (the "Blanc batches" button), and
+      // inactive blancs are calculated from them, so neither is edited here.
       {
         key: "emails",
         label: "Emails",
@@ -2097,6 +2208,129 @@ async function brokerEditForm(broker) {
     t("save")
   );
   openModal(`${t("edit")} ${broker.Name}`, form);
+}
+
+// Compact "start–end, start–end" text for the brokers table.
+function formatBlancBatches(batches) {
+  if (!Array.isArray(batches) || batches.length === 0) return "-";
+  return batches.map((b) => `${b.RangeStart}–${b.RangeEnd}`).join(", ");
+}
+
+// Modal listing a broker's blanc batches with the per-batch and total
+// used / inactive counts calculated by the server. Admins can add a new batch
+// (start + end number), correct a batch's range or remove a batch; every
+// change answers with the refreshed broker, which is re-rendered here.
+async function brokerBatchesView(broker) {
+  const isAdmin = userRole === "1";
+  let current;
+  try {
+    current = (await api(`/brokers/${broker.id}`)).broker || broker;
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+
+  const holder = el("div", null, { class: "batch-manager" });
+  const title = `${t("blancBatches")} - ${broker.Name}`;
+  const send = async (path, method, body) => {
+    const data = await api(`/brokers/${broker.id}/batches${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (data && data.broker) current = data.broker;
+    render();
+    brokersView();
+  };
+
+  function render() {
+    const batches = Array.isArray(current.batches) ? current.batches : [];
+    const summary = el("p", null, { class: "muted" });
+    summary.textContent = t("blancSummary")
+      .replace("{t}", Number(current.BlancTotal) || 0)
+      .replace("{u}", Number(current.BlancUsed) || 0)
+      .replace("{i}", Number(current.InactivePolicies) || 0);
+
+    const table = renderTable(
+      batches,
+      [
+        { key: "RangeStart", label: t("rangeStart") },
+        { key: "RangeEnd", label: t("rangeEnd") },
+        { key: "Total", label: t("blancCount") },
+        { key: "Used", label: t("blancUsed") },
+        { key: "Inactive", label: t("inactive") },
+        {
+          key: "CreatedAt",
+          label: t("created"),
+          format: (v) => formatDateTime(v),
+        },
+      ],
+      isAdmin
+        ? [
+            {
+              label: t("edit"),
+              class: "secondary",
+              onClick: (b) => editBatch(b),
+            },
+            {
+              label: t("delete"),
+              class: "danger",
+              onClick: async (b) => {
+                const msg = t("deleteBatchConfirm")
+                  .replace("{s}", b.RangeStart)
+                  .replace("{e}", b.RangeEnd);
+                if (!confirm(msg)) return;
+                try {
+                  await send(`/${b.id}`, "DELETE");
+                  toast(t("batchDeleted"), "success");
+                } catch (err) {
+                  toast(err.message, "error");
+                }
+              },
+            },
+          ]
+        : null
+    );
+
+    const children = [summary, table];
+    if (isAdmin) {
+      children.push(el("h3", t("addBatch")));
+      children.push(
+        buildForm(
+          [
+            { key: "RangeStart", label: t("rangeStart"), value: "" },
+            { key: "RangeEnd", label: t("rangeEnd"), value: "" },
+          ],
+          async (payload) => {
+            await send("", "POST", payload);
+            toast(t("batchAdded"), "success");
+          },
+          t("addBatch")
+        )
+      );
+    }
+    holder.replaceChildren(...children);
+  }
+
+  function editBatch(batch) {
+    const form = buildForm(
+      [
+        { key: "RangeStart", label: t("rangeStart"), value: batch.RangeStart },
+        { key: "RangeEnd", label: t("rangeEnd"), value: batch.RangeEnd },
+      ],
+      async (payload) => {
+        await send(`/${batch.id}`, "PATCH", payload);
+        toast(t("batchUpdated"), "success");
+        // Return to the batch list (now refreshed) in the same modal.
+        openModal(title, holder);
+      },
+      t("save")
+    );
+    openModal(`${t("edit")} ${batch.RangeStart}–${batch.RangeEnd}`, form);
+  }
+
+  render();
+  openModal(title, holder);
 }
 
 async function brokerPricingEditor(broker) {
@@ -2325,6 +2559,18 @@ function sortInsuranceRows(rows, key, dir) {
   });
 }
 
+// Status shown for a policy in the lookup table / export. A deleted policy
+// (only visible to admins searching with "Include deleted") says so, along
+// with who deleted it when the server recorded that.
+function insuranceStatusLabel(item) {
+  if (!item) return "";
+  if (item.Deleted) {
+    const by = item.DeletedBy ? ` (${item.DeletedBy})` : "";
+    return `${t("deleted")}${by}`;
+  }
+  return item.Annulled ? t("annulled") : "";
+}
+
 async function adminInsurancesByDate(defaultAuthor = "") {
   // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
   // All fields are optional, but at least one must be filled in to search. Any
@@ -2357,6 +2603,14 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
+  // Admins can also look up soft-deleted insurances (e.g. to check who deleted
+  // a policy and when). Workers never get the option - the server ignores the
+  // flag for them anyway.
+  const isAdminSearch = userRole === "1";
+  const includeDeletedInput = isAdminSearch ? input("checkbox") : null;
+  if (includeDeletedInput) {
+    form.appendChild(field(t("includeDeleted"), includeDeletedInput));
+  }
   // Exports exactly what the table shows (same rows, same order, same row
   // numbers) as an .xlsx file. Disabled until a search returns rows.
   const exportBtn = el("button", t("exportExcel"), {
@@ -2442,11 +2696,13 @@ async function adminInsurancesByDate(defaultAuthor = "") {
           {
             key: "Annulled",
             label: t("status"),
-            format: (v) => (v ? t("annulled") : ""),
+            format: (_v, item) => insuranceStatusLabel(item),
             ...sortHeader("Annulled"),
           },
         ],
-        (i) => [
+        // A deleted policy can no longer be edited, annulled or deleted (the
+        // server rejects all three), so it is shown read-only.
+        (i) => (i.Deleted ? [] : [
           {
             label: t("edit"),
             class: "",
@@ -2477,8 +2733,9 @@ async function adminInsurancesByDate(defaultAuthor = "") {
                 },
               ]
             : []),
-        ],
-        (i) => (i.Annulled ? "row-annulled" : "")
+        ]),
+        (i) =>
+          i.Deleted ? "row-deleted" : i.Annulled ? "row-annulled" : ""
       )
     );
   }
@@ -2510,6 +2767,9 @@ async function adminInsurancesByDate(defaultAuthor = "") {
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
     if (carNumber) params.set("carNumber", carNumber);
+    if (includeDeletedInput && includeDeletedInput.checked) {
+      params.set("includeDeleted", "1");
+    }
 
     try {
       const data = await api(`/insurances?${params.toString()}`);
@@ -2557,6 +2817,7 @@ async function adminInsurancesByDate(defaultAuthor = "") {
     policyNumberInput.value = "";
     blancNumberInput.value = "";
     carNumberInput.value = "";
+    if (includeDeletedInput) includeDeletedInput.checked = false;
     // Clearing drops the results, so the sort order is reset with them: the
     // next search starts in the default (server) order again.
     lastRows = [];
@@ -2624,7 +2885,7 @@ function insuranceExportSheet(rows) {
       serial !== null
         ? { value: serial, style: "date" }
         : text(r.CreationDate),
-      r.Annulled ? t("annulled") : "",
+      insuranceStatusLabel(r),
     ];
   });
   return { columns, rows: body };
@@ -3082,9 +3343,10 @@ const NAV_DEFS = {
   2: [
     { key: "nav.dashboard", load: workerDashboard },
     { key: "nav.myInsurances", load: workerMyInsurances },
+    // No Card tab: workers see only their own branch's card balance, shown
+    // on the Current cash screen.
     { key: "nav.currentCash", load: currentCashView },
     { key: "nav.totalCash", load: totalCashView },
-    { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
   ],
   3: [

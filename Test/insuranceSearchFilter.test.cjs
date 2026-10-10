@@ -3,8 +3,8 @@
 // Node test for the GET /insurances search filters, focused on the new
 // `broker` parameter added for the "My insurances" lookup tab.
 //
-// The route handler lives in Test/srv/Requests_TierEndpoints.js - the mirror of
-// the deployed server file. It is a CommonJS module that only needs `express`
+// The route handler lives in InsuranceServer/Requests/TierEndpoints.js (see
+// Test/serverPath.cjs). It is a CommonJS module that only needs `express`
 // and a handful of sibling modules at load time, so this test loads the REAL
 // file in a vm with those requires stubbed, registers the routes on a fake
 // router, and then calls the /insurances handler directly with a fake req/res
@@ -16,11 +16,10 @@
 // Run with:  node Test/insuranceSearchFilter.test.cjs   (or: npm test)
 
 const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
+const { serverFile } = require("./serverPath.cjs");
 
-const ROOT = path.join(__dirname, "..");
-const TIER_JS = path.join(ROOT, "Test", "srv", "Requests_TierEndpoints.js");
+const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 
 // --- fakes -------------------------------------------------------------------
 const routes = [];
@@ -89,7 +88,7 @@ CTX.require = (id) => {
 };
 vm.createContext(CTX);
 vm.runInContext(fs.readFileSync(TIER_JS, "utf8"), CTX, {
-  filename: "Requests_TierEndpoints.js",
+  filename: "Requests/TierEndpoints.js",
 });
 
 if (typeof mod.exports.createTierRouter !== "function") {
@@ -133,7 +132,7 @@ const flat = (sql) => sql.replace(/\s+/g, " ").trim();
 
 // Calls GET /insurances as a logged-in worker and returns the response together
 // with the SQL (and bound parameters) the handler asked the database to run.
-async function search(query) {
+async function search(query, user = { role: 2, username: "worker1" }) {
   const res = {
     statusCode: 200,
     body: undefined,
@@ -148,7 +147,7 @@ async function search(query) {
   };
   const before = queries.length;
   await handler(
-    { query, params: {}, body: {}, user: { role: 2, username: "worker1" } },
+    { query, params: {}, body: {}, user },
     res
   );
   const q = queries.length > before ? queries[queries.length - 1] : null;
@@ -244,6 +243,51 @@ async function search(query) {
       String(r.body && r.body.error).includes("YYYY-MM-DD"),
       "error: " + JSON.stringify(r.body)
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // includeDeleted - admins can look up soft-deleted insurances.
+  // -------------------------------------------------------------------------
+  const ADMIN = { role: 1, username: "admin1" };
+
+  await check("an admin with includeDeleted=1 also gets deleted rows", async () => {
+    const r = await search({ blancNumber: "123", includeDeleted: "1" }, ADMIN);
+    eq(r.status, 200, "status");
+    eq(
+      flat(r.sql),
+      "SELECT * FROM insurance WHERE 1 = 1 AND BlancNumber LIKE ? ORDER BY CreationDate DESC",
+      "sql"
+    );
+    eq(r.params, ["%123%"], "bound params");
+  });
+
+  await check("includeDeleted accepts true / yes as well", async () => {
+    for (const v of ["true", "yes", "TRUE"]) {
+      const r = await search({ author: "w", includeDeleted: v }, ADMIN);
+      ok(!r.sql.includes("Deleted = 0"), `${v}: ` + flat(r.sql));
+    }
+  });
+
+  await check("an admin without the flag still gets only live rows", async () => {
+    const r = await search({ blancNumber: "123" }, ADMIN);
+    ok(flat(r.sql).includes("WHERE Deleted = 0"), flat(r.sql));
+  });
+
+  await check("an admin with includeDeleted=0 gets only live rows", async () => {
+    const r = await search({ blancNumber: "123", includeDeleted: "0" }, ADMIN);
+    ok(flat(r.sql).includes("WHERE Deleted = 0"), flat(r.sql));
+  });
+
+  await check("a worker can never see deleted rows, even with the flag", async () => {
+    const r = await search({ blancNumber: "123", includeDeleted: "1" });
+    eq(r.status, 200, "status");
+    ok(flat(r.sql).includes("WHERE Deleted = 0"), flat(r.sql));
+  });
+
+  await check("includeDeleted alone is not a search criterion", async () => {
+    const r = await search({ includeDeleted: "1" }, ADMIN);
+    eq(r.status, 400, "status");
+    ok(r.queried === false, "must not hit the database");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

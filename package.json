@@ -1,7 +1,7 @@
 {
   "name": "insurance-client",
   "productName": "Insurance",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Insurance client",
   "license": "ISC",
   "author": "Frosttide",
@@ -13,7 +13,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/emailThread.test.cjs && node Test/emailAge.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs",
+    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/emailThread.test.cjs && node Test/emailAge.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs && node Test/addInsurancePrice.test.cjs && node Test/brokerBlancBatches.test.cjs",
     "build": "electron-builder",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --publish always",

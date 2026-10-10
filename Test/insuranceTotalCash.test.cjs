@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 // Node test for the TWO RECORDS OF CASH FLOW: current cash and total cash.
 //
@@ -16,9 +16,9 @@
 // or clearing the card balance, which zeroes every CardPart - drags Total cash
 // down with it. That identity is what this test pins down.
 //
-// It loads the REAL server modules (Test/srv/Requests_CurrentCash.js and
-// Test/srv/Requests_CardPayments.js, mirrors of the deployed
-// InsuranceServer/Requests/* files) in a vm against an in-memory fake MySQL, so
+// It loads the REAL server modules (InsuranceServer/Requests/CurrentCash.js and
+// InsuranceServer/Requests/CardPayments.js, see Test/serverPath.cjs) in a vm
+// against an in-memory fake MySQL, so
 // the assertions are about the balances the real SQL actually produces.
 //
 // Run with:  node Test/insuranceTotalCash.test.cjs   (or: npm test)
@@ -27,8 +27,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const ROOT = path.join(__dirname, "..");
-const SRV = path.join(ROOT, "Test", "srv");
+const { serverFile } = require("./serverPath.cjs");
 const CURRENCIES = ["EUR", "USD", "TRY"];
 
 const round = (n) => Math.round(Number(n) * 100) / 100;
@@ -44,8 +43,9 @@ const tables = {
   total_cash_transactions: [],
   cash_resets: [],
   card_resets: [],
-  CardBalance: 0,
+  branch_card_balance: new Map(), // branch -> number
 };
+const cardOf = (branch) => tables.branch_card_balance.get(String(branch || "")) || 0;
 
 function ensureCash(branch, currency) {
   const k = ck(branch, currency);
@@ -166,9 +166,20 @@ async function query(sql, params = []) {
     }
     return [rows];
   }
-  if (s === "UPDATE total_cash SET CardPart = 0") {
-    for (const row of tables.total_cash.values()) row.CardPart = 0;
-    return [{ affectedRows: tables.total_cash.size }];
+  if (s.startsWith("SELECT Currency, CardPart FROM total_cash WHERE id = ? AND Branch = ? AND CardPart != 0")) {
+    const rows = [];
+    for (const cur of CURRENCIES) {
+      const row = tables.total_cash.get(ck(p[1], cur));
+      if (row && row.CardPart !== 0) rows.push({ Currency: cur, CardPart: row.CardPart });
+    }
+    return [rows];
+  }
+  if (s.startsWith("UPDATE total_cash SET CardPart = 0 WHERE id = ? AND Branch = ?")) {
+    for (const cur of CURRENCIES) {
+      const row = tables.total_cash.get(ck(p[1], cur));
+      if (row) row.CardPart = 0;
+    }
+    return [{ affectedRows: 1 }];
   }
   if (s.startsWith("INSERT INTO total_cash_transactions")) {
     tables.total_cash_transactions.push({
@@ -183,25 +194,35 @@ async function query(sql, params = []) {
     return [{ insertId: tables.total_cash_transactions.length }];
   }
 
-  // --- CardBalance ----------------------------------------------------------
-  if (s.startsWith("INSERT IGNORE INTO CardBalance")) return [[]];
-  if (s.startsWith("SELECT CardBalance FROM CardBalance")) {
-    return [[{ CardBalance: tables.CardBalance }]];
+  // --- branch_card_balance (card balance per branch) -------------------------
+  if (s.includes("CardBalance FROM CardBalance") || s.includes("INTO CardBalance") ||
+      s.startsWith("UPDATE CardBalance")) {
+    throw new Error("the legacy global CardBalance must not be used: " + s);
   }
-  if (s.startsWith("UPDATE CardBalance SET CardBalance = CardBalance + ?")) {
-    tables.CardBalance = round(tables.CardBalance + Number(p[0]));
+  if (s.startsWith("INSERT IGNORE INTO branch_card_balance")) {
+    if (!tables.branch_card_balance.has(p[0])) tables.branch_card_balance.set(p[0], 0);
+    return [[]];
+  }
+  if (s.startsWith("SELECT CardBalance FROM branch_card_balance WHERE Branch = ?")) {
+    return [tables.branch_card_balance.has(p[0])
+      ? [{ CardBalance: tables.branch_card_balance.get(p[0]) }]
+      : []];
+  }
+  if (s.startsWith("SELECT Branch, CardBalance FROM branch_card_balance")) {
+    return [[...tables.branch_card_balance.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([Branch, CardBalance]) => ({ Branch, CardBalance }))];
+  }
+  if (s.startsWith("UPDATE branch_card_balance SET CardBalance = CardBalance + ? WHERE Branch = ?")) {
+    tables.branch_card_balance.set(p[1], round(cardOf(p[1]) + Number(p[0])));
     return [{ affectedRows: 1 }];
   }
-  if (s.startsWith("UPDATE CardBalance SET CardBalance = CardBalance - ?")) {
-    tables.CardBalance = round(tables.CardBalance - Number(p[0]));
+  if (s.startsWith("UPDATE branch_card_balance SET CardBalance = 0 WHERE Branch = ?")) {
+    tables.branch_card_balance.set(p[0], 0);
     return [{ affectedRows: 1 }];
   }
-  if (s.startsWith("UPDATE CardBalance SET CardBalance = 0")) {
-    tables.CardBalance = 0;
-    return [{ affectedRows: 1 }];
-  }
-  if (s.startsWith("INSERT INTO card_resets")) {
-    tables.card_resets.push({ Username: p[0], KeptAmount: p[1] });
+  if (s.startsWith("INSERT INTO card_resets (Branch, Username, KeptAmount)")) {
+    tables.card_resets.push({ Branch: p[0], Username: p[1], KeptAmount: p[2] });
     return [{ insertId: tables.card_resets.length }];
   }
 
@@ -253,16 +274,16 @@ function loadModule(file, extraStubs) {
     return stubs[id];
   };
   vm.createContext(CTX);
-  vm.runInContext(fs.readFileSync(path.join(SRV, file), "utf8"), CTX, {
+  vm.runInContext(fs.readFileSync(serverFile("Requests", file), "utf8"), CTX, {
     filename: file,
   });
   return mod.exports;
 }
 
-// CardPayments is loaded with the REAL CurrentCash exports, so clearing the card
-// balance really does call zeroAllCardParts.
-const CC = loadModule("Requests_CurrentCash.js");
-const CP = loadModule("Requests_CardPayments.js", { "./CurrentCash.js": CC });
+// CardPayments is loaded with the REAL CurrentCash exports, so card payments
+// really go through the per-branch card balance helpers.
+const CC = loadModule("CurrentCash.js");
+const CP = loadModule("CardPayments.js", { "./CurrentCash.js": CC });
 
 for (const [name, mod] of [
   ["CurrentCash", CC],
@@ -305,19 +326,21 @@ function resetTables() {
   tables.total_cash_transactions.length = 0;
   tables.cash_resets.length = 0;
   tables.card_resets.length = 0;
-  tables.CardBalance = 0;
+  tables.branch_card_balance.clear();
   sqlLog.length = 0;
 }
 
-const BRANCH = "Офис Харманли";
+const BRANCH = "ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸";
+const OTHER = "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾";
 const USER = "admin1";
 
 // The identity the whole design rests on: Total cash is current cash plus the
-// two stored parts, and the card part accounts for exactly the card balance.
-async function assertSuperset(msg) {
-  const totals = await CC.getTotalCash(fakeDb, BRANCH);
-  const cash = await CC.getCurrentCash(fakeDb, BRANCH);
-  const parts = await CC.getTotalParts(fakeDb, BRANCH);
+// two stored parts, and a branch's card part accounts for exactly that
+// branch's card balance.
+async function assertSuperset(msg, branch = BRANCH) {
+  const totals = await CC.getTotalCash(fakeDb, branch);
+  const cash = await CC.getCurrentCash(fakeDb, branch);
+  const parts = await CC.getTotalParts(fakeDb, branch);
   for (const cur of CURRENCIES) {
     const want = round(cash[cur] + parts[cur].CardPart + parts[cur].BrokerPart);
     eq(totals[cur], want, `${msg}: TotalCash[${cur}]`);
@@ -325,7 +348,16 @@ async function assertSuperset(msg) {
   const cardSum = round(
     CURRENCIES.reduce((sum, cur) => sum + parts[cur].CardPart, 0)
   );
-  eq(cardSum, round(tables.CardBalance), `${msg}: sum(CardPart) == CardBalance`);
+  eq(cardSum, round(cardOf(branch)), `${msg}: sum(CardPart) == branch card balance`);
+}
+
+// A card payment as TierEndpoints.movePolicyMoney records it: the branch's
+// card balance + the branch's Card part of Total cash.
+async function payByCard(branch, amount, reason) {
+  await CP.recordCardPayment(fakeDb, branch, USER, amount, reason);
+  await CC.recordChannelMovement(
+    fakeDb, branch, USER, "increase", amount, reason, "EUR", "Card"
+  );
 }
 
 const ledger = () =>
@@ -334,7 +366,7 @@ const ledger = () =>
   );
 
 (async () => {
-  console.log("Total cash — the second record of cash flow");
+  console.log("Total cash â€” the second record of cash flow");
 
   await check("a fresh branch has zero current cash and zero total cash", async () => {
     resetTables();
@@ -366,7 +398,7 @@ const ledger = () =>
     eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 50, "total cash");
     eq(
       ledger(),
-      ["Cash increase 50 EUR @ Офис Харманли"],
+      ["Cash increase 50 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"],
       "total cash ledger"
     );
     await assertSuperset("after a cash payment");
@@ -395,7 +427,7 @@ const ledger = () =>
       );
       eq(
         ledger(),
-        ["Broker increase 100 EUR @ Офис Харманли"],
+        ["Broker increase 100 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"],
         "total cash ledger"
       );
       eq(
@@ -411,18 +443,8 @@ const ledger = () =>
     "a card payment raises the card balance and total cash, not current cash",
     async () => {
       resetTables();
-      await CP.recordCardPayment(fakeDb, USER, 70, "1234567");
-      await CC.recordChannelMovement(
-        fakeDb,
-        BRANCH,
-        USER,
-        "increase",
-        70,
-        "1234567",
-        "EUR",
-        "Card"
-      );
-      eq(tables.CardBalance, 70, "card balance");
+      await payByCard(BRANCH, 70, "1234567");
+      eq(cardOf(BRANCH), 70, "the branch's card balance");
       eq((await CC.getCurrentCash(fakeDb, BRANCH)).EUR, 0, "drawer untouched");
       eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 70, "total cash counts it");
       await assertSuperset("after a card payment");
@@ -432,17 +454,7 @@ const ledger = () =>
   await check("all three payment types add up in total cash", async () => {
     resetTables();
     await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 50, "A", "EUR");
-    await CP.recordCardPayment(fakeDb, USER, 70, "B");
-    await CC.recordChannelMovement(
-      fakeDb,
-      BRANCH,
-      USER,
-      "increase",
-      70,
-      "B",
-      "EUR",
-      "Card"
-    );
+    await payByCard(BRANCH, 70, "B");
     await CC.recordChannelMovement(
       fakeDb,
       BRANCH,
@@ -492,7 +504,7 @@ const ledger = () =>
     await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 10, "A", "EUR");
     await CC.recordChannelMovement(
       fakeDb,
-      "ГКПП Лесово",
+      "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾",
       USER,
       "increase",
       20,
@@ -501,7 +513,7 @@ const ledger = () =>
       "Broker"
     );
     eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 10, "branch A");
-    eq((await CC.getTotalCash(fakeDb, "ГКПП Лесово")).EUR, 20, "branch B");
+    eq((await CC.getTotalCash(fakeDb, "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾")).EUR, 20, "branch B");
   });
 
   await check("resetting current cash drags total cash down with it", async () => {
@@ -528,55 +540,102 @@ const ledger = () =>
       "only the broker part survives"
     );
     ok(
-      ledger().includes("Cash reduce 50 EUR @ Офис Харманли"),
+      ledger().includes("Cash reduce 50 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"),
       "the reset is recorded in the total cash ledger"
     );
     await assertSuperset("after a current cash reset");
   });
 
-  await check("clearing the card balance drags total cash down with it", async () => {
+  await check("card payments are kept per branch", async () => {
     resetTables();
-    await CP.recordCardPayment(fakeDb, USER, 70, "A");
-    await CC.recordChannelMovement(
-      fakeDb,
-      BRANCH,
-      USER,
-      "increase",
-      70,
-      "A",
-      "EUR",
-      "Card"
-    );
-    await CC.recordChannelMovement(
-      fakeDb,
-      BRANCH,
-      USER,
-      "increase",
-      100,
-      "B",
-      "EUR",
-      "Broker"
-    );
-    eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 170, "before the clear");
+    await payByCard(BRANCH, 70, "A");
+    await payByCard(OTHER, 30, "B");
+    eq(cardOf(BRANCH), 70, "branch A");
+    eq(cardOf(OTHER), 30, "branch B");
+    const all = await CP.getCardPayments(fakeDb);
+    eq(all.total, 100, "overview total");
+    eq(all.branches.length, 2, "one row per branch");
+    await assertSuperset("branch A", BRANCH);
+    await assertSuperset("branch B", OTHER);
+  });
 
-    const kept = await CP.resetCardBalance(fakeDb, USER);
-    eq(kept, 70, "kept amount");
-    eq(tables.CardBalance, 0, "card balance cleared");
+  await check("Reset to 0 clears the branch's cash AND card balance", async () => {
+    resetTables();
+    await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 50, "A", "EUR");
+    await payByCard(BRANCH, 70, "B");
+    await CC.recordChannelMovement(
+      fakeDb, BRANCH, USER, "increase", 100, "C", "EUR", "Broker"
+    );
+    eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 220, "before the reset");
+
+    const kept = await CC.resetBranch(fakeDb, BRANCH, USER);
+    eq(kept.cash.EUR, 50, "cash kept");
+    eq(kept.card, 70, "card kept");
+    eq((await CC.getCurrentCash(fakeDb, BRANCH)).EUR, 0, "drawer zeroed");
+    eq(cardOf(BRANCH), 0, "card balance zeroed");
     eq(
       (await CC.getTotalParts(fakeDb, BRANCH)).EUR,
       { CardPart: 0, BrokerPart: 100 },
       "CardPart zeroed, BrokerPart untouched"
     );
+    eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 100, "only the broker part survives");
     eq(
-      (await CC.getTotalCash(fakeDb, BRANCH)).EUR,
-      100,
-      "only the broker part survives"
+      tables.card_resets,
+      [{ Branch: BRANCH, Username: USER, KeptAmount: 70 }],
+      "card reset recorded with its branch"
     );
     ok(
-      ledger().includes("Card reduce 70 EUR @ Офис Харманли"),
-      "the clear is recorded in the total cash ledger"
+      ledger().includes("Card reduce 70 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"),
+      "the card clear is in the total cash ledger"
     );
-    await assertSuperset("after a card clear");
+    await assertSuperset("after Reset to 0");
+  });
+
+  await check("Reset to 0 never touches another branch", async () => {
+    resetTables();
+    await CC.recordCashMovement(fakeDb, OTHER, USER, "increase", 40, "A", "EUR");
+    await payByCard(BRANCH, 70, "B");
+    await payByCard(OTHER, 30, "C");
+
+    await CC.resetBranch(fakeDb, BRANCH, USER);
+    eq(cardOf(BRANCH), 0, "own card cleared");
+    eq(cardOf(OTHER), 30, "other branch's card kept");
+    eq((await CC.getCurrentCash(fakeDb, OTHER)).EUR, 40, "other branch's cash kept");
+    eq((await CC.getTotalParts(fakeDb, OTHER)).EUR.CardPart, 30, "other CardPart kept");
+    await assertSuperset("other branch", OTHER);
+  });
+
+  await check("a card refund comes out of the policy's own branch", async () => {
+    resetTables();
+    await payByCard(BRANCH, 70, "A");
+    await payByCard(OTHER, 30, "B");
+    await CP.reduceCardBalance(fakeDb, OTHER, USER, 20, "Annul B");
+    eq(cardOf(BRANCH), 70, "branch A untouched");
+    eq(cardOf(OTHER), 10, "branch B refunded");
+  });
+
+  await check("the card overview is read-only and admin-only", async () => {
+    const routes = [];
+    const roles = [];
+    const router = Object.assign({}, fakeRouter, {
+      get: (p, ...h) => routes.push({ method: "get", path: p }),
+      post: (p, ...h) => routes.push({ method: "post", path: p }),
+    });
+    const RouterCP = loadModule("CardPayments.js", {
+      "./CurrentCash.js": CC,
+      express: { Router: () => router },
+      "./Auth.js": {
+        requireAuth: () => () => {},
+        requireRole: (...r) => {
+          roles.push(r.map(String));
+          return () => {};
+        },
+      },
+    });
+    RouterCP.createCardPaymentsRouter(fakeDb);
+    eq(routes, [{ method: "get", path: "/cardpayments" }], "only the overview route");
+    eq(roles, [["1"]], "admins only");
+    ok(!RouterCP.resetCardBalance, "no separate card clear is exported");
   });
 
   await check("reversing a broker payment takes it back out of total cash", async () => {
@@ -691,8 +750,8 @@ const ledger = () =>
     eq(
       ledger(),
       [
-        "Cash increase 25 TRY @ Офис Харманли",
-        "Cash reduce 5 TRY @ Офис Харманли",
+        "Cash increase 25 TRY @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸",
+        "Cash reduce 5 TRY @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸",
       ],
       "the two records list the same movements"
     );
@@ -701,7 +760,7 @@ const ledger = () =>
   });
 
   // --- transaction history by day (one day at a time, default today) --------
-  console.log("\nCurrent cash history — one day at a time");
+  console.log("\nCurrent cash history â€” one day at a time");
   // 2026-10-10 01:30 UTC is already 04:30 on the 10th in UTC+3, but a client in
   // UTC-5 is still on the 9th.
   const NOW = new Date(Date.UTC(2026, 9, 10, 1, 30));
@@ -739,14 +798,18 @@ const ledger = () =>
     const router = Object.assign({}, fakeRouter, {
       get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
     });
-    const RouterCC = loadModule("Requests_CurrentCash.js", {
+    const RouterCC = loadModule("CurrentCash.js", {
       express: { Router: () => router },
     });
     const seen = [];
     const db = {
       query: async (sql, params) => {
         const s = String(sql).replace(/\s+/g, " ").trim();
-        if (/^(SELECT|UPDATE|INSERT) .*current_cash /.test(s) && !/FROM cash_/.test(s)) {
+        if (
+          (/^(SELECT|UPDATE|INSERT) .*current_cash /.test(s) ||
+            /branch_card_balance/.test(s)) &&
+          !/FROM cash_/.test(s)
+        ) {
           return query(sql, params);
         }
         seen.push({ s, params });
@@ -774,10 +837,13 @@ const ledger = () =>
     };
 
     resetTables();
+    await payByCard(BRANCH, 70, "A");
+    await payByCard(OTHER, 30, "B");
     const today = CC.clientLocalDate(0);
     let r = await call({ branch: BRANCH, tzOffset: "0" });
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
+    eq(r.body.cardBalance, 70, "only the requested branch's card balance");
     eq(seen.length, 2, "transactions + resets queried");
     for (const q of seen) {
       ok(/CreatedAt >= \? AND CreatedAt < \?/.test(q.s), "filtered by day: " + q.s);

@@ -145,6 +145,14 @@ tr.row-annulled td {
   color: #ffb4af;
 }
 
+/* Soft-deleted policy (admin search with "Include deleted"): greyed out and
+   struck through so it cannot be mistaken for a live one. */
+tr.row-deleted td {
+  background: rgba(128, 128, 128, 0.15);
+  color: #9a9a9a;
+  text-decoration: line-through;
+}
+
 tr.row-broker-alert td {
   background: #6b0f14;
   color: #ffd9d6;

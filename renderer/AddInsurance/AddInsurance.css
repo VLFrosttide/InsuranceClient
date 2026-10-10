@@ -38,6 +38,23 @@
 .field label {
   margin-bottom: 4px;
 }
+.field .field-label {
+  margin-bottom: 4px;
+}
+/* Calculated price on the add form: plain text, not an input, so it cannot be
+   edited. Sized like the neighbouring inputs so the grid stays aligned. */
+.price-display {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.price-display.price-unavailable {
+  color: var(--muted);
+  font-weight: 400;
+}
 .form-grid .field.full {
   grid-column: 1 / -1;
 }

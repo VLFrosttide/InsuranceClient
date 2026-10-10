@@ -164,6 +164,36 @@ body {
   align-self: flex-start;
 }
 
+/* Editable list of broker blanc batches (start – end per row) */
+.batch-list-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.batch-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.batch-list-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.batch-list-row input {
+  flex: 1;
+  min-width: 0;
+}
+.batch-list-editor > button {
+  align-self: flex-start;
+}
+.batch-manager h3 {
+  margin: 18px 0 0 0;
+  font-size: 15px;
+}
+
 pre {
   background: #1b2029;
   border: 1px solid var(--panel-border);

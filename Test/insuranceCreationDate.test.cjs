@@ -10,19 +10,17 @@
 // the server clock shifted by that offset.
 //
 // Like insuranceSearchFilter.test.cjs, this loads the REAL server file
-// (Test/srv/Requests_TierEndpoints.js - the mirror of the deployed
-// InsuranceServer/Requests/TierEndpoints.js) in a vm with its requires stubbed,
-// then checks the clientLocalDateTime helper and the value bound by the
-// POST /worker/insurances INSERT.
+// (InsuranceServer/Requests/TierEndpoints.js, see Test/serverPath.cjs) in a vm
+// with its requires stubbed, then checks the clientLocalDateTime helper and the
+// value bound by the POST /worker/insurances INSERT.
 //
 // Run with:  node Test/insuranceCreationDate.test.cjs   (or: npm test)
 
 const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
+const { serverFile } = require("./serverPath.cjs");
 
-const ROOT = path.join(__dirname, "..");
-const TIER_JS = path.join(ROOT, "Test", "srv", "Requests_TierEndpoints.js");
+const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 
 // --- fakes -------------------------------------------------------------------
 const routes = [];
@@ -91,7 +89,7 @@ CTX.require = (id) => {
 };
 vm.createContext(CTX);
 vm.runInContext(fs.readFileSync(TIER_JS, "utf8"), CTX, {
-  filename: "Requests_TierEndpoints.js",
+  filename: "Requests/TierEndpoints.js",
 });
 
 const { clientLocalDateTime, createTierRouter } = mod.exports;
@@ -224,7 +222,7 @@ async function create(body) {
     eq(r.status, 201, "status");
     ok(r.insert, "no INSERT issued");
     ok(!/NOW\(\)/i.test(r.insert.sql), "INSERT still uses NOW(): " + r.insert.sql);
-    ok(/CreationDate\)/.test(r.insert.sql), "CreationDate column is last");
+    ok(/CreationDate\b/.test(r.insert.sql), "CreationDate column present");
   });
 
   await check("CreationDate is bound as the client's local time", async () => {
@@ -232,7 +230,8 @@ async function create(body) {
     const before = clientLocalDateTime(offset);
     const r = await create({ TzOffset: offset });
     const after = clientLocalDateTime(offset);
-    const stored = r.insert.params[15];
+    // Column order: Author, CreationDate, PolicyNumber, BlancNumber, ...
+    const stored = r.insert.params[1];
     ok(DATETIME_RE.test(stored), "not a MySQL DATETIME: " + stored);
     // String compare works for this fixed-width format.
     ok(
@@ -245,10 +244,10 @@ async function create(body) {
     const r = await create({ TzOffset: 180 });
     eq(r.insert.params.length, 16, "param count");
     eq(r.insert.params[0], "worker1", "Author");
-    eq(r.insert.params[2], "7654321", "BlancNumber");
-    eq(r.insert.params[7], "Офис Харманли", "Broker (the branch, for walk-ins)");
-    eq(r.insert.params[10], "Cash", "PaymentType");
-    eq(r.insert.params[14], 0, "CardFee");
+    eq(r.insert.params[3], "7654321", "BlancNumber");
+    eq(r.insert.params[8], "Офис Харманли", "Broker (the branch, for walk-ins)");
+    eq(r.insert.params[11], "Cash", "PaymentType");
+    eq(r.insert.params[15], 0, "CardFee");
   });
 
   // --- creation time computed by the client ---------------------------------
@@ -257,12 +256,12 @@ async function create(body) {
   await check("the CreationDate sent by the client is stored as is", async () => {
     const r = await create({ CreationDate: "2026-10-10 09:15:42", TzOffset: 180 });
     eq(r.status, 201, "status");
-    eq(r.insert.params[15], "2026-10-10 09:15:42", "stored CreationDate");
+    eq(r.insert.params[1], "2026-10-10 09:15:42", "stored CreationDate");
   });
 
   await check("a CreationDate with a T separator is normalised", async () => {
     const r = await create({ CreationDate: "2026-10-10T23:59:59" });
-    eq(r.insert.params[15], "2026-10-10 23:59:59", "stored CreationDate");
+    eq(r.insert.params[1], "2026-10-10 23:59:59", "stored CreationDate");
   });
 
   await check("a malformed CreationDate is rejected and nothing is saved", async () => {
@@ -284,7 +283,7 @@ async function create(body) {
     const before = clientLocalDateTime(180);
     const r = await create({ CreationDate: "", TzOffset: 180 });
     const after = clientLocalDateTime(180);
-    const stored = r.insert.params[15];
+    const stored = r.insert.params[1];
     ok(stored >= before && stored <= after, `stored ${stored} not local`);
   });
 
@@ -293,7 +292,7 @@ async function create(body) {
     const r = await create({});
     const after = clientLocalDateTime(0);
     eq(r.status, 201, "status");
-    const stored = r.insert.params[15];
+    const stored = r.insert.params[1];
     ok(stored >= before && stored <= after, `stored ${stored} not UTC`);
   });
 

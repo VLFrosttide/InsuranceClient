@@ -219,8 +219,10 @@ function configureWalkInMode() {
 
 // Email policies are paid ONLY from the broker's balance - never in cash and
 // never by card. The "In cash" and card-fee checkboxes do not apply to them,
-// so they are removed from the form entirely (not just hidden/disabled) and a
-// note in their place says how the policy is paid. Walk-ins keep both options.
+// and neither does the non-Turk tax (a walk-in-only charge the server rejects
+// for email policies), so all three are removed from the form entirely (not
+// just hidden/disabled) and a note in their place says how the policy is
+// paid. Walk-ins keep all options.
 // Safe to call repeatedly: once removed, the checkboxes are no longer found.
 function removeEmailPaymentOptions() {
   if (!OpenedFromEmail) return;
@@ -236,7 +238,7 @@ function removeEmailPaymentOptions() {
     cashField.parentNode.insertBefore(note, cashField);
   }
 
-  for (const id of ["CashInput", "CardFeeInput"]) {
+  for (const id of ["CashInput", "CardFeeInput", "NonTurkInput"]) {
     const input = document.getElementById(id);
     if (!input) continue;
     // Untick first: the fee helpers keep a reference to these inputs, and an
@@ -884,25 +886,17 @@ const CARD_FEE = 2;
 const NonTurkInput = document.getElementById("NonTurkInput");
 const CardFeeInput = document.getElementById("CardFeeInput");
 const CashInput = document.getElementById("CashInput");
-const TotalPriceInput = document.getElementById("TotalPriceInput");
+// Read-only price shown on the form. The price can NOT be typed: it is always
+// the tariff price for the selected vehicle type + duration plus the selected
+// fees, and that calculated value is what gets saved.
+const TotalPriceDisplay = document.getElementById("TotalPriceDisplay");
 
-// The price without the optional fees. TotalPriceInput always shows
-// basePrice + the currently selected fees.
-let basePrice = 0;
-
-// True while the selected vehicle type + duration has no price: the price field
-// is left empty and shows "n/a" as a placeholder.
-let priceUnavailable = false;
-
-function setPriceUnavailable(unavailable) {
-  priceUnavailable = unavailable;
-  if (!TotalPriceInput) return;
-  TotalPriceInput.placeholder = unavailable ? "n/a" : "";
-  if (unavailable) {
-    TotalPriceInput.value = "";
-    basePrice = 0;
-  }
-}
+// The tariff price without the optional fees, or null while there is none -
+// either the tariffs are still loading, or the selected vehicle type +
+// duration has no price ("n/a"). A policy cannot be saved without a price.
+let basePrice = null;
+// True while the tariffs are being (re)loaded, so "…" is shown, not "n/a".
+let pricingLoading = true;
 
 function round2(n) {
   return Math.round(n * 100) / 100;
@@ -915,14 +909,24 @@ function currentFees() {
   return fees;
 }
 
-// Writes basePrice + fees into the price input (leaves it empty while there is
-// no base price yet and no fee selected).
+// The price that will be saved: tariff price + selected fees, or null when
+// there is no tariff price.
+function currentTotalPrice() {
+  if (basePrice === null) return null;
+  return round2(basePrice + currentFees());
+}
+
+// Shows the calculated total in the read-only price field.
 function renderTotalPrice() {
-  if (!TotalPriceInput) return;
-  if (priceUnavailable) return;
-  const fees = currentFees();
-  if (TotalPriceInput.value === "" && basePrice === 0 && fees === 0) return;
-  TotalPriceInput.value = round2(basePrice + fees);
+  if (!TotalPriceDisplay) return;
+  const total = currentTotalPrice();
+  const unavailable = total === null;
+  TotalPriceDisplay.classList.toggle("price-unavailable", unavailable);
+  TotalPriceDisplay.textContent = unavailable
+    ? pricingLoading
+      ? "…"
+      : "n/a"
+    : total.toFixed(2);
 }
 
 // The card fee is only allowed when the payment is NOT cash.
@@ -945,18 +949,8 @@ if (NonTurkInput) NonTurkInput.addEventListener("change", onFeeChange);
 if (CashInput) CashInput.addEventListener("change", onFeeChange);
 if (CardFeeInput) CardFeeInput.addEventListener("change", onFeeChange);
 
-// When the worker types a price manually, treat it as the final total and
-// derive the base price from it so toggling fees keeps working.
-if (TotalPriceInput) {
-  TotalPriceInput.addEventListener("input", () => {
-    // Typing a price manually overrides the "n/a" state.
-    priceUnavailable = false;
-    TotalPriceInput.placeholder = "";
-    const typed = parseFloat(TotalPriceInput.value);
-    basePrice = Number.isFinite(typed) ? round2(typed - currentFees()) : 0;
-  });
-}
 syncCardFeeState();
+renderTotalPrice();
 
 // Pricing used for this form. Insurances created from an email card use the
 // broker's pricing (resolved from the sender address); walk-ins use the
@@ -976,6 +970,8 @@ function lookupPrice(insuranceType, duration) {
 }
 
 async function loadPolicyPricing() {
+  pricingLoading = true;
+  renderTotalPrice();
   const params = new URLSearchParams();
   const from = PendingEmail && PendingEmail.from ? PendingEmail.from : "";
   if (from) params.set("from", from);
@@ -988,15 +984,15 @@ async function loadPolicyPricing() {
     console.warn("Failed to load policy pricing:", err);
     policyPricing = getPricingCache() || {};
   }
+  pricingLoading = false;
   autofillPrice();
 }
 
 function autofillPrice() {
   const autoTypeInput = document.getElementById("AutoTypeInput");
   const durationInput = document.getElementById("DurationInput");
-  const priceInput = document.getElementById("TotalPriceInput");
 
-  if (!autoTypeInput || !durationInput || !priceInput) return;
+  if (!autoTypeInput || !durationInput) return;
 
   const insuranceType = autoTypeInput.value;
   const durationText = durationInput.value;
@@ -1015,17 +1011,13 @@ function autofillPrice() {
   else if (insuranceType === "Bus") mappedType = "Bus";
   else if (insuranceType === "Trailer") mappedType = "Trailer";
 
-  // Look up the price. When there is none, show "n/a" instead of keeping the
-  // previous value.
+  // Look up the price. When there is none, "n/a" is shown instead of keeping
+  // the previous value, and the policy cannot be saved.
   const price =
     mappedType && duration ? lookupPrice(mappedType, duration) : null;
-  if (price !== null) {
-    setPriceUnavailable(false);
-    basePrice = Number(price) || 0;
-    priceInput.value = round2(basePrice + currentFees());
-  } else {
-    setPriceUnavailable(true);
-  }
+  const numeric = price === null || price === "" ? NaN : Number(price);
+  basePrice = Number.isFinite(numeric) ? numeric : null;
+  renderTotalPrice();
 }
 
 // Attach auto-fill listeners to duration and vehicle type inputs
@@ -1065,7 +1057,8 @@ function clearForm() {
   renderDroppedFiles();
   if (NonTurkInput) NonTurkInput.checked = false;
   if (CardFeeInput) CardFeeInput.checked = false;
-  basePrice = 0;
+  // No price until the tariffs below are reloaded and recalculated.
+  basePrice = null;
   syncCardFeeState();
   removeEmailPaymentOptions();
   setMessage("", false);
@@ -1160,6 +1153,18 @@ InsuranceForm.addEventListener("submit", async function (e) {
     return;
   }
 
+  // The price is never typed - it is the calculated tariff price + fees. While
+  // there is none (tariffs still loading, or no tariff for this vehicle type +
+  // duration) the policy cannot be saved.
+  const totalPrice = currentTotalPrice();
+  if (totalPrice === null) {
+    setMessage(
+      t(pricingLoading ? "add.priceLoading" : "add.priceUnavailable"),
+      true
+    );
+    return;
+  }
+
   // Email card policies are answered with a return email carrying the policy
   // files, so they must not be saved without at least one attached file.
   if (returnEmailEnabled() && droppedFiles.length === 0) {
@@ -1185,7 +1190,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
     Branch: localStorage.getItem("branch") || "",
     Otomobil: FormObject.AutoTypeInput,
     StartDate: FormObject.StartDateInput || "",
-    Price: FormObject.TotalPriceInput,
+    // Calculated, read-only price (tariff + selected fees).
+    Price: totalPrice.toFixed(2),
     CurrencyType: FormObject.CurrencyInput,
     // Email policies are paid only from the broker's balance; walk-ins are
     // paid in cash or by card.
@@ -1195,7 +1201,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
       ? "Cash"
       : "Card",
     // Informational flags; their fees (+5 / +2) are already included in Price.
-    NonTurk: FormObject.NonTurkInput === true,
+    // The non-Turk tax only applies to walk-ins.
+    NonTurk: !OpenedFromEmail && FormObject.NonTurkInput === true,
     CardFee:
       !OpenedFromEmail &&
       FormObject.CardFeeInput === true &&

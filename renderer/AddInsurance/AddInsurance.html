@@ -87,13 +87,15 @@
             <input id="StartDateInput" class="FormInput" type="date" />
           </div>
           <div class="field">
-            <label for="TotalPriceInput" data-i18n="add.price">Цена</label>
-            <input
-              id="TotalPriceInput"
-              class="FormInput"
-              type="number"
-              step="0.01"
-            />
+            <!-- Read-only: the price is calculated from the tariffs (vehicle
+                 type + duration) plus the selected fees and cannot be typed. -->
+            <span class="field-label" data-i18n="add.price">Цена</span>
+            <output
+              id="TotalPriceDisplay"
+              class="price-display"
+              aria-live="polite"
+              >…</output
+            >
           </div>
           <div class="field">
             <label for="CurrencyInput" data-i18n="add.currency">Валута</label>

@@ -1,4 +1,1 @@
-Blanc number by batches , example 1-100, 500-900 and so on.
 Show whos online and current status (online / working etc)
-migrate database, so all insurance times are set to current local time
-    
