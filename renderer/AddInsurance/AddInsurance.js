@@ -31,6 +31,8 @@ const ViewerImage = document.getElementById("ViewerImage");
 const ViewerZoomIn = document.getElementById("ViewerZoomIn");
 const ViewerZoomOut = document.getElementById("ViewerZoomOut");
 const ViewerResetZoom = document.getElementById("ViewerResetZoom");
+const ViewerRotateLeft = document.getElementById("ViewerRotateLeft");
+const ViewerRotateRight = document.getElementById("ViewerRotateRight");
 const ViewerPrint = document.getElementById("ViewerPrint");
 const ViewerClose = document.getElementById("ViewerClose");
 
@@ -39,6 +41,7 @@ const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 
 let droppedFiles = []; // { filename, mimeType, size, base64 }
 let viewerScale = 1;
+let viewerRotation = 0; // degrees, always one of 0 / 90 / 180 / 270
 
 // Scroll-to-cycle for dropdowns. Works while the mouse hovers the select (no
 // focus needed). A "change" event is dispatched so the price auto-calculates
@@ -127,6 +130,17 @@ function todayLocalDate() {
   const now = new Date();
   const p = (n) => String(n).padStart(2, "0");
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+}
+
+// The current local date and time as "YYYY-MM-DD HH:MM:SS" (MySQL DATETIME).
+// Sent as the insurance's creation time, which the server stores as is.
+function localDateTimeNow() {
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
+    `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`
+  );
 }
 
 // Walk-in insurances start with today's date pre-filled. Email insurances
@@ -645,9 +659,19 @@ function openImageExternal(src) {
   w.document.close();
 }
 
+// Unrotated source of the picture currently shown in the viewer. Rotations are
+// always rendered from this original so repeated turns never degrade quality.
+let viewerOriginalSrc = "";
+// Bumped on every open/close/rotate so a slow, stale rotation never overwrites
+// a newer one (e.g. when the rotate button is clicked rapidly).
+let viewerRotateToken = 0;
+
 function openImageViewer(src, title) {
   if (!ViewerImage || !ImageViewer) return;
   viewerScale = 1;
+  viewerRotation = 0;
+  viewerRotateToken++;
+  viewerOriginalSrc = src;
   ViewerImage.src = src;
   ViewerImage.alt = title || "";
   ViewerImage.style.transform = `scale(${viewerScale})`;
@@ -658,6 +682,71 @@ function closeImageViewer() {
   if (!ImageViewer) return;
   ImageViewer.classList.add("hidden");
   ViewerImage.src = "";
+  viewerOriginalSrc = "";
+  viewerRotation = 0;
+  viewerRotateToken++;
+}
+
+// Load an image source into a detached <img> so it can be drawn to a canvas.
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load image for rotation."));
+    img.src = src;
+  });
+}
+
+// Produce a data URL of `src` rotated clockwise by `degrees` (0/90/180/270).
+// Keeps JPEG/WebP formats (high quality) to avoid huge PNG re-encodes of
+// photos; everything else is rendered as PNG.
+async function rotateImageSource(src, degrees) {
+  const img = await loadImageElement(src);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const quarterTurn = degrees === 90 || degrees === 270;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = quarterTurn ? h : w;
+  canvas.height = quarterTurn ? w : h;
+  const ctx = canvas.getContext("2d");
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((degrees * Math.PI) / 180);
+  ctx.drawImage(img, -w / 2, -h / 2);
+
+  const mimeMatch = /^data:([^;,]+)/.exec(src);
+  const mime = mimeMatch ? mimeMatch[1].toLowerCase() : "";
+  if (mime === "image/jpeg" || mime === "image/jpg") {
+    return canvas.toDataURL("image/jpeg", 0.95);
+  }
+  if (mime === "image/webp") {
+    return canvas.toDataURL("image/webp", 0.95);
+  }
+  return canvas.toDataURL("image/png");
+}
+
+// Rotate the viewer picture by `delta` degrees (+90 = right, -90 = left).
+// The rotated picture replaces the displayed source, so printing and
+// "open externally" use exactly what the worker sees.
+async function rotateViewer(delta) {
+  if (!ViewerImage || !viewerOriginalSrc) return;
+  viewerRotation = (((viewerRotation + delta) % 360) + 360) % 360;
+  const token = ++viewerRotateToken;
+  const original = viewerOriginalSrc;
+
+  if (viewerRotation === 0) {
+    ViewerImage.src = original;
+    return;
+  }
+
+  try {
+    const rotated = await rotateImageSource(original, viewerRotation);
+    // Ignore results from an outdated click or a closed/replaced picture.
+    if (token !== viewerRotateToken || original !== viewerOriginalSrc) return;
+    ViewerImage.src = rotated;
+  } catch (err) {
+    console.error("Image rotation failed:", err);
+  }
 }
 
 function applyViewerScale() {
@@ -713,6 +802,10 @@ if (ViewerResetZoom)
     viewerScale = 1;
     applyViewerScale();
   });
+if (ViewerRotateLeft)
+  ViewerRotateLeft.addEventListener("click", () => rotateViewer(-90));
+if (ViewerRotateRight)
+  ViewerRotateRight.addEventListener("click", () => rotateViewer(90));
 if (ViewerPrint) ViewerPrint.addEventListener("click", printViewerImage);
 if (ViewerClose) ViewerClose.addEventListener("click", closeImageViewer);
 if (ImageViewer) {
@@ -1102,10 +1195,11 @@ InsuranceForm.addEventListener("submit", async function (e) {
     // A walk-in insurance has no broker email to reply to, so the return email
     // must never be sent for it. Email policies always send it.
     DisableReturnEmail: !PendingEmail,
-    // The worker's UTC offset in minutes (east positive, e.g. 180 for UTC+3),
-    // so the server stamps CreationDate in local time instead of the database
-    // server's (UTC) time. getTimezoneOffset() is west-positive, hence the
-    // minus sign. Taken at submit time so daylight saving is always current.
+    // Creation time, computed here on the worker's PC in local time and stored
+    // by the server as sent.
+    CreationDate: localDateTimeNow(),
+    // The worker's UTC offset in minutes (east positive, e.g. 180 for UTC+3).
+    // Only used by servers that do not read CreationDate yet.
     TzOffset: -new Date().getTimezoneOffset(),
     Attachments: droppedFiles.map((f) => ({
       filename: f.filename,

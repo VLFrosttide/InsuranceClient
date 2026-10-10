@@ -1398,11 +1398,23 @@ async function deleteInsurance(insurance, onDone) {
   }
 }
 
-async function currentCashView(overrideBranch) {
+// Local calendar day as "YYYY-MM-DD" (built from local components, not
+// toISOString, so the day never shifts around midnight).
+function localDateString(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+async function currentCashView(overrideBranch, overrideDate) {
   // Admins can inspect/manage any branch's cash (not just the branch they
   // logged in with); workers are always scoped to their own login branch.
   const isAdmin = userRole === "1";
   let branch = overrideBranch || getBranch();
+
+  // The transaction/reset history is shown one day at a time, defaulting to
+  // today. Any day can be picked.
+  const now = new Date();
+  const date = overrideDate || localDateString(now);
 
   let allBranchNames = [];
   if (isAdmin) {
@@ -1413,7 +1425,12 @@ async function currentCashView(overrideBranch) {
     if (!branch && allBranchNames.length) branch = allBranchNames[0];
   }
 
-  const data = await api(`/currentcash?branch=${encodeURIComponent(branch)}`);
+  // tzOffset (minutes east of UTC) lets the server work out the same "today".
+  const data = await api(
+    `/currentcash?branch=${encodeURIComponent(branch)}` +
+      `&date=${encodeURIComponent(date)}` +
+      `&tzOffset=${-now.getTimezoneOffset()}`
+  );
   const heading = el("h2", t("currentCash"));
 
   // Always show which branch the cash balance belongs to — never display a
@@ -1432,7 +1449,7 @@ async function currentCashView(overrideBranch) {
       branch
     );
     branchSelect.addEventListener("change", () => {
-      currentCashView(branchSelect.value);
+      currentCashView(branchSelect.value, date);
     });
     heading.appendChild(branchSelect);
   }
@@ -1497,7 +1514,7 @@ async function currentCashView(overrideBranch) {
           "success"
         );
         closeModal();
-        currentCashView(branch);
+        currentCashView(branch, date);
       },
       kind === "increase" ? t("increase") : t("reduce")
     );
@@ -1518,7 +1535,7 @@ async function currentCashView(overrideBranch) {
         body: JSON.stringify({ branch }),
       });
       toast(t("currentCashReset"), "success");
-      currentCashView(branch);
+      currentCashView(branch, date);
     } catch (err) {
       toast(err.message, "error");
     }
@@ -1564,7 +1581,7 @@ async function currentCashView(overrideBranch) {
         });
         toast(t("transactionUpdated"), "success");
         closeModal();
-        currentCashView(branch);
+        currentCashView(branch, date);
       },
       t("saveChanges")
     );
@@ -1603,11 +1620,28 @@ async function currentCashView(overrideBranch) {
     { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
   ]);
 
+  // Day picker for the history below; changing it reloads the transactions
+  // and resets of that day. Clearing it falls back to the shown day.
+  const dateInput = input("date", date);
+  dateInput.addEventListener("change", () => {
+    const picked = dateInput.value;
+    if (!picked) {
+      dateInput.value = date;
+      return;
+    }
+    currentCashView(branch, picked).catch((err) =>
+      toast(err.message, "error")
+    );
+  });
+  const dateRow = el("div", null, { class: "row filter-row" });
+  dateRow.appendChild(field(t("date"), dateInput));
+
   Content.replaceChildren(
     heading,
     balance,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
+    dateRow,
     el("h3", t("transactions")),
     txTable,
     el("h3", t("resets")),

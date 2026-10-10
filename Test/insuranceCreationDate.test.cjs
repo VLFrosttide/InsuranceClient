@@ -4,9 +4,10 @@
 //
 // The database server runs in UTC on the hosting, so the old `NOW()` stamped
 // policies with UTC time - wrong by the local offset, and on the wrong day for
-// policies created around midnight. The client now sends its UTC offset
-// (TzOffset, minutes east of UTC) and the server builds the local wall-clock
-// time from its own clock plus that offset.
+// policies created around midnight. The client now computes the creation time
+// itself (CreationDate, local "YYYY-MM-DD HH:MM:SS") and the server stores it
+// as sent. Older clients that only send their UTC offset (TzOffset) still get
+// the server clock shifted by that offset.
 //
 // Like insuranceSearchFilter.test.cjs, this loads the REAL server file
 // (Test/srv/Requests_TierEndpoints.js - the mirror of the deployed
@@ -248,6 +249,43 @@ async function create(body) {
     eq(r.insert.params[7], "Офис Харманли", "Broker (the branch, for walk-ins)");
     eq(r.insert.params[10], "Cash", "PaymentType");
     eq(r.insert.params[14], 0, "CardFee");
+  });
+
+  // --- creation time computed by the client ---------------------------------
+  const { parseClientDateTime } = mod.exports;
+
+  await check("the CreationDate sent by the client is stored as is", async () => {
+    const r = await create({ CreationDate: "2026-10-10 09:15:42", TzOffset: 180 });
+    eq(r.status, 201, "status");
+    eq(r.insert.params[15], "2026-10-10 09:15:42", "stored CreationDate");
+  });
+
+  await check("a CreationDate with a T separator is normalised", async () => {
+    const r = await create({ CreationDate: "2026-10-10T23:59:59" });
+    eq(r.insert.params[15], "2026-10-10 23:59:59", "stored CreationDate");
+  });
+
+  await check("a malformed CreationDate is rejected and nothing is saved", async () => {
+    for (const bad of ["10-10-2026 09:15:42", "2026-02-31 10:00:00", "2026-10-10 25:00:00", "now", 12345]) {
+      const r = await create({ CreationDate: bad });
+      eq(r.status, 400, "status for " + JSON.stringify(bad));
+      ok(!r.insert, "INSERT issued for " + JSON.stringify(bad));
+    }
+  });
+
+  await check("parseClientDateTime validates real dates and times", () => {
+    eq(parseClientDateTime("2028-02-29 00:00:00"), "2028-02-29 00:00:00", "leap day");
+    eq(parseClientDateTime("2026-02-29 00:00:00"), null, "not a leap year");
+    eq(parseClientDateTime(" 2026-12-31 23:59:59 "), "2026-12-31 23:59:59", "trimmed");
+    eq(parseClientDateTime(null), null, "null");
+  });
+
+  await check("without CreationDate the TzOffset fallback still applies", async () => {
+    const before = clientLocalDateTime(180);
+    const r = await create({ CreationDate: "", TzOffset: 180 });
+    const after = clientLocalDateTime(180);
+    const stored = r.insert.params[15];
+    ok(stored >= before && stored <= after, `stored ${stored} not local`);
   });
 
   await check("an older client without TzOffset still saves (as UTC)", async () => {

@@ -700,6 +700,102 @@ const ledger = () =>
     await assertSuperset("after cash in and out");
   });
 
+  // --- transaction history by day (one day at a time, default today) --------
+  console.log("\nCurrent cash history — one day at a time");
+  // 2026-10-10 01:30 UTC is already 04:30 on the 10th in UTC+3, but a client in
+  // UTC-5 is still on the 9th.
+  const NOW = new Date(Date.UTC(2026, 9, 10, 1, 30));
+
+  await check("no date means the client's today", async () => {
+    eq(
+      CC.resolveHistoryDay("", 180, NOW),
+      { date: "2026-10-10", nextDate: "2026-10-11" },
+      "UTC+3 defaults to its today"
+    );
+    eq(CC.resolveHistoryDay(undefined, -300, NOW).date, "2026-10-09", "UTC-5");
+    eq(CC.resolveHistoryDay(null, "junk", NOW).date, "2026-10-10", "bad offset -> UTC");
+  });
+
+  await check("any valid date can be picked, malformed ones are rejected", async () => {
+    eq(
+      CC.resolveHistoryDay("2026-10-09", 180, NOW),
+      { date: "2026-10-09", nextDate: "2026-10-10" },
+      "yesterday"
+    );
+    eq(CC.resolveHistoryDay("2025-01-15", 180, NOW).date, "2025-01-15", "long ago");
+    eq(CC.resolveHistoryDay("2026-10-11", 180, NOW).date, "2026-10-11", "future");
+    ok(CC.resolveHistoryDay("2026-02-31", 180, NOW).error, "impossible date rejected");
+    ok(CC.resolveHistoryDay("10-10-2026", 180, NOW).error, "wrong format rejected");
+  });
+
+  await check("month and year boundaries", async () => {
+    eq(CC.addDays("2026-03-01", -1), "2026-02-28", "end of February");
+    eq(CC.addDays("2028-03-01", -1), "2028-02-29", "leap year");
+    eq(CC.addDays("2026-12-31", 1), "2027-01-01", "new year");
+  });
+
+  await check("GET /currentcash returns only the requested day", async () => {
+    const routes = [];
+    const router = Object.assign({}, fakeRouter, {
+      get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+    });
+    const RouterCC = loadModule("Requests_CurrentCash.js", {
+      express: { Router: () => router },
+    });
+    const seen = [];
+    const db = {
+      query: async (sql, params) => {
+        const s = String(sql).replace(/\s+/g, " ").trim();
+        if (/^(SELECT|UPDATE|INSERT) .*current_cash /.test(s) && !/FROM cash_/.test(s)) {
+          return query(sql, params);
+        }
+        seen.push({ s, params });
+        return [[{ id: seen.length }]];
+      },
+    };
+    RouterCC.createCurrentCashRouter(db);
+    const route = routes.find((r) => r.path === "/currentcash");
+    ok(route, "route registered");
+
+    const call = async (q) => {
+      const res = {
+        code: 200,
+        status(c) {
+          this.code = c;
+          return this;
+        },
+        json(b) {
+          this.body = b;
+          return this;
+        },
+      };
+      await route.handler({ query: q, user: { username: USER } }, res);
+      return res;
+    };
+
+    resetTables();
+    const today = CC.clientLocalDate(0);
+    let r = await call({ branch: BRANCH, tzOffset: "0" });
+    eq(r.code, 200, "status");
+    eq(r.body.date, today, "defaults to today");
+    eq(seen.length, 2, "transactions + resets queried");
+    for (const q of seen) {
+      ok(/CreatedAt >= \? AND CreatedAt < \?/.test(q.s), "filtered by day: " + q.s);
+      eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds");
+    }
+
+    seen.length = 0;
+    r = await call({ branch: BRANCH, tzOffset: "0", date: "2025-03-01" });
+    eq(r.code, 200, "an old day is allowed");
+    eq(r.body.date, "2025-03-01", "echoed date");
+    eq(seen[0].params, [BRANCH, "2025-03-01", "2025-03-02"], "old day bounds");
+
+    seen.length = 0;
+    r = await call({ branch: BRANCH, tzOffset: "0", date: "not-a-date" });
+    eq(r.code, 400, "malformed date rejected");
+    eq(seen.length, 0, "no history query for a rejected date");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

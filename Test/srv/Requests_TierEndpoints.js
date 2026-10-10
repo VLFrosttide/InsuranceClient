@@ -251,6 +251,37 @@ function clientLocalDateTime(offsetMinutes, now = new Date()) {
 module.exports.clientLocalDateTime = clientLocalDateTime;
 
 /**
+ * Validate the creation time computed by the client: the worker's local
+ * wall-clock time as a MySQL DATETIME string ("YYYY-MM-DD HH:MM:SS"). A "T"
+ * separator is accepted as well. Impossible dates/times (2026-02-31, 25:00)
+ * are rejected.
+ *
+ * @param {unknown} value
+ * @returns {string|null} The normalised "YYYY-MM-DD HH:MM:SS", or null.
+ */
+function parseClientDateTime(value) {
+  if (typeof value !== "string") return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(
+    value.trim()
+  );
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  if (
+    t.getUTCFullYear() !== y ||
+    t.getUTCMonth() !== mo - 1 ||
+    t.getUTCDate() !== d ||
+    t.getUTCHours() !== h ||
+    t.getUTCMinutes() !== mi ||
+    t.getUTCSeconds() !== s
+  ) {
+    return null;
+  }
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
+}
+module.exports.parseClientDateTime = parseClientDateTime;
+
+/**
  * Coerce a checkbox-like value (boolean, "true", "1", 1, "yes") to a boolean.
  */
 function toFlag(value) {
@@ -698,11 +729,22 @@ module.exports.createTierRouter = function createTierRouter(DBConnection) {
 
       const priceDecimal = toDecimal(price);
 
-      // Creation time in the worker's local time (see clientLocalDateTime) -
-      // NOT the database server's NOW(), which runs in UTC on the hosting.
-      const creationDate = clientLocalDateTime(
-        b.TzOffset ?? b.tzOffset ?? null
-      );
+      // The creation time is computed by the CLIENT (the worker's local
+      // wall-clock time) and stored as sent. Older clients that do not send it
+      // fall back to the server clock shifted by their TzOffset - never the
+      // database's NOW(), which runs in UTC on the hosting.
+      const sentCreationDate = b.CreationDate ?? b.creationDate;
+      let creationDate;
+      if (sentCreationDate !== undefined && sentCreationDate !== null && sentCreationDate !== "") {
+        creationDate = parseClientDateTime(sentCreationDate);
+        if (!creationDate) {
+          return res.status(400).json({
+            error: "CreationDate must be in YYYY-MM-DD HH:MM:SS format",
+          });
+        }
+      } else {
+        creationDate = clientLocalDateTime(b.TzOffset ?? b.tzOffset ?? null);
+      }
 
       let replyError = null;
       await DBConnection.withTransaction(async (conn) => {
