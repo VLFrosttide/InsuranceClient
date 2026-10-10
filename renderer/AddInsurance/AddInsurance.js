@@ -1129,6 +1129,22 @@ InsuranceForm.addEventListener("submit", async function (e) {
   const policyNumber = trimmed.PolicyNumberInput;
   const blancNumber = trimmed.BlancNumberInput;
 
+  // The policy number must be exactly 8 characters and the blank number
+  // exactly 6, counted after trimming leading/trailing whitespace. Anything
+  // else is reported, the field is focused and the policy is not posted.
+  const exactLengths = [
+    ["PolicyNumberInput", policyNumber, 8, "add.policyNumberLength"],
+    ["BlancNumberInput", blancNumber, 6, "add.blancNumberLength"],
+  ];
+  for (const [id, value, length, messageKey] of exactLengths) {
+    if (String(value).trim().length !== length) {
+      setMessage(t(messageKey), true);
+      const inputEl = document.getElementById(id);
+      if (inputEl) inputEl.focus();
+      return;
+    }
+  }
+
   // Email insurances must have an explicit starting date (walk-ins come
   // pre-filled with today). Show the error and open the calendar so the
   // worker can pick the date right away.
