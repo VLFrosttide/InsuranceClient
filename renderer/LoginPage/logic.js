@@ -63,6 +63,16 @@ async function doLogin() {
     // worker creates (the add-insurance form no longer has a branch field).
     localStorage.setItem("branch", BranchInput ? BranchInput.value : "");
 
+    // Policies queued while the session was expired (or before a restart)
+    // resume with the fresh token. Only this user's own requests are updated.
+    if (window.bridge && typeof window.bridge.OutboxUpdateToken === "function") {
+      try {
+        await window.bridge.OutboxUpdateToken(data.username || "", data.token || "");
+      } catch (err) {
+        console.error("Failed to hand the new token to the outbox:", err);
+      }
+    }
+
     window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
   } catch (error) {
     console.error("Error: ", error);
