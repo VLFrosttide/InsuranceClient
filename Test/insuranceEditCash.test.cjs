@@ -34,6 +34,9 @@ const movements = [];
 // policy's balance is the only record of its payment, so a corrected price has
 // to move it too; asserting it separately keeps that visible.
 const brokerDeltas = [];
+// Amounts the endpoint restores to a broker's balance when a policy is
+// annulled. Only the broker being at fault keeps part of the price back.
+const brokerRestores = [];
 let txCount = 0;
 let txDepth = 0;
 // When true the cash "reduce" stub fails the way the real one does when the
@@ -192,7 +195,9 @@ const STUBS = {
       brokerDeltas.push({ brokerId, delta: Number(price) });
       return Number(price);
     },
-    restoreBrokerForAnnulment: async () => {},
+    restoreBrokerForAnnulment: async (conn, brokerId, price) => {
+      brokerRestores.push({ brokerId, amount: Number(price) });
+    },
     adjustBrokerForPriceChange: async (conn, brokerId, delta) => {
       brokerDeltas.push({ brokerId, delta });
       return delta;
@@ -1200,6 +1205,7 @@ async function patch(body, opts = {}) {
   async function annul(body, rowOverrides = {}) {
     movements.length = 0;
     brokerDeltas.length = 0;
+    brokerRestores.length = 0;
     queries.length = 0;
     row = { ...BASE_ROW, ...rowOverrides };
     const res = {
@@ -1230,6 +1236,9 @@ async function patch(body, opts = {}) {
       status: res.statusCode,
       body: res.body,
       movements: movements.map(describe),
+      brokerRestores: brokerRestores.map(
+        (r) => `${r.amount} -> broker ${r.brokerId}`
+      ),
       // AnnulReason (who pays) and AnnulFee as written to the row.
       storedPayer: update ? update.params[0] : undefined,
       storedFee: update ? update.params[1] : undefined,
@@ -1342,6 +1351,33 @@ async function patch(body, opts = {}) {
       ["total/Broker reduce 91 EUR @ Офис Харманли (Annul 1234567) by admin1"],
       "no current cash or card movement"
     );
+  });
+
+  await check("a broker at fault only gets the partial refund back", async () => {
+    const r = await annul(
+      { payer: "broker" },
+      { StartDate: dayOffset(-1), BrokerId: 7, PaymentType: "Broker" }
+    );
+    eq(r.status, 200, "status");
+    eq(r.brokerRestores, ["91 -> broker 7"], "price - fee returns to the broker");
+  });
+
+  await check("a worker at fault still refunds the full price to the broker", async () => {
+    const r = await annul(
+      { payer: "worker" },
+      { StartDate: dayOffset(-1), BrokerId: 7, PaymentType: "Broker" }
+    );
+    eq(r.status, 200, "status");
+    eq(r.brokerRestores, ["100 -> broker 7"], "the full price returns to the broker");
+  });
+
+  await check("no fault refunds the full price to the broker", async () => {
+    const r = await annul(
+      { payer: "none" },
+      { StartDate: dayOffset(-1), BrokerId: 7, PaymentType: "Broker" }
+    );
+    eq(r.status, 200, "status");
+    eq(r.brokerRestores, ["100 -> broker 7"], "the full price returns to the broker");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

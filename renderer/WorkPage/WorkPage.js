@@ -1181,6 +1181,12 @@ function isPolicyInEffect(insurance, now = new Date()) {
 function openAnnulForm(insurance, onDone) {
   const price = Number(insurance.Price) || 0;
   const currency = insurance.CurrencyType || "";
+  // A broker-linked (email) policy is funded by the broker's own balance, so its
+  // refund goes back to the broker rather than out of the cash drawer / card.
+  const isBrokerLinked =
+    insurance.BrokerId !== null &&
+    insurance.BrokerId !== undefined &&
+    insurance.BrokerId !== "";
 
   const payerSelect = select(
     [
@@ -1204,7 +1210,14 @@ function openAnnulForm(insurance, onDone) {
       : inEffect
       ? ANNUL_FEE_IN_EFFECT
       : ANNUL_FEE_NOT_IN_EFFECT;
-    const refund = Math.max(0, Math.round((price - fee) * 100) / 100);
+    // The broker is refunded the full price unless the broker itself is at
+    // fault, in which case only the price minus the fee comes back. Everyone
+    // else (cash/card) always gets price - fee.
+    const refund = isBrokerLinked
+      ? payerSelect.value === "broker"
+        ? Math.max(0, Math.round((price - fee) * 100) / 100)
+        : price
+      : Math.max(0, Math.round((price - fee) * 100) / 100);
     statusLine.textContent = t(
       noFault ? "annulNoFault" : inEffect ? "annulInEffect" : "annulNotInEffect"
     );
