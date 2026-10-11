@@ -6,6 +6,7 @@ const HeaderTitle = document.getElementById("HeaderTitle");
 const HeaderSub = document.getElementById("HeaderSub");
 const LogoutButton = document.getElementById("LogoutButton");
 const LangButton = document.getElementById("LangButton");
+const PresenceWidget = document.getElementById("PresenceWidget");
 const ModalBackdrop = document.getElementById("ModalBackdrop");
 const Modal = document.getElementById("Modal");
 const ModalTitle = document.getElementById("ModalTitle");
@@ -384,6 +385,87 @@ function fetchUnreadEmails() {
     emailSocket.send({ type: "list_emails" });
   } catch (err) {
     reportError("Failed to request unread emails", err, "emailSendFailed");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Worker presence board (who is online and their current status).
+//   green  = online, on the PC
+//   orange = busy working on a form
+//   red    = online but away from keyboard
+// ---------------------------------------------------------------------------
+let presenceSocket = null;
+let presenceWorkers = [];
+let presenceStatus = null; // last status sent to the server
+let lastActivityAt = Date.now();
+
+const PRESENCE_STATUSES = ["online", "working", "afk"];
+
+function renderPresence(workers) {
+  if (!PresenceWidget) return;
+  PresenceWidget.replaceChildren();
+
+  const list = Array.isArray(workers) ? workers : [];
+  if (list.length === 0) {
+    PresenceWidget.appendChild(
+      el("span", t("presence.none"), { class: "presence-none" })
+    );
+    return;
+  }
+
+  for (const w of list) {
+    const status = PRESENCE_STATUSES.includes(w.status) ? w.status : "online";
+    const statusLabel = t(`presence.${status}`);
+    const chip = el("span", null, { class: "presence-chip" });
+    chip.title = `${w.username} · ${statusLabel}`;
+    chip.appendChild(el("span", null, { class: `presence-dot ${status}` }));
+    chip.appendChild(el("span", w.username, { class: "presence-name" }));
+    chip.appendChild(el("span", statusLabel, { class: "presence-status" }));
+    PresenceWidget.appendChild(chip);
+  }
+}
+
+function sendPresence(status) {
+  if (!presenceSocket) return;
+  try {
+    presenceSocket.send({ type: "presence", status });
+    presenceStatus = status;
+  } catch (err) {
+    console.error("Failed to send presence status:", err);
+  }
+}
+
+function markActivity() {
+  lastActivityAt = Date.now();
+  if (presenceStatus === "afk") sendPresence("online");
+}
+
+function setupPresenceSocket() {
+  if (userRole !== "1" && userRole !== "2") return;
+  presenceSocket = new UnreadEmailSocket({
+    auth_ok: () => {
+      try {
+        if (userRole === "2") {
+          sendPresence(presenceStatusFor("online", lastActivityAt));
+        }
+        presenceSocket.send({ type: "list_presence" });
+      } catch (err) {
+        console.error("Failed to send presence request:", err);
+      }
+    },
+    presence_update: (msg) => {
+      presenceWorkers = Array.isArray(msg.data) ? msg.data : [];
+      renderPresence(presenceWorkers);
+    },
+  });
+  presenceSocket.connect();
+
+  if (userRole === "2") {
+    trackUserActivity(markActivity);
+    setInterval(() => {
+      const status = presenceStatusFor("online", lastActivityAt);
+      if (status !== presenceStatus) sendPresence(status);
+    }, 15 * 1000);
   }
 }
 
@@ -3422,6 +3504,7 @@ async function init() {
   renderHeader();
   showFlashToast();
   setupEmailSocket();
+  setupPresenceSocket();
   fetchUnreadEmails();
   initializeBrokerPricing();
 
@@ -3445,6 +3528,7 @@ if (LangButton) {
     toggleLang();
     syncLangButton();
     renderHeader();
+    renderPresence(presenceWorkers);
     if (activeNav) runLoader(activeNav.load);
   });
 }

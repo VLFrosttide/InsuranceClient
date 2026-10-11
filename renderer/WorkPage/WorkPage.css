@@ -25,6 +25,51 @@ body {
   margin-left: 8px;
 }
 
+/* Worker presence board in the header */
+#PresenceWidget {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: 4px;
+}
+.presence-none {
+  font-size: 12px;
+  color: var(--muted);
+}
+.presence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #3a4250;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 3px 10px 3px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  white-space: nowrap;
+}
+.presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.presence-dot.online {
+  background: var(--success); /* green: online, on the PC */
+}
+.presence-dot.working {
+  background: #f0883e; /* orange: busy working on a form */
+}
+.presence-dot.afk {
+  background: var(--danger); /* red: online but away from keyboard */
+}
+.presence-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 #Nav {
   margin-top: 12px;
   flex-wrap: wrap;

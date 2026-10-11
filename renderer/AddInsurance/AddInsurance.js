@@ -1348,6 +1348,50 @@ if (ReplyButton) ReplyButton.addEventListener("click", sendReply);
 if (ReplyInput) ReplyInput.addEventListener("input", syncReplyButton);
 syncReplyButton();
 
+// ---------------------------------------------------------------------------
+// Worker presence: the form is open, so the base status is "working" (orange).
+// Once the worker stops interacting (mouse/keyboard/input) for more than the
+// afk threshold, they flip to "afk" (red).
+// ---------------------------------------------------------------------------
+const PRESENCE_CHECK_MS = 15 * 1000;
+let presenceSocket = null;
+let presenceStatus = null; // last status sent to the server
+let lastActivityAt = Date.now();
+
+function sendPresence(status) {
+  if (!presenceSocket) return;
+  try {
+    presenceSocket.send({ type: "presence", status });
+    presenceStatus = status;
+  } catch (err) {
+    console.error("Failed to send presence status:", err);
+  }
+}
+
+function markActivity() {
+  lastActivityAt = Date.now();
+  if (presenceStatus === "afk") sendPresence("working");
+}
+
+function setupPresenceSocket() {
+  if (getRole() !== "2") return;
+  presenceSocket = new UnreadEmailSocket({
+    auth_ok: () => sendPresence(presenceStatusFor("working", lastActivityAt)),
+  });
+  presenceSocket.connect();
+
+  trackUserActivity(markActivity);
+  if (InsuranceForm) {
+    InsuranceForm.addEventListener("input", markActivity);
+    InsuranceForm.addEventListener("change", markActivity);
+  }
+  setInterval(() => {
+    const status = presenceStatusFor("working", lastActivityAt);
+    if (status !== presenceStatus) sendPresence(status);
+  }, PRESENCE_CHECK_MS);
+}
+
 configureWalkInMode();
 renderEmailSide();
 setupEmailSocket();
+setupPresenceSocket();

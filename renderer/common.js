@@ -83,6 +83,11 @@ const I18N = {
     noUnreadEmails: "No unread emails.",
     unreadEmails: "Unread emails",
 
+    "presence.none": "No workers online",
+    "presence.online": "Online",
+    "presence.working": "Working",
+    "presence.afk": "Away",
+
     balance: "Balance",
     currentCash: "Current cash",
     totalCash: "Total cash",
@@ -397,6 +402,11 @@ const I18N = {
     manage: "Управление",
     noUnreadEmails: "Няма нови имейли.",
     unreadEmails: "Непрочетени имейли",
+
+    "presence.none": "Няма онлайн служители",
+    "presence.online": "Онлайн",
+    "presence.working": "Работи",
+    "presence.afk": "Отсъства",
 
     balance: "Баланс",
     currentCash: "Наличен кеш",
