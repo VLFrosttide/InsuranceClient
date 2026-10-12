@@ -125,6 +125,39 @@ body {
   font-weight: 600;
 }
 
+.cash-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.cash-cards-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 360px;
+}
+.cash-cards-left .balance-card:last-child {
+  margin-bottom: 0;
+}
+.daily-report {
+  min-width: 260px;
+}
+.daily-report-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+.daily-report-row:last-child {
+  border-bottom: none;
+}
+.daily-report-row span:last-child {
+  font-weight: 600;
+}
+
 .filter-row {
   margin-bottom: 16px;
   align-items: flex-end;

@@ -73,6 +73,9 @@ let apiError = null;
 
 const CTX = {
   console,
+  // The production code reads the viewer's role to hide the price field from
+  // workers; these tests exercise the admin (role "1") editing path.
+  userRole: "1",
   t: (key) => key,
   buildForm: (spec, onSubmit, submitLabel) => {
     lastSpec = spec;

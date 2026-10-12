@@ -35,7 +35,6 @@ const I18N = {
     "nav.insurances": "Insurances",
     "nav.insurancesByDate": "Insurances by date",
     "nav.currentCash": "Current cash",
-    "nav.totalCash": "Total cash",
     "nav.card": "Card",
     "nav.reconcile": "Reconcile daily report",
     "reconcile.title": "Reconcile daily report",
@@ -90,18 +89,8 @@ const I18N = {
 
     balance: "Balance",
     currentCash: "Current cash",
-    totalCash: "Total cash",
-    totalCashHint:
-      "Total cash = current cash + card payments + broker-balance payments. Current cash is only the cash balance.",
     currentCashHint:
-      "Only the cash balance: money that physically arrived as cash. Card payments and email payments funded by a broker balance are counted in Total cash instead.",
-    source: "Source",
-    "source.Cash": "Cash",
-    "source.Card": "Card",
-    "source.Broker": "Broker balance",
-    cashPart: "Cash part",
-    cardPart: "Card part",
-    brokerPart: "Broker part",
+      "Only the cash balance: money that physically arrived as cash. Card payments and email payments funded by a broker balance are tracked separately.",
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
@@ -138,7 +127,6 @@ const I18N = {
     created: "Created",
     transactions: "Transactions",
     resets: "Resets",
-    allInsurances: "All insurances",
     myProfile: "My Profile",
     myInsurances: "My Insurances",
 
@@ -214,6 +202,13 @@ const I18N = {
     cardBalanceCleared: "Card balance cleared",
     cardBalanceTotal: "Card balance (all branches)",
     unassignedBranch: "(no branch)",
+
+    dailyReport: "Daily report",
+    totalInsurances: "Total insurances",
+    brokerInsurances: "Broker insurances",
+    walkInInsurances: "Walk-in insurances",
+    totalDailyCash: "Total daily cash",
+    countryWideInsurances: "Country-wide insurances",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -389,7 +384,6 @@ const I18N = {
     "nav.insurances": "Застраховки",
     "nav.insurancesByDate": "Застраховки по дата",
     "nav.currentCash": "Наличен кеш",
-    "nav.totalCash": "Общ кеш",
     "nav.card": "Карта",
     "nav.reconcile": "Дневен отчет",
     "reconcile.title": "Дневен отчет",
@@ -443,18 +437,8 @@ const I18N = {
 
     balance: "Баланс",
     currentCash: "Наличен кеш",
-    totalCash: "Общ кеш",
-    totalCashHint:
-      "Общ кеш = наличен кеш + картови плащания + плащания от баланс на брокер. Наличният кеш е само кешовият баланс.",
     currentCashHint:
-      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания и имейл плащанията, финансирани от баланс на брокер, се отчитат в Общ кеш.",
-    source: "Източник",
-    "source.Cash": "В брой",
-    "source.Card": "Карта",
-    "source.Broker": "Баланс на брокер",
-    cashPart: "Кешова част",
-    cardPart: "Картова част",
-    brokerPart: "Брокерна част",
+      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания и имейл плащанията, финансирани от баланс на брокер, се отчитат отделно.",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -491,7 +475,6 @@ const I18N = {
     created: "Създаден",
     transactions: "Транзакции",
     resets: "Нулирания",
-    allInsurances: "Всички застраховки",
     myProfile: "Моят профил",
     myInsurances: "Моите застраховки",
 
@@ -572,6 +555,13 @@ const I18N = {
     cardBalanceCleared: "Балансът на картата е изчистен",
     cardBalanceTotal: "Баланс карта (всички клонове)",
     unassignedBranch: "(без клон)",
+
+    dailyReport: "Дневен отчет",
+    totalInsurances: "Общо застраховки",
+    brokerInsurances: "Брокерски застраховки",
+    walkInInsurances: "Застраховки на място",
+    totalDailyCash: "Общ дневен кеш",
+    countryWideInsurances: "Застраховки в страната",
 
     annul: "Анулирай",
     annulled: "Анулирана",

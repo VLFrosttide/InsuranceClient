@@ -1056,7 +1056,19 @@ function openInsuranceEditor(insurance, onDone) {
       label: t("add.carNumber"),
       value: insurance.CarNumber,
     },
-    { key: "Price", label: t("price"), type: "number", value: insurance.Price },
+    // Only admins may edit the price. Workers edit the rest of the policy but
+    // never see (and therefore cannot change) the price field; the tariff
+    // recalculation below needs this field, so it stays inert for them too.
+    ...(userRole === "1"
+      ? [
+          {
+            key: "Price",
+            label: t("price"),
+            type: "number",
+            value: insurance.Price,
+          },
+        ]
+      : []),
     {
       key: "CurrencyType",
       label: t("currency"),
@@ -1555,68 +1567,6 @@ function registerUserForm() {
   openModal(t("newUser"), form);
 }
 
-async function adminInsurances() {
-  const data = await api("/admin/insurances");
-
-  function render() {
-    const table = renderTable(
-      data.insurances,
-      [
-        { key: "BlancNumber", label: t("blankNo") },
-        { key: "Author", label: t("author") },
-        { key: "PolicyNumber", label: t("policyNumber") },
-        { key: "Price", label: t("price"), format: (v) => money(v) },
-        { key: "CurrencyType", label: t("currency") },
-        { key: "PaymentType", label: t("payment"), format: paymentLabel },
-        { key: "Broker", label: t("broker") },
-        {
-          key: "Annulled",
-          label: t("status"),
-          format: (v) => (v ? t("annulled") : ""),
-        },
-      ],
-      (i) => [
-        {
-          label: t("edit"),
-          class: "",
-          // Re-render from the row the editor just refreshed with the server's
-          // stored values, so a corrected price/payment type shows up straight
-          // away.
-          onClick: () => openInsuranceEditor(i, () => render()),
-        },
-        ...(!i.Annulled
-          ? [
-              {
-                label: t("annul"),
-                class: "danger",
-                onClick: () =>
-                  openAnnulForm(i, () => {
-                    i.Annulled = 1;
-                    render();
-                  }),
-              },
-            ]
-          : []),
-        {
-          label: t("delete"),
-          class: "danger",
-          onClick: () =>
-            deleteInsurance(i, () => {
-              data.insurances = data.insurances.filter(
-                (x) => x.BlancNumber !== i.BlancNumber
-              );
-              render();
-            }),
-        },
-      ],
-      (i) => (i.Annulled ? "row-annulled" : "")
-    );
-    Content.replaceChildren(el("h2", t("allInsurances")), table);
-  }
-
-  render();
-}
-
 // Soft-delete an insurance from the admin panel. The row is kept in the
 // database (tagged with Deleted/DeletedAt/DeletedBy by the server) so it is
 // never lost, but it is removed from `data.insurances` here so it disappears
@@ -1666,11 +1616,18 @@ async function currentCashView(overrideBranch, overrideDate) {
   }
 
   // tzOffset (minutes east of UTC) lets the server work out the same "today".
-  const data = await api(
-    `/currentcash?branch=${encodeURIComponent(branch)}` +
-      `&date=${encodeURIComponent(date)}` +
-      `&tzOffset=${-now.getTimezoneOffset()}`
-  );
+  const tzOffset = -now.getTimezoneOffset();
+  const [data, daily] = await Promise.all([
+    api(
+      `/currentcash?branch=${encodeURIComponent(branch)}` +
+        `&date=${encodeURIComponent(date)}` +
+        `&tzOffset=${tzOffset}`
+    ),
+    api(
+      `/currentcash/daily?date=${encodeURIComponent(date)}` +
+        `&tzOffset=${tzOffset}`
+    ),
+  ]);
   const heading = el("h2", t("currentCash"));
 
   // Always show which branch the cash balance belongs to — never display a
@@ -1718,6 +1675,43 @@ async function currentCashView(overrideBranch, overrideDate) {
   const cardCard = el("div", null, { class: "balance-card" });
   cardCard.appendChild(el("h3", t("cardBalance")));
   cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
+
+  // Country-wide daily report for the picked day. It is independent of the
+  // branch selector above: insurances and cash are counted across all branches.
+  const dailyCard = el("div", null, { class: "balance-card daily-report" });
+  dailyCard.appendChild(el("h3", t("dailyReport")));
+  const dailyStat = (label, value) => {
+    const row = el("div", null, { class: "daily-report-row" });
+    row.appendChild(el("span", label, { class: "muted" }));
+    row.appendChild(el("span", value));
+    return row;
+  };
+  dailyCard.appendChild(
+    dailyStat(t("totalInsurances"), String(daily.totalInsurances ?? 0))
+  );
+  dailyCard.appendChild(
+    dailyStat(t("brokerInsurances"), String(daily.brokerInsurances ?? 0))
+  );
+  dailyCard.appendChild(
+    dailyStat(t("walkInInsurances"), String(daily.walkInInsurances ?? 0))
+  );
+  dailyCard.appendChild(
+    dailyStat(t("countryWideInsurances"), String(daily.countryWideInsurances ?? 0))
+  );
+  // Total daily cash is a per-currency net (walk-in cash + manual increases −
+  // manual reductions), rendered exactly like the balance card above.
+  dailyCard.appendChild(
+    dailyStat(t("totalDailyCash"), renderCashBalances(daily.totalDailyCash || {}))
+  );
+
+  // Balance and card balance stay on the left; the daily report sits to their
+  // right.
+  const cardsRow = el("div", null, { class: "cash-cards" });
+  const leftCol = el("div", null, { class: "cash-cards-left" });
+  leftCol.appendChild(balance);
+  leftCol.appendChild(cardCard);
+  cardsRow.appendChild(leftCol);
+  cardsRow.appendChild(dailyCard);
 
   const actions = el("div", null, { class: "row" });
   const incBtn = el("button", t("increase"));
@@ -1883,8 +1877,7 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   Content.replaceChildren(
     heading,
-    balance,
-    cardCard,
+    cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
     dateRow,
@@ -1892,117 +1885,6 @@ async function currentCashView(overrideBranch, overrideDate) {
     txTable,
     el("h3", t("resets")),
     resetTable
-  );
-}
-
-// Total cash - the second record of cash flow.
-//
-// Total cash is a strict superset of current cash: every type of payment (cash
-// money, card payments and payments funded from a broker's balance) is counted
-// in it, while current cash holds only the cash balance. It is read-only here -
-// the money moves through the same increase/reduce/reset actions as before, and
-// Total cash follows them by construction.
-async function totalCashView(overrideBranch) {
-  // Admins can inspect any branch's total; workers are scoped to their own
-  // login branch, exactly like the current cash view.
-  const isAdmin = userRole === "1";
-  let branch = overrideBranch || getBranch();
-
-  let allBranchNames = [];
-  if (isAdmin) {
-    const branchesData = await api("/totalcash/branches");
-    allBranchNames = Object.keys(branchesData.branches || {}).sort();
-    if (!branch && allBranchNames.length) branch = allBranchNames[0];
-  }
-
-  const data = await api(`/totalcash?branch=${encodeURIComponent(branch)}`);
-  const heading = el("h2", t("totalCash"));
-
-  heading.appendChild(
-    el("span", ` — ${t("branch")}: ${branch || t("unknownBranch")}`, {
-      class: "muted",
-    })
-  );
-
-  if (isAdmin && allBranchNames.length > 1) {
-    const branchSelect = select(
-      allBranchNames.map((b) => ({ label: b, value: b })),
-      branch
-    );
-    branchSelect.addEventListener("change", () => {
-      totalCashView(branchSelect.value);
-    });
-    heading.appendChild(branchSelect);
-  }
-
-  const balances = data.balances || {};
-  const parts = data.parts || {};
-
-  const balance = el("div", null, { class: "balance-card" });
-  balance.appendChild(el("h3", t("totalCash")));
-
-  const nonZero = Object.entries(balances).filter(
-    ([, value]) => Number(value) !== 0
-  );
-  if (nonZero.length === 0) {
-    balance.appendChild(el("p", money(0), { class: "big" }));
-  } else {
-    const list = el("div");
-    for (const [currency, value] of nonZero) {
-      list.appendChild(el("p", `${money(value)} ${currency}`, { class: "big" }));
-    }
-    balance.appendChild(list);
-  }
-  balance.appendChild(el("p", t("totalCashHint"), { class: "muted" }));
-
-  // Break the total down into the three payment types it is built from. The
-  // cash part is what current cash already carries, so it is derived rather
-  // than sent by the server.
-  const partsRows = Object.keys(balances).map((currency) => {
-    const p = parts[currency] || {};
-    const card = Number(p.CardPart) || 0;
-    const broker = Number(p.BrokerPart) || 0;
-    const total = Number(balances[currency]) || 0;
-    return {
-      Currency: currency,
-      CashPart: Math.round((total - card - broker) * 100) / 100,
-      CardPart: card,
-      BrokerPart: broker,
-      Total: total,
-    };
-  });
-
-  const partsTable = renderTable(partsRows, [
-    { key: "Currency", label: t("currency") },
-    { key: "CashPart", label: t("cashPart"), format: (v) => money(v) },
-    { key: "CardPart", label: t("cardPart"), format: (v) => money(v) },
-    { key: "BrokerPart", label: t("brokerPart"), format: (v) => money(v) },
-    { key: "Total", label: t("totalCash"), format: (v) => money(v) },
-  ]);
-
-  // One row per movement, tagged with the channel it came through, so this
-  // ledger can be compared entry by entry with the current cash one.
-  const txTable = renderTable(data.transactions, [
-    { key: "Source", label: t("source"), format: (v) => t(`source.${v}`, v) },
-    { key: "Type", label: t("type") },
-    { key: "Amount", label: t("amount"), format: (v) => money(v) },
-    { key: "Currency", label: t("currency") },
-    { key: "Username", label: t("user") },
-    { key: "Reason", label: t("reason") },
-    {
-      key: "CreatedAt",
-      label: t("created"),
-      format: (v) => formatDateTime(v),
-    },
-  ]);
-
-  Content.replaceChildren(
-    heading,
-    balance,
-    el("h3", t("overview")),
-    partsTable,
-    el("h3", t("transactions")),
-    txTable
   );
 }
 
@@ -2730,7 +2612,9 @@ async function adminInsurancesByDate(defaultAuthor = "") {
   form.appendChild(apply);
   form.appendChild(clearBtn);
   form.appendChild(el("div", null, { class: "spacer" }));
-  form.appendChild(exportBtn);
+  // The sheet includes prices, so only admins get the export button. Workers
+  // reuse this same view ("My insurances") without it.
+  if (userRole === "1") form.appendChild(exportBtn);
 
   const result = el("div");
 
@@ -2756,6 +2640,25 @@ async function adminInsurancesByDate(defaultAuthor = "") {
       renderResults();
     },
   });
+
+  // Branches where a worker may see the price of a walk-in policy. These two
+  // border crossings (Lesovo / Kapitan Andreevo) are handled directly on-site,
+  // so their walk-in price stays visible to workers even though broker prices
+  // remain hidden.
+  const WORKER_PRICE_BRANCHES = ["ГКПП Лесово", "ГКПП Капитан Андреево"];
+
+  // Whether the current user may see the price of `item`. Admins always can;
+  // workers only for walk-in (broker-less) policies at the border crossings.
+  function canSeePrice(item) {
+    if (userRole === "1") return true;
+    if (!item) return false;
+    const isWalkIn =
+      item.BrokerId === null || item.BrokerId === undefined || item.BrokerId === "";
+    return (
+      isWalkIn &&
+      WORKER_PRICE_BRANCHES.includes(String(item.Branch ?? "").trim())
+    );
+  }
 
   // Renders the current rows with the active sort applied. Sorting is done in
   // the browser (see sortInsuranceRows), so switching the order never re-runs
@@ -2784,7 +2687,11 @@ async function adminInsurancesByDate(defaultAuthor = "") {
           {
             key: "Price",
             label: t("price"),
-            format: (v) => money(v),
+            // Admins always see the price. Workers see it only for walk-in
+            // policies at the border crossings (Lesovo / Kapitan Andreevo);
+            // every other policy shows a blank cell so the broker price is not
+            // revealed.
+            format: (v, item) => (canSeePrice(item) ? money(v) : ""),
             ...sortHeader("Price"),
           },
           { key: "CurrencyType", label: t("currency") },
@@ -2934,22 +2841,24 @@ async function adminInsurancesByDate(defaultAuthor = "") {
     exportBtn.disabled = true;
     result.replaceChildren();
   });
-  exportBtn.addEventListener("click", () => {
-    const sorted = sortInsuranceRows(
-      lastRows,
-      insuranceSort.key,
-      insuranceSort.dir
-    );
-    if (!sorted.length) {
-      toast(t("noData"), "error");
-      return;
-    }
-    try {
-      downloadInsurancesXlsx(sorted, dateInput.value);
-    } catch (err) {
-      toast(`${t("exportFailed")}: ${err.message}`, "error");
-    }
-  });
+  if (userRole === "1") {
+    exportBtn.addEventListener("click", () => {
+      const sorted = sortInsuranceRows(
+        lastRows,
+        insuranceSort.key,
+        insuranceSort.dir
+      );
+      if (!sorted.length) {
+        toast(t("noData"), "error");
+        return;
+      }
+      try {
+        downloadInsurancesXlsx(sorted, dateInput.value);
+      } catch (err) {
+        toast(`${t("exportFailed")}: ${err.message}`, "error");
+      }
+    });
+  }
 
   Content.replaceChildren(el("h2", t("nav.insurancesByDate")), form, result);
 }
@@ -3414,7 +3323,6 @@ async function clientInsurances() {
     [
       { key: "BlancNumber", label: t("blankNo") },
       { key: "PolicyNumber", label: t("policyNumber") },
-      { key: "Price", label: t("price"), format: (v) => money(v) },
       { key: "CurrencyType", label: t("currency") },
       { key: "PaymentType", label: t("payment"), format: paymentLabel },
       {
@@ -3441,10 +3349,8 @@ const NAV_DEFS = {
   1: [
     { key: "nav.dashboard", load: adminDashboard },
     { key: "nav.users", load: adminUsers },
-    { key: "nav.insurances", load: adminInsurances },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
     { key: "nav.currentCash", load: currentCashView },
-    { key: "nav.totalCash", load: totalCashView },
     { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
     { key: "nav.reconcile", load: reconcileView },
@@ -3455,7 +3361,6 @@ const NAV_DEFS = {
     // No Card tab: workers see only their own branch's card balance, shown
     // on the Current cash screen.
     { key: "nav.currentCash", load: currentCashView },
-    { key: "nav.totalCash", load: totalCashView },
     { key: "nav.brokers", load: brokersView },
   ],
   3: [

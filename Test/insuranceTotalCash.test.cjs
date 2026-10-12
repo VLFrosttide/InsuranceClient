@@ -862,6 +862,77 @@ const ledger = () =>
     eq(seen.length, 0, "no history query for a rejected date");
   });
 
+  await check("GET /currentcash/daily computes the country-wide report", async () => {
+    const routes = [];
+    const router = Object.assign({}, fakeRouter, {
+      get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+    });
+    const RouterCC = loadModule("CurrentCash.js", {
+      express: { Router: () => router },
+    });
+    const seen = [];
+    const db = {
+      query: async (sql, params) => {
+        const s = String(sql).replace(/\s+/g, " ").trim();
+        seen.push({ s, params });
+        if (/MIN\(CAST\(PolicyNumber AS UNSIGNED\)\)/.test(s)) {
+          return [[{ firstPolicy: "101", lastPolicy: "104" }]];
+        }
+        if (/COUNT\(\*\) AS total/.test(s)) {
+          return [[{ total: 5, broker: 2, walkIn: 3 }]];
+        }
+        if (/FROM cash_transactions/.test(s)) {
+          return [[{ Currency: "EUR", Net: 50 }, { Currency: "TRY", Net: -5 }]];
+        }
+        return [[]];
+      },
+    };
+    RouterCC.createCurrentCashRouter(db);
+    const route = routes.find((r) => r.path === "/currentcash/daily");
+    ok(route, "route registered");
+
+    const call = async (q) => {
+      const res = {
+        code: 200,
+        status(c) {
+          this.code = c;
+          return this;
+        },
+        json(b) {
+          this.body = b;
+          return this;
+        },
+      };
+      await route.handler({ query: q, user: { username: USER } }, res);
+      return res;
+    };
+
+    const today = CC.clientLocalDate(0);
+    let r = await call({ tzOffset: "0" });
+    eq(r.code, 200, "status");
+    eq(
+      r.body,
+      {
+        date: today,
+        totalInsurances: 5,
+        brokerInsurances: 2,
+        walkInInsurances: 3,
+        totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
+        countryWideInsurances: 3,
+      },
+      "defaults to today and computes the report"
+    );
+    eq(seen.length, 3, "counts + span + cash queries");
+    for (const q of seen) {
+      eq(q.params, [today, CC.addDays(today, 1)], "day bounds: " + q.s);
+    }
+
+    seen.length = 0;
+    r = await call({ tzOffset: "0", date: "not-a-date" });
+    eq(r.code, 400, "malformed date rejected");
+    eq(seen.length, 0, "no queries for a rejected date");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

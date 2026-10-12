@@ -62,7 +62,6 @@ $paths = @(
   "/worker",
   "/insurances?author=diagnostic",
   "/currentcash?branch=$Branch",
-  "/totalcash?branch=$Branch",
   "/cardpayments",
   "/brokers",
   "/tariffs/my-pricing?branch=$Branch"

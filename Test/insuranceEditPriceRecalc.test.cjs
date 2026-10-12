@@ -71,6 +71,9 @@ function fakeControl(spec) {
 
 const CTX = {
   console,
+  // The production code reads the viewer's role to hide the price field from
+  // workers; these tests exercise the admin (role "1") editing path.
+  userRole: "1",
   t: (key, fallback) => (fallback !== undefined ? fallback : key),
   buildForm: (spec) => {
     lastSpec = spec;
@@ -360,6 +363,20 @@ function open(row) {
     await e.set("Duration", 90);
     eq(e.c.Price.value, "45.00", "unchanged");
     eq(toasts, ["error: edit.pricingLoadFailed"], "error toast");
+  });
+
+  await check("a worker's edit form has no price field", async () => {
+    CTX.userRole = "2";
+    try {
+      open(walkIn());
+      eq(
+        lastSpec.some((s) => s.key === "Price"),
+        false,
+        "no price field for workers"
+      );
+    } finally {
+      CTX.userRole = "1";
+    }
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
