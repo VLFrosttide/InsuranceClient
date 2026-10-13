@@ -52,7 +52,7 @@ async function doLogin() {
     const data = await LoginReq.json().catch(() => ({}));
 
     if (!LoginReq.ok) {
-      setMessage(data.error || t("accessDenied"), true);
+      setMessage(translateError(data.error) || t("accessDenied"), true);
       return;
     }
 

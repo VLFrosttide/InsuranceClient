@@ -363,6 +363,73 @@ const I18N = {
     "outbox.empty": "Nothing queued.",
     "outbox.emailQueued":
       "This email's policy is queued and will be sent automatically.",
+    // Server error messages (mapped to translation keys in translateError below).
+    "err.invalidCredentials": "Invalid username or password",
+    "err.usernamePasswordRequired": "Username and password are required",
+    "err.usernameLength": "Username must be at least 2 characters",
+    "err.passwordLength": "Password must be at least 6 characters",
+    "err.accountSuspended": "Account suspended",
+    "err.accessDeniedRole": "Access denied: unknown role",
+    "err.usernameExists": "Username already exists",
+    "err.blancExists": "An insurance with this blank number already exists",
+    "err.insuranceNotFound": "Insurance not found",
+    "err.cannotModifyDeleted": "A deleted insurance cannot be modified",
+    "err.cannotAnnulDeleted": "A deleted insurance cannot be annulled",
+    "err.alreadyAnnulled": "Insurance already annulled",
+    "err.emailBrokerOnly": "Email policies are paid from the broker balance only",
+    "err.onlyEmailBroker": "Only email policies can be paid from a broker balance",
+    "err.nonTurkWalkInOnly": "The non-Turk tax only applies to walk-in policies",
+    "err.senderNotBroker": "The email sender is not linked to a broker",
+    "err.payerInvalid": "The fee payer must be 'broker', 'worker' or 'none'",
+    "err.dateFormat": "Date must be in YYYY-MM-DD format",
+    "err.creationDateFormat": "Creation date must be in YYYY-MM-DD HH:MM:SS format",
+    "err.insufficientCash": "Insufficient cash for the reduction",
+    "err.invalidDuration": "Invalid duration",
+    "err.invalidVehicleType": "Invalid vehicle type",
+    "err.userNotFound": "User not found",
+    "err.brokerNotFound": "Broker not found",
+    "err.clientNotFound": "Client not found",
+    "err.transactionNotFound": "Transaction not found",
+    "err.blancBatchNotFound": "Blanc batch not found",
+    "err.cannotDeleteSelf": "You cannot delete your own account",
+    "err.cannotDeleteAdmin": "An admin account cannot be deleted",
+    "err.cannotSuspendAdmin": "An admin account cannot be suspended",
+    "err.cannotChangeAdminRole": "The role of an admin cannot be changed",
+    "err.ownTransactionsOnly": "You can only edit your own transactions",
+    "err.accountNotBroker": "This account is not linked to a broker",
+    "err.ownBrokerOnly": "You can only view your own broker",
+    "err.statusInvalid": "Status must be 'active' or 'suspended'",
+    "err.roleInvalid": "Role must be 1, 2 or 3",
+    "err.nameEmpty": "Name cannot be empty",
+    "err.nameRequired": "Name is required",
+    "err.usernameRequired": "Username is required",
+    "err.bodyTextRequired": "Reply text is required",
+    "err.amountPositive": "Amount must be a positive number",
+    "err.balanceNonNegative": "Balance must be a non-negative number",
+    "err.priceNonNegative": "Price must be a non-negative number",
+    "err.durationPositive": "Duration must be a positive number",
+    "err.brokerIdInvalid": "Broker must be a valid identifier",
+    "err.brokerNameExists": "A broker with this name already exists",
+    "err.tariffFieldsRequired": "Vehicle type, duration and price are required",
+    "err.pricingFormat": "Invalid pricing data format",
+    "err.tariffsRequired": "At least one tariff is required",
+    "err.typeInvalid": "Type must be 'increase' or 'reduce'",
+    "err.usernameBalanceRequired": "Username and balance are required",
+    "err.noBatch": "No batch given",
+    "err.rangeRequired": "Range start and end are required",
+    "err.rangeOrder": "Range end must be greater than or equal to range start",
+    "err.rangeTooLarge": "Range start / end is too large",
+    "err.rangeWhole": "Range start and end must be non-negative whole numbers",
+    "err.nothingToUpdate": "Nothing to update",
+    "err.partInvalid": "Part must be 'CardPart' or 'BrokerPart'",
+    "err.reasonRequired": "Reason is required",
+    "err.sourceInvalid": "Source must be 'Card' or 'Broker'",
+    "err.failedLoadInsurances": "Failed to load insurances",
+    "err.failedUpdateInsurance": "Failed to update insurance",
+    "err.failedAnnullInsurance": "Failed to annul insurance",
+    "err.failedCreateInsurance": "Failed to create insurance",
+    errorPrefix: "Error",
+
   },
   bg: {
     brand: "Застрахователна конзола",
@@ -710,6 +777,75 @@ const I18N = {
     "outbox.empty": "Няма чакащи заявки.",
     "outbox.emailQueued":
       "Полицата за този имейл чака изпращане и ще бъде изпратена автоматично.",
+
+    // Превод на съобщенията за грешки от сървъра (виж translateError по-долу).
+    "err.invalidCredentials": "Грешно потребителско име или парола",
+    "err.usernamePasswordRequired": "Потребителско име и парола са задължителни",
+    "err.usernameLength": "Потребителското име трябва да е поне 2 символа",
+    "err.passwordLength": "Паролата трябва да е поне 6 символа",
+    "err.accountSuspended": "Акаунтът е спрян",
+    "err.accessDeniedRole": "Отказан достъп: непозната роля",
+    "err.usernameExists": "Потребителското име вече съществува",
+    "err.blancExists": "Вече съществува застраховка с този номер на бланка",
+    "err.insuranceNotFound": "Застраховката не е намерена",
+    "err.cannotModifyDeleted": "Изтрита застраховка не може да се редактира",
+    "err.cannotAnnulDeleted": "Изтрита застраховка не може да се анулира",
+    "err.alreadyAnnulled": "Застраховката вече е анулирана",
+    "err.emailBrokerOnly": "Имейл полиците се плащат само от баланса на брокера",
+    "err.onlyEmailBroker": "Само имейл полици могат да се плащат от баланс на брокер",
+    "err.nonTurkWalkInOnly": "Данъкът за чужденци важи само за полици на място",
+    "err.senderNotBroker": "Подателят на имейла не е свързан с брокер",
+    "err.payerInvalid": "Платецът на таксата трябва да е 'брокер', 'служител' или 'без вина'",
+    "err.dateFormat": "Датата трябва да е във формат ГГГГ-ММ-ДД",
+    "err.creationDateFormat":
+      "Датата на създаване трябва да е във формат ГГГГ-ММ-ДД ЧЧ:ММ:СС",
+    "err.insufficientCash": "Недостатъчен наличен кеш за намалението",
+    "err.invalidDuration": "Невалиден период",
+    "err.invalidVehicleType": "Невалиден вид превозно средство",
+    "err.userNotFound": "Потребителят не е намерен",
+    "err.brokerNotFound": "Брокерът не е намерен",
+    "err.clientNotFound": "Клиентът не е намерен",
+    "err.transactionNotFound": "Транзакцията не е намерена",
+    "err.blancBatchNotFound": "Партидата с бланки не е намерена",
+    "err.cannotDeleteSelf": "Не можете да изтриете собствения си акаунт",
+    "err.cannotDeleteAdmin": "Администраторски акаунт не може да се изтрие",
+    "err.cannotSuspendAdmin": "Администраторски акаунт не може да се спре",
+    "err.cannotChangeAdminRole": "Ролята на администратор не може да се промени",
+    "err.ownTransactionsOnly": "Можете да редактирате само собствените си транзакции",
+    "err.accountNotBroker": "Този акаунт не е свързан с брокер",
+    "err.ownBrokerOnly": "Можете да преглеждате само собствения си брокер",
+    "err.statusInvalid": "Статусът трябва да е 'активен' или 'спрян'",
+    "err.roleInvalid": "Ролята трябва да е 1, 2 или 3",
+    "err.nameEmpty": "Името не може да е празно",
+    "err.nameRequired": "Името е задължително",
+    "err.usernameRequired": "Потребителското име е задължително",
+    "err.bodyTextRequired": "Текстът на отговора е задължителен",
+    "err.amountPositive": "Сумата трябва да е положително число",
+    "err.balanceNonNegative": "Балансът трябва да е неотрицателно число",
+    "err.priceNonNegative": "Цената трябва да е неотрицателно число",
+    "err.durationPositive": "Периодът трябва да е положително число",
+    "err.brokerIdInvalid": "Брокерът трябва да е валиден идентификатор",
+    "err.brokerNameExists": "Вече съществува брокер с това име",
+    "err.tariffFieldsRequired": "Вид превозно средство, период и цена са задължителни",
+    "err.pricingFormat": "Невалиден формат на данните за цените",
+    "err.tariffsRequired": "Необходима е поне една тарифа",
+    "err.typeInvalid": "Типът трябва да е 'увеличение' или 'намаление'",
+    "err.usernameBalanceRequired": "Потребителско име и баланс са задължителни",
+    "err.noBatch": "Не е подадена партида",
+    "err.rangeRequired": "Началото и краят на диапазона са задължителни",
+    "err.rangeOrder": "Краят на диапазона трябва да е по-голям или равен на началото",
+    "err.rangeTooLarge": "Началото/краят на диапазона е твърде голям",
+    "err.rangeWhole":
+      "Началото и краят на диапазона трябва да са цели неотрицателни числа",
+    "err.nothingToUpdate": "Няма какво да се обнови",
+    "err.partInvalid": "Частта трябва да е 'CardPart' или 'BrokerPart'",
+    "err.reasonRequired": "Причината е задължителна",
+    "err.sourceInvalid": "Източникът трябва да е 'Card' или 'Broker'",
+    "err.failedLoadInsurances": "Неуспешно зареждане на застраховките",
+    "err.failedUpdateInsurance": "Неуспешно обновяване на застраховката",
+    "err.failedAnnullInsurance": "Неуспешно анулиране на застраховката",
+    "err.failedCreateInsurance": "Неуспешно създаване на застраховката",
+    errorPrefix: "Грешка",
   },
 };
 
@@ -736,6 +872,109 @@ function t(key, fallback) {
   if (dict && dict[key] !== undefined) return dict[key];
   if (I18N.en && I18N.en[key] !== undefined) return I18N.en[key];
   return fallback !== undefined ? fallback : key;
+}
+
+// Maps the server's English error messages to translation keys, so errors shown
+// to the worker follow the selected language as well. Messages that are not
+// listed here (or that carry dynamic data) are returned unchanged.
+const SERVER_ERROR_TRANSLATIONS = {
+  // Authentication / accounts.
+  "Invalid username or password": "err.invalidCredentials",
+  "Username and Password are required": "err.usernamePasswordRequired",
+  "Username must be at least 2 characters": "err.usernameLength",
+  "Password must be at least 6 characters": "err.passwordLength",
+  "Account suspended": "err.accountSuspended",
+  "Access Denied: unknown role": "err.accessDeniedRole",
+  "Username already exists": "err.usernameExists",
+  "Unauthorized: invalid or expired token": "sessionExpired",
+  "Unauthorized: missing token": "sessionExpired",
+  Unauthorized: "sessionExpired",
+  "Forbidden: insufficient permissions": "accessDenied",
+  Forbidden: "accessDenied",
+
+  // Insurances.
+  "Insurance with this BlancNumber already exists": "err.blancExists",
+  "Insurance not found": "err.insuranceNotFound",
+  "Cannot modify a deleted insurance": "err.cannotModifyDeleted",
+  "Cannot annul a deleted insurance": "err.cannotAnnulDeleted",
+  "Insurance already annulled": "err.alreadyAnnulled",
+  "Email policies are paid from the broker balance only": "err.emailBrokerOnly",
+  "Only email policies can be paid from a broker balance": "err.onlyEmailBroker",
+  "The non-Turk tax only applies to walk-in policies": "err.nonTurkWalkInOnly",
+  "The email sender is not linked to a broker": "err.senderNotBroker",
+  "Attach at least one file before saving an email policy": "add.attachmentsRequired",
+  "payer must be one of 'broker', 'worker' or 'none'": "err.payerInvalid",
+  "date must be in YYYY-MM-DD format": "err.dateFormat",
+  "CreationDate must be in YYYY-MM-DD HH:MM:SS format": "err.creationDateFormat",
+  "BlancNumber is required": "add.blancNumberRequired",
+  "PolicyNumber is required": "add.policyNumberRequired",
+  "CarNumber is required": "add.carNumberRequired",
+  "insufficient current cash for reduction": "err.insufficientCash",
+
+  // Users / brokers / cash.
+  "User not found": "err.userNotFound",
+  "Broker not found": "err.brokerNotFound",
+  "Client not found": "err.clientNotFound",
+  "Transaction not found": "err.transactionNotFound",
+  "Blanc batch not found": "err.blancBatchNotFound",
+  "Cannot delete your own account": "err.cannotDeleteSelf",
+  "Forbidden: cannot delete an admin": "err.cannotDeleteAdmin",
+  "Forbidden: cannot suspend an admin": "err.cannotSuspendAdmin",
+  "Forbidden: cannot change the role of an admin": "err.cannotChangeAdminRole",
+  "Forbidden: you can only edit your own transactions": "err.ownTransactionsOnly",
+  "Forbidden: this account is not linked to a broker": "err.accountNotBroker",
+  "Forbidden: you can only view your own broker": "err.ownBrokerOnly",
+  "Status must be 'active' or 'suspended'": "err.statusInvalid",
+  "role must be 1, 2 or 3": "err.roleInvalid",
+  "RoleID must be one of 1 (admin), 2 (worker), 3 (client)": "err.roleInvalid",
+  "Name cannot be empty": "err.nameEmpty",
+  "Name is required": "err.nameRequired",
+  "Username is required": "err.usernameRequired",
+  "bodyText is required": "err.bodyTextRequired",
+  "amount must be a positive number": "err.amountPositive",
+  "balance must be a non-negative number": "err.balanceNonNegative",
+  "price must be a non-negative number": "err.priceNonNegative",
+  "duration must be a positive number": "err.durationPositive",
+  "BrokerId must be a positive integer or null": "err.brokerIdInvalid",
+  "Invalid broker id": "err.brokerIdInvalid",
+  "A broker with this Name already exists": "err.brokerNameExists",
+  "insuranceType, duration, and price are required": "err.tariffFieldsRequired",
+  "Invalid pricing data format": "err.pricingFormat",
+  "tariffs array is required and must not be empty": "err.tariffsRequired",
+  "type must be 'increase' or 'reduce'": "err.typeInvalid",
+  "username and balance are required": "err.usernameBalanceRequired",
+  "No batch given": "err.noBatch",
+  "RangeStart and RangeEnd are required": "err.rangeRequired",
+  "RangeStart and RangeEnd must be non-negative whole numbers": "err.rangeWhole",
+  "RangeEnd must be >= RangeStart": "err.rangeOrder",
+  "RangeStart / RangeEnd is too large": "err.rangeTooLarge",
+  "Nothing to update": "err.nothingToUpdate",
+  "part must be 'CardPart' or 'BrokerPart'": "err.partInvalid",
+  "reason is required": "err.reasonRequired",
+  "source must be 'Card' or 'Broker'": "err.sourceInvalid",
+
+  // Generic 500s surfaced by common worker flows.
+  "Failed to fetch insurances": "err.failedLoadInsurances",
+  "Failed to update insurance": "err.failedUpdateInsurance",
+  "Failed to annul insurance": "err.failedAnnullInsurance",
+  "Failed to create insurance": "err.failedCreateInsurance",
+};
+
+// Translate a server error message to the current language. Returns an empty
+// string for empty input and the original message when no translation exists.
+function translateError(message) {
+  if (!message) return "";
+  const text = String(message).trim();
+  const key = SERVER_ERROR_TRANSLATIONS[text];
+  if (key) return t(key);
+  // Dynamic messages that carry a value after a colon.
+  if (text.startsWith("Invalid duration:")) {
+    return `${t("err.invalidDuration")} ${text.slice(text.indexOf(":") + 1).trim()}`;
+  }
+  if (text.startsWith("Invalid vehicle type:")) {
+    return `${t("err.invalidVehicleType")} ${text.slice(text.indexOf(":") + 1).trim()}`;
+  }
+  return text;
 }
 
 function roleLabel(role) {
@@ -904,10 +1143,10 @@ async function api(path, options = {}) {
 
   if (res.status === 401) {
     redirectToLogin();
-    throw new Error(data.error || t("sessionExpired"));
+    throw new Error(data.error ? translateError(data.error) : t("sessionExpired"));
   }
   if (!res.ok) {
-    let message = data.error;
+    let message = data.error ? translateError(data.error) : "";
     if (!message) {
       // Not produced by the InsuranceServer API: the request was rejected
       // before it reached the application (hosting CDN / web application
@@ -975,7 +1214,7 @@ function toast(text, type = "info") {
 // own message, or the translated `fallbackKey` when the error has none.
 function reportError(context, err, fallbackKey = "serverError") {
   console.error(`${context}:`, err);
-  const message = err && err.message ? err.message : "";
+  const message = err && err.message ? translateError(err.message) : "";
   const base = t(fallbackKey);
   toast(message && message !== base ? `${base}: ${message}` : base, "error");
 }

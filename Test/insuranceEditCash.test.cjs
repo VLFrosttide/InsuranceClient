@@ -202,7 +202,9 @@ const STUBS = {
       brokerDeltas.push({ brokerId, delta });
       return delta;
     },
+    resolveBrokerCutOff: async () => false,
   },
+  "./PaymentSchedule.js": { getSchedule: async () => null },
   "../Mail/SendReply.js": { sendReply: async () => {} },
 };
 
@@ -539,11 +541,18 @@ async function patch(body, opts = {}) {
     eq(r.movements, [], "nothing may survive the rollback");
   });
 
-  await check("a worker still cannot edit somebody else's policy", async () => {
+  await check("a worker can edit somebody else's policy too", async () => {
     const r = await patch({ Price: 120 }, { role: 2, username: "someoneElse" });
-    eq(r.status, 403, "status");
-    eq(r.movements, [], "no movements expected");
-    eq(r.updated.length, 0, "nothing written");
+    eq(r.status, 200, "status");
+    eq(
+      r.movements,
+      [
+        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by someoneElse",
+        "cash increase 120 EUR @ Офис Харманли (1234567) by someoneElse",
+      ],
+      "movements"
+    );
+    eq(r.row.Price, "120", "stored price");
   });
 
   await check("an empty edit is rejected before any money moves", async () => {

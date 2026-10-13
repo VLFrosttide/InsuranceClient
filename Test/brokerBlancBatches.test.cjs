@@ -189,6 +189,7 @@ const STUBS = {
     normalizeCurrency: (c) => c || "EUR",
     normalizeBranch: (b) => b || "",
   },
+  "./PaymentSchedule.js": { getSchedule: () => ({}) },
 };
 
 const mod = { exports: {} };

@@ -103,6 +103,12 @@ function syncLangButton() {
 LangButton.addEventListener("click", () => {
   toggleLang();
   syncLangButton();
+  // Re-render the dynamic email panel and dropped-file list so their labels
+  // follow the newly selected language too (static labels are handled by
+  // translatePage, invoked inside toggleLang).
+  renderEmailSide();
+  renderDroppedFiles();
+  requestEmailAttachments();
 });
 syncLangButton();
 
@@ -1359,7 +1365,9 @@ InsuranceForm.addEventListener("submit", async function (e) {
     window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
   } catch (error) {
     console.error("Error saving insurance:", error);
-    const message = error.message || t("serverError");
+    const message =
+      translateError(error && error.message ? error.message : "") ||
+      t("serverError");
     setMessage(message, true);
     toast(message, "error");
   } finally {

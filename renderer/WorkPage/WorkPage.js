@@ -2562,14 +2562,14 @@ function insuranceStatusLabel(item) {
   return item.Annulled ? t("annulled") : "";
 }
 
-async function adminInsurancesByDate(defaultAuthor = "") {
+async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
   // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
   // only a car number is not silently narrowed to the current user's own
-  // records. Workers reach this view through "My insurances", which pre-fills
-  // the author with their username so they still see only their own records.
+  // records. Workers reach this view through the "Insurances" tab, which also
+  // leaves the author field empty so they can find and edit any policy.
   // PolicyNumber/BlancNumber/CarNumber/Broker match partially (substring) on
   // the server, so a worker can search by a fragment of the number, or by a
   // partially typed broker name ("Euro" finds the "Euroins" policies) too.
@@ -2860,7 +2860,7 @@ async function adminInsurancesByDate(defaultAuthor = "") {
     });
   }
 
-  Content.replaceChildren(el("h2", t("nav.insurancesByDate")), form, result);
+  Content.replaceChildren(el("h2", t(titleKey)), form, result);
 }
 
 // ---------------------------------------------------------------------------
@@ -3291,11 +3291,10 @@ async function workerClients() {
   Content.replaceChildren(el("h2", t("clients")), table);
 }
 
-async function workerMyInsurances() {
-  // Workers only see their own records here, so pre-fill the author filter
-  // with their username. The admin's "Insurances by date" view keeps the
-  // author field empty so any single/multiple criteria can be searched.
-  await adminInsurancesByDate(username);
+async function workerInsurances() {
+  // Workers can view and modify every policy (not just their own), so the
+  // author filter is left empty exactly like in the admin view.
+  await adminInsurancesByDate("", "nav.insurances");
 }
 
 // ---------------------------------------------------------------------------
@@ -3357,7 +3356,7 @@ const NAV_DEFS = {
   ],
   2: [
     { key: "nav.dashboard", load: workerDashboard },
-    { key: "nav.myInsurances", load: workerMyInsurances },
+    { key: "nav.insurances", load: workerInsurances },
     // No Card tab: workers see only their own branch's card balance, shown
     // on the Current cash screen.
     { key: "nav.currentCash", load: currentCashView },
@@ -3407,8 +3406,9 @@ async function runLoader(load) {
   try {
     await load();
   } catch (err) {
+    const message = translateError(err && err.message ? err.message : "");
     Content.replaceChildren(
-      el("p", `Error: ${err.message}`, { class: "muted" })
+      el("p", `${t("errorPrefix")}: ${message}`, { class: "muted" })
     );
   }
 }
