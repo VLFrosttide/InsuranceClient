@@ -87,6 +87,18 @@ foreach ($p in $paths) {
   if ($short.Length -gt 120) { $short = $short.Substring(0, 120) }
   W ("{0,-45} {1}  [{2}] server={3} type={4} req-id={5}" -f $p.Split("?")[0], $status, $verdict, $server, $ctype, $rid)
   W ("{0,-45} body: {1}" -f "", $short)
+  if ($verdict -eq "NOT from app" -and $body) {
+    # Save the FULL HTML block page so the blocking layer can be identified
+    # from its own text (hCDN WAF, ModSecurity, antivirus page, ...).
+    $safe = ($p -replace "[^\w.-]", "_")
+    $dump = Join-Path (Split-Path $Out) ("insurance-block$safe.html")
+    try {
+      [IO.File]::WriteAllText($dump, $body)
+      W ("{0,-45} full block page saved to: {1}" -f "", $dump)
+    } catch {
+      W ("{0,-45} (could not save block page: {1})" -f "", $_.Exception.Message)
+    }
+  }
 }
 
 W "`nSaved to $Out"

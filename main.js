@@ -92,8 +92,8 @@ const CreateWindow = () => {
 // Labels for the right-click menu, following the language chosen in the UI
 // (stored by renderer/common.js in localStorage under "lang", default "bg").
 const CONTEXT_MENU_LABELS = {
-  bg: { copy: "Копирай" },
-  en: { copy: "Copy" },
+  bg: { copy: "Копирай", paste: "Постави" },
+  en: { copy: "Copy", paste: "Paste" },
 };
 
 const ShowContextMenu = async (targetWin, params) => {
@@ -115,12 +115,22 @@ const ShowContextMenu = async (targetWin, params) => {
     Boolean(params.selectionText && params.selectionText.trim()) ||
     Boolean(params.editFlags && params.editFlags.canCopy);
 
+  // Paste is available when there is something in the clipboard that can be
+  // inserted into the focused editable element.
+  const canPaste = Boolean(params.editFlags && params.editFlags.canPaste);
+
   const menu = Menu.buildFromTemplate([
     {
       label: labels.copy,
       role: "copy",
       accelerator: "CmdOrCtrl+C",
       enabled: hasSelection,
+    },
+    {
+      label: labels.paste,
+      role: "paste",
+      accelerator: "CmdOrCtrl+V",
+      enabled: canPaste,
     },
   ]);
   menu.popup({ window: targetWin, x: params.x, y: params.y });
