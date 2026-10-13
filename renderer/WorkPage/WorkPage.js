@@ -697,6 +697,7 @@ function buildForm(spec, onSubmit, submitLabel) {
       control = input("checkbox");
       control.checked = !!s.value;
     } else control = input(s.type, s.value, s.placeholder);
+    if (s.readonly) control.readOnly = true;
     control.dataset.key = s.key;
     values[s.key] = control;
     form.appendChild(field(s.label, control));
@@ -1056,16 +1057,18 @@ function openInsuranceEditor(insurance, onDone) {
       label: t("add.carNumber"),
       value: insurance.CarNumber,
     },
-    // Only admins may edit the price. Workers edit the rest of the policy but
-    // never see (and therefore cannot change) the price field; the tariff
-    // recalculation below needs this field, so it stays inert for them too.
-    ...(userRole === "1"
+    // Admins see and edit the price of any policy. Workers see it only for
+    // walk-ins (the non-Turk / card-fee fees below apply to walk-ins and the
+    // recalculated price has to stay visible to them) and can read but not type
+    // it. Broker (email) prices stay hidden from workers.
+    ...(userRole === "1" || !isEmailPolicy
       ? [
           {
             key: "Price",
             label: t("price"),
             type: "number",
             value: insurance.Price,
+            readonly: userRole !== "1",
           },
         ]
       : []),
@@ -2641,22 +2644,17 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     },
   });
 
-  // Branches where a worker may see the price of a walk-in policy. These two
-  // border crossings (Lesovo / Kapitan Andreevo) are handled directly on-site,
-  // so their walk-in price stays visible to workers even though broker prices
-  // remain hidden.
-  const WORKER_PRICE_BRANCHES = ["ГКПП Лесово", "ГКПП Капитан Андреево"];
-
   // Whether the current user may see the price of `item`. Admins always can;
-  // workers only for walk-in (broker-less) policies at the border crossings.
+  // workers see every walk-in (broker-less) price — the non-Turk / card-fee
+  // fees apply to those and must stay visible — but never a broker (email)
+  // price.
   function canSeePrice(item) {
     if (userRole === "1") return true;
     if (!item) return false;
-    const isWalkIn =
-      item.BrokerId === null || item.BrokerId === undefined || item.BrokerId === "";
     return (
-      isWalkIn &&
-      WORKER_PRICE_BRANCHES.includes(String(item.Branch ?? "").trim())
+      item.BrokerId === null ||
+      item.BrokerId === undefined ||
+      item.BrokerId === ""
     );
   }
 
@@ -2687,10 +2685,8 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
           {
             key: "Price",
             label: t("price"),
-            // Admins always see the price. Workers see it only for walk-in
-            // policies at the border crossings (Lesovo / Kapitan Andreevo);
-            // every other policy shows a blank cell so the broker price is not
-            // revealed.
+            // Admins always see the price. Workers see walk-in (broker-less)
+            // prices but never a broker (email) price.
             format: (v, item) => (canSeePrice(item) ? money(v) : ""),
             ...sortHeader("Price"),
           },

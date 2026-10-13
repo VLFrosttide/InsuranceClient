@@ -365,15 +365,35 @@ function open(row) {
     eq(toasts, ["error: edit.pricingLoadFailed"], "error toast");
   });
 
-  await check("a worker's edit form has no price field", async () => {
+  await check("a worker sees the walk-in price read-only", async () => {
     CTX.userRole = "2";
     try {
       open(walkIn());
-      eq(
-        lastSpec.some((s) => s.key === "Price"),
-        false,
-        "no price field for workers"
-      );
+      const price = lastSpec.find((s) => s.key === "Price");
+      eq(price && price.type, "number", "walk-in price is visible");
+      eq(price && price.readonly, true, "but workers cannot type it");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("a worker does not see the broker price", async () => {
+    CTX.userRole = "2";
+    try {
+      open(walkIn({ BrokerId: 7, PaymentType: "Broker" }));
+      eq(lastSpec.some((s) => s.key === "Price"), false, "broker price hidden");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("a worker ticking non-Turk adds the fee to the walk-in price", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open(walkIn());
+      e.c.NonTurk.checked = true;
+      await e.c.NonTurk.fire("change");
+      eq(e.c.Price.value, "50.00", "45 + 5");
     } finally {
       CTX.userRole = "1";
     }
