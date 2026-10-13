@@ -208,6 +208,11 @@ const I18N = {
     brokerInsurances: "Broker insurances",
     walkInInsurances: "Walk-in insurances",
     totalDailyCash: "Total daily cash",
+    totalDailyCashHint:
+      "Total daily cash is the net cash that physically entered the drawers across all branches on this day: walk-in cash payments plus manual increases, minus manual reductions. Card payments and broker-balance payments are tracked separately and are not included.",
+    availableCashBranch: "Available cash ({branch})",
+    availableCashHint:
+      "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
     countryWideInsurances: "Country-wide insurances",
 
     annul: "Annul",
@@ -628,6 +633,11 @@ const I18N = {
     brokerInsurances: "Брокерски застраховки",
     walkInInsurances: "Застраховки на място",
     totalDailyCash: "Общ дневен кеш",
+    totalDailyCashHint:
+      "Общ дневен кеш е нетният кеш, постъпил физически в касите на всички клонове за този ден: плащания в брой на място плюс ръчни увеличения, минус ръчни намаления. Плащанията с карта и от баланс на брокер се отчитат отделно и не са включени.",
+    availableCashBranch: "Наличен кеш ({branch})",
+    availableCashHint:
+      "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
     countryWideInsurances: "Застраховки в страната",
 
     annul: "Анулирай",

@@ -793,6 +793,37 @@ const ledger = () =>
     eq(CC.addDays("2026-12-31", 1), "2027-01-01", "new year");
   });
 
+  await check("getCurrentCashAsOf walks back the live balance", async () => {
+    // Live drawer: EUR 40, TRY 10. After the requested day the branch took in
+    // a net EUR 30 and then a reset kept EUR 5, so at the end of that day the
+    // branch had EUR 40 - 30 + 5 = 15 available.
+    const db = {
+      query: async (sql, params) => {
+        const s = String(sql).replace(/\s+/g, " ").trim();
+        if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
+        if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
+          return [[
+            { Currency: "EUR", CurrentCash: 40 },
+            { Currency: "USD", CurrentCash: 0 },
+            { Currency: "TRY", CurrentCash: 10 },
+          ]];
+        }
+        if (/FROM cash_transactions/.test(s)) {
+          return [[{ Currency: "EUR", Net: 30 }]];
+        }
+        if (/FROM cash_resets/.test(s)) {
+          return [[{ Currency: "EUR", Kept: 5 }]];
+        }
+        throw new Error("unhandled SQL in getCurrentCashAsOf test: " + s);
+      },
+    };
+    eq(
+      await CC.getCurrentCashAsOf(db, BRANCH, "2026-10-14"),
+      { EUR: 15, USD: 0, TRY: 10 },
+      "historical available cash"
+    );
+  });
+
   await check("GET /currentcash returns only the requested day", async () => {
     const routes = [];
     const router = Object.assign({}, fakeRouter, {
@@ -931,6 +962,81 @@ const ledger = () =>
     r = await call({ tzOffset: "0", date: "not-a-date" });
     eq(r.code, 400, "malformed date rejected");
     eq(seen.length, 0, "no queries for a rejected date");
+  });
+
+  await check("GET /currentcash/daily includes the branch's available cash", async () => {
+    const routes = [];
+    const router = Object.assign({}, fakeRouter, {
+      get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+    });
+    const RouterCC = loadModule("CurrentCash.js", {
+      express: { Router: () => router },
+    });
+    const db = {
+      query: async (sql, params) => {
+        const s = String(sql).replace(/\s+/g, " ").trim();
+        if (/MIN\(CAST\(PolicyNumber AS UNSIGNED\)\)/.test(s)) {
+          return [[{ firstPolicy: "101", lastPolicy: "104" }]];
+        }
+        if (/COUNT\(\*\) AS total/.test(s)) {
+          return [[{ total: 5, broker: 2, walkIn: 3 }]];
+        }
+        if (/FROM cash_transactions/.test(s)) {
+          if (s.includes("Branch = ?")) {
+            // getCurrentCashAsOf: movements recorded after the requested day.
+            return [[{ Currency: "EUR", Net: 30 }]];
+          }
+          // Country-wide total daily cash.
+          return [[{ Currency: "EUR", Net: 50 }, { Currency: "TRY", Net: -5 }]];
+        }
+        if (/FROM cash_resets/.test(s)) {
+          return [[{ Currency: "EUR", Kept: 5 }]];
+        }
+        if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
+        if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
+          return [[
+            { Currency: "EUR", CurrentCash: 40 },
+            { Currency: "USD", CurrentCash: 0 },
+            { Currency: "TRY", CurrentCash: 10 },
+          ]];
+        }
+        return [[]];
+      },
+    };
+    RouterCC.createCurrentCashRouter(db);
+    const route = routes.find((r) => r.path === "/currentcash/daily");
+    ok(route, "route registered");
+
+    const res = {
+      code: 200,
+      status(c) {
+        this.code = c;
+        return this;
+      },
+      json(b) {
+        this.body = b;
+        return this;
+      },
+    };
+    const today = CC.clientLocalDate(0);
+    await route.handler(
+      { query: { branch: BRANCH, tzOffset: "0" }, user: { username: USER } },
+      res
+    );
+    eq(res.code, 200, "status");
+    eq(
+      res.body,
+      {
+        date: today,
+        totalInsurances: 5,
+        brokerInsurances: 2,
+        walkInInsurances: 3,
+        totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
+        countryWideInsurances: 3,
+        availableCash: { EUR: 15, USD: 0, TRY: 10 },
+      },
+      "the report carries the branch's walked-back available cash"
+    );
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

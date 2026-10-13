@@ -1628,7 +1628,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     ),
     api(
       `/currentcash/daily?date=${encodeURIComponent(date)}` +
-        `&tzOffset=${tzOffset}`
+        `&tzOffset=${tzOffset}&branch=${encodeURIComponent(branch)}`
     ),
   ]);
   const heading = el("h2", t("currentCash"));
@@ -1683,8 +1683,10 @@ async function currentCashView(overrideBranch, overrideDate) {
   // branch selector above: insurances and cash are counted across all branches.
   const dailyCard = el("div", null, { class: "balance-card daily-report" });
   dailyCard.appendChild(el("h3", t("dailyReport")));
-  const dailyStat = (label, value) => {
-    const row = el("div", null, { class: "daily-report-row" });
+  const dailyStat = (label, value, hint) => {
+    const attrs = { class: "daily-report-row" };
+    if (hint) attrs.title = hint;
+    const row = el("div", null, attrs);
     row.appendChild(el("span", label, { class: "muted" }));
     row.appendChild(el("span", value));
     return row;
@@ -1702,9 +1704,26 @@ async function currentCashView(overrideBranch, overrideDate) {
     dailyStat(t("countryWideInsurances"), String(daily.countryWideInsurances ?? 0))
   );
   // Total daily cash is a per-currency net (walk-in cash + manual increases −
-  // manual reductions), rendered exactly like the balance card above.
+  // manual reductions), rendered exactly like the balance card above. Hovering
+  // over it explains precisely what it means and what it consists of.
   dailyCard.appendChild(
-    dailyStat(t("totalDailyCash"), renderCashBalances(daily.totalDailyCash || {}))
+    dailyStat(
+      t("totalDailyCash"),
+      renderCashBalances(daily.totalDailyCash || {}),
+      t("totalDailyCashHint")
+    )
+  );
+  // The selected branch's cash drawer balance at the end of the picked day. It
+  // is walked back from the live balance, so choosing an older date shows how
+  // much cash that branch actually had available on that day.
+  dailyCard.appendChild(
+    dailyStat(
+      fmt(t("availableCashBranch"), {
+        branch: branch || t("unknownBranch"),
+      }),
+      renderCashBalances(daily.availableCash || {}),
+      t("availableCashHint")
+    )
   );
 
   // Balance and card balance stay on the left; the daily report sits to their

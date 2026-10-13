@@ -157,6 +157,12 @@ body {
 .daily-report-row span:last-child {
   font-weight: 600;
 }
+.daily-report-row[title] {
+  cursor: help;
+}
+.daily-report-row[title] span:first-child {
+  border-bottom: 1px dotted var(--muted);
+}
 
 .filter-row {
   margin-bottom: 16px;
