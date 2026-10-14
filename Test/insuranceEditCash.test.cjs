@@ -42,6 +42,9 @@ let txDepth = 0;
 // When true the cash "reduce" stub fails the way the real one does when the
 // drawer cannot fund the reversal of an old price.
 let failReduce = false;
+// The broker "negative balance allowed" setting, as returned by the stubbed
+// Brokers.js helper. Tests flip it to exercise the rejection gate.
+let allowNegativeBalance = true;
 
 const recorder = (method) => (routePath, ...handlers) => {
   routes.push({ method, path: routePath, handlers });
@@ -203,6 +206,7 @@ const STUBS = {
       return delta;
     },
     resolveBrokerCutOff: async () => false,
+    getBrokerAllowNegativeBalance: async () => allowNegativeBalance,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
   "../Mail/SendReply.js": { sendReply: async () => {} },
@@ -933,6 +937,28 @@ async function patch(body, opts = {}) {
       "neither current cash nor the card balance is touched"
     );
     eq(r.brokerDeltas, ["50 -> broker 7"], "the broker balance pays for it");
+  });
+
+  await check("a broker request is rejected when negative balance is disabled", async () => {
+    allowNegativeBalance = false;
+    try {
+      const r = await create({
+        PaymentType: "Broker",
+        EmailFrom: "Broker <broker@example.com>",
+        Price: 50,
+      });
+      eq(r.status, 400, "status");
+      eq(
+        r.body,
+        { error: "Broker request rejected: negative balance not allowed" },
+        "error"
+      );
+      eq(r.inserts.length, 0, "nothing inserted");
+      eq(r.movements, [], "no money moved");
+      eq(r.brokerDeltas, [], "broker untouched");
+    } finally {
+      allowNegativeBalance = true;
+    }
   });
 
   await check("creating an email policy paid by card is rejected", async () => {

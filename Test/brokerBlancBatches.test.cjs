@@ -34,6 +34,7 @@ function resetDb() {
     broker_emails: [],
     batches: [],
     insurance: [],
+    app_settings: {},
     nextBroker: 3,
     nextBatch: 1,
   };
@@ -149,6 +150,14 @@ async function query(sql, params = []) {
   }
   if (/^UPDATE brokers SET CashBalance = CashBalance [-+] \? WHERE id = \?$/.test(s)) {
     return [{ affectedRows: 1 }];
+  }
+  if (s.startsWith("SELECT value FROM app_settings WHERE name = ?")) {
+    const v = db.app_settings[p[0]];
+    return [v === undefined ? [] : [{ value: v }]];
+  }
+  if (s.startsWith("INSERT INTO app_settings")) {
+    db.app_settings[p[0]] = p[1];
+    return [{}];
   }
   throw new Error("unexpected SQL in test: " + s);
 }
@@ -479,6 +488,37 @@ const brokerOf = async (id) =>
     const lines = String(r.body).split("\n");
     ok(lines[0].includes("BlancBatches"), lines[0]);
     ok(lines[1].includes('"100-199;300-309",110,0,110'), lines[1]);
+  });
+
+  await check("negative-balance setting defaults to reject and can be toggled", async () => {
+    eq(await M.getBrokerAllowNegativeBalance(fakeDb), false, "default reject");
+    const list = await call("get", "/brokers");
+    eq(list.body.allowNegativeBalance, false, "list exposes the default");
+
+    const off = await call("put", "/brokers/settings", {
+      body: { allowNegativeBalance: false },
+    });
+    eq(off.status, 200, "update status");
+    eq(off.body.allowNegativeBalance, false, "update echoes false");
+    eq(await M.getBrokerAllowNegativeBalance(fakeDb), false, "persisted false");
+    eq(
+      (await call("get", "/brokers")).body.allowNegativeBalance,
+      false,
+      "list reflects false"
+    );
+
+    const on = await call("put", "/brokers/settings", {
+      body: { allowNegativeBalance: true },
+    });
+    eq(on.body.allowNegativeBalance, true, "back to true");
+    eq(await M.getBrokerAllowNegativeBalance(fakeDb), true, "persisted true");
+  });
+
+  await check("settings write stores '1'/'0' strings in app_settings", async () => {
+    await M.setBrokerAllowNegativeBalance(fakeDb, false);
+    eq(db.app_settings.broker_allow_negative_balance, "0", "stored as 0");
+    await M.setBrokerAllowNegativeBalance(fakeDb, true);
+    eq(db.app_settings.broker_allow_negative_balance, "1", "stored as 1");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

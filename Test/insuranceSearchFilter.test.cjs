@@ -1,17 +1,21 @@
 "use strict";
 
-// Node test for the GET /insurances search filters, focused on the new
-// `broker` parameter added for the "My insurances" lookup tab.
+// Node test for the GET /insurances search filters: the `broker` parameter
+// (added for the "My insurances" lookup tab) and the `annulled` parameter
+// (added for the "Only annulled" filter).
 //
 // The route handler lives in InsuranceServer/Requests/TierEndpoints.js (see
-// Test/serverPath.cjs). It is a CommonJS module that only needs `express`
-// and a handful of sibling modules at load time, so this test loads the REAL
-// file in a vm with those requires stubbed, registers the routes on a fake
-// router, and then calls the /insurances handler directly with a fake req/res
-// and a fake DB connection. The SQL and its bound parameters are captured, so
-// the test asserts what the endpoint actually asks MySQL to do - including that
-// `broker` becomes a parameterised `Broker LIKE ?` (never string-concatenated)
-// and that it counts as a valid search criterion on its own.
+// Test/serverPath.cjs). It is a CommonJS module that only needs `express` and a
+// handful of sibling modules at load time, so this test loads the REAL file in
+// a vm with those requires stubbed, registers the routes on a fake router, and
+// then calls the /insurances handler directly with a fake req/res and a fake DB
+// connection. The SQL and its bound parameters are captured, so the test
+// asserts what the endpoint actually asks MySQL to do.
+//
+// The broker name is matched in JavaScript (not SQL) so it can be insensitive
+// to the Cyrillic/Latin script difference: "Lesovo" finds policies stored under
+// the "ГКПП Лесово" branch. The brokerNameMatches / transliterateBulgarian
+// helpers are unit-tested directly here too.
 //
 // Run with:  node Test/insuranceSearchFilter.test.cjs   (or: npm test)
 
@@ -24,6 +28,9 @@ const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 // --- fakes -------------------------------------------------------------------
 const routes = [];
 const queries = [];
+// Rows the fake DB returns for the next query, so the handler's broker filter
+// (which runs in JavaScript) can be exercised end-to-end.
+let returnRows = [];
 
 const recorder = (method) => (routePath, ...handlers) => {
   routes.push({ method, path: routePath, handlers });
@@ -66,6 +73,7 @@ const STUBS = {
     decreaseBrokerForInsurance: async () => {},
     restoreBrokerForAnnulment: async () => {},
     adjustBrokerForPriceChange: async () => {},
+    getBrokerAllowNegativeBalance: async () => true,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
   "../Mail/SendReply.js": { sendReply: async () => {} },
@@ -74,7 +82,7 @@ const STUBS = {
 const fakeDb = {
   query: async (sql, params) => {
     queries.push({ sql: String(sql), params: params || [] });
-    return [[]];
+    return [returnRows];
   },
   withTransaction: async (fn) => fn(fakeDb),
 };
@@ -97,6 +105,13 @@ if (typeof mod.exports.createTierRouter !== "function") {
   process.exit(1);
 }
 mod.exports.createTierRouter(fakeDb);
+
+const brokerNameMatches = mod.exports.brokerNameMatches;
+const transliterateBulgarian = mod.exports.transliterateBulgarian;
+if (typeof brokerNameMatches !== "function") {
+  console.error("brokerNameMatches is not exported - server file changed?");
+  process.exit(1);
+}
 
 const route = routes.find(
   (r) => r.method === "get" && r.path === "/insurances"
@@ -166,30 +181,23 @@ async function search(query, user = { role: 2, username: "worker1" }) {
   await check("broker alone is accepted as a search criterion", async () => {
     const r = await search({ broker: "Euroins" });
     eq(r.status, 200, "status");
-    ok(
-      r.sql.includes("Broker LIKE ?"),
-      "missing Broker condition: " + flat(r.sql)
+    eq(r.queried, true, "hits the database");
+    ok(!r.sql.includes("Broker"), "broker is not a SQL condition: " + flat(r.sql));
+  });
+
+  await check("the broker query is a plain SELECT without a broker condition", async () => {
+    const r = await search({ broker: "Euroins" });
+    eq(
+      flat(r.sql),
+      "SELECT * FROM insurance WHERE Deleted = 0 ORDER BY CreationDate DESC",
+      "sql"
     );
-    eq(r.params, ["%Euroins%"], "bound params");
-  });
-
-  await check("broker matches partially (substring)", async () => {
-    const r = await search({ broker: "Euro" });
-    eq(r.params, ["%Euro%"], "bound params");
-  });
-
-  await check("broker value is trimmed before it is bound", async () => {
-    const r = await search({ broker: "  Armeets " });
-    eq(r.params, ["%Armeets%"], "bound params");
+    eq(r.params, [], "no bound params");
   });
 
   await check("soft-deleted rows stay excluded when filtering by broker", async () => {
     const r = await search({ broker: "Euroins" });
-    eq(
-      flat(r.sql),
-      "SELECT * FROM insurance WHERE Deleted = 0 AND Broker LIKE ? ORDER BY CreationDate DESC",
-      "sql"
-    );
+    ok(flat(r.sql).includes("WHERE Deleted = 0"), flat(r.sql));
   });
 
   await check("broker combines with the other filters", async () => {
@@ -201,17 +209,20 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     eq(r.status, 200, "status");
     ok(flat(r.sql).includes("Author = ?"), "author condition");
     ok(flat(r.sql).includes("CarNumber LIKE ?"), "car number condition");
-    ok(flat(r.sql).includes("Broker LIKE ?"), "broker condition");
-    eq(r.params, ["worker1", "%B1234%", "%Euro%"], "bound params in order");
+    ok(!r.sql.includes("Broker"), "broker is not a SQL condition");
+    eq(r.params, ["worker1", "%B1234%"], "bound params in order");
   });
 
-  await check("broker value is bound, never concatenated into the SQL", async () => {
+  await check("broker value is never concatenated into the SQL", async () => {
     const evil = "x'; DROP TABLE insurance; --";
     const r = await search({ broker: evil });
-    eq(r.params, [`%${evil}%`], "bound params");
     ok(
       !r.sql.includes("DROP"),
       "SQL must not contain the raw value: " + flat(r.sql)
+    );
+    ok(
+      !r.params.some((p) => String(p).includes("DROP")),
+      "params must not carry the raw value"
     );
   });
 
@@ -221,6 +232,87 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     eq(r.params, ["worker1"], "bound params");
   });
 
+  await check("broker filters the fetched rows (Latin → Cyrillic branch)", async () => {
+    returnRows = [
+      { Broker: "ГКПП Лесово", BlancNumber: "1" },
+      { Broker: "Euroins", BlancNumber: "2" },
+    ];
+    const r = await search({ broker: "Lesovo" });
+    eq(r.status, 200, "status");
+    eq(r.body.insurances.map((i) => i.BlancNumber), ["1"], "only the Lesovo row");
+  });
+
+  await check("broker filters the fetched rows (abbreviated Latin)", async () => {
+    returnRows = [
+      { Broker: "ГКПП Капитан Андреево", BlancNumber: "1" },
+      { Broker: "Euroins", BlancNumber: "2" },
+    ];
+    const r = await search({ broker: "kap andreevo" });
+    eq(r.body.insurances.map((i) => i.BlancNumber), ["1"], "Kapitan Andreevo row");
+  });
+
+  // -------------------------------------------------------------------------
+  // brokerNameMatches / transliterateBulgarian unit tests
+  // -------------------------------------------------------------------------
+
+  await check("transliterateBulgarian maps Cyrillic to Latin", () => {
+    eq(transliterateBulgarian("ГКПП Лесово"), "gkpp lesovo");
+    eq(transliterateBulgarian("Капитан Андреево"), "kapitan andreevo");
+    eq(transliterateBulgarian("Euroins"), "euroins");
+  });
+
+  await check("brokerNameMatches is script- and case-insensitive", () => {
+    ok(brokerNameMatches("ГКПП Лесово", "Lesovo"));
+    ok(brokerNameMatches("ГКПП Лесово", "lesovo"));
+    ok(brokerNameMatches("ГКПП Лесово", "Лесово"));
+    ok(brokerNameMatches("Euroins", "Euro"));
+    ok(brokerNameMatches("ГКПП Капитан Андреево", "kap andreevo"));
+    ok(brokerNameMatches("ГКПП Капитан Андреево", "Kapitan Andreevo"));
+  });
+
+  await check("brokerNameMatches rejects non-matches", () => {
+    ok(!brokerNameMatches("ГКПП Лесово", "Harmanli"));
+    ok(!brokerNameMatches("", "Lesovo"));
+    ok(!brokerNameMatches("Euroins", "   "));
+  });
+
+  // -------------------------------------------------------------------------
+  // annulled - restrict the result to annulled policies only.
+  // -------------------------------------------------------------------------
+
+  await check("annulled=1 adds the Annulled = 1 condition", async () => {
+    const r = await search({ annulled: "1" });
+    eq(r.status, 200, "status");
+    ok(flat(r.sql).includes("Annulled = 1"), flat(r.sql));
+  });
+
+  await check("annulled is a valid criterion on its own", async () => {
+    const r = await search({ annulled: "1" });
+    eq(r.status, 200, "status");
+    eq(r.queried, true, "hits the database");
+  });
+
+  await check("annulled accepts true / yes as well", async () => {
+    for (const v of ["true", "yes", "TRUE"]) {
+      const r = await search({ author: "w", annulled: v });
+      ok(flat(r.sql).includes("Annulled = 1"), `${v}: ` + flat(r.sql));
+    }
+  });
+
+  await check("annulled=0 does not add the condition", async () => {
+    const r = await search({ author: "w", annulled: "0" });
+    eq(r.status, 200, "status");
+    ok(!flat(r.sql).includes("Annulled"), flat(r.sql));
+  });
+
+  await check("annulled combines with the other filters", async () => {
+    const r = await search({ date: "2026-10-01", annulled: "1" });
+    eq(r.status, 200, "status");
+    ok(flat(r.sql).includes("DATE(CreationDate) = DATE(?)"), "date condition");
+    ok(flat(r.sql).includes("Annulled = 1"), "annulled condition");
+    eq(r.params, ["2026-10-01"], "bound params");
+  });
+
   await check("an empty request is still rejected", async () => {
     const r = await search({});
     eq(r.status, 400, "status");
@@ -228,6 +320,10 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     ok(
       String(r.body && r.body.error).includes("broker"),
       "error should list broker: " + JSON.stringify(r.body)
+    );
+    ok(
+      String(r.body && r.body.error).includes("annulled"),
+      "error should list annulled: " + JSON.stringify(r.body)
     );
   });
 

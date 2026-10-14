@@ -415,6 +415,29 @@ h3 {
   margin-top: 6px;
   justify-content: flex-end;
 }
+
+/* Clickable table row (e.g. the Brokers list → balance history). */
+tr.row-clickable {
+  cursor: pointer;
+}
+tr.row-clickable:hover td {
+  background: var(--bg-soft);
+}
+
+/* Sign colours for amounts and running balances in the broker history. */
+td.num-pos {
+  color: var(--success);
+}
+td.num-neg {
+  color: var(--danger);
+}
+
+/* Pagination bar for the broker balance history page. */
+.pagination {
+  margin-top: 14px;
+  align-items: center;
+  gap: 10px;
+}
 .small {
   font-size: 12px;
 }

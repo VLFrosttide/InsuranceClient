@@ -732,7 +732,7 @@ function buildForm(spec, onSubmit, submitLabel) {
 // ---------------------------------------------------------------------------
 // Table helper (with optional per-row action buttons)
 // ---------------------------------------------------------------------------
-function renderTable(items, columns, actions, rowClass) {
+function renderTable(items, columns, actions, rowClass, onRowClick) {
   if (!items || items.length === 0) {
     return el("p", t("noData"), { class: "muted" });
   }
@@ -754,7 +754,17 @@ function renderTable(items, columns, actions, rowClass) {
   const tbody = el("tbody");
   for (const item of items) {
     const extraClass = typeof rowClass === "function" ? rowClass(item) : "";
-    const row = el("tr", null, extraClass ? { class: extraClass } : null);
+    const rowClasses = [extraClass].filter(Boolean);
+    if (typeof onRowClick === "function") rowClasses.push("row-clickable");
+    const row = el("tr", null, rowClasses.length ? { class: rowClasses.join(" ") } : null);
+    if (typeof onRowClick === "function") {
+      row.addEventListener("click", (event) => {
+        // Row clicks open the row's own view, but buttons inside the row
+        // (e.g. the broker name link and the action buttons) keep their action.
+        if (event.target.closest("button")) return;
+        onRowClick(item, event);
+      });
+    }
     columns.forEach((c) => {
       let value = item[c.key];
       if (c.format) value = c.format(value, item);
@@ -1654,30 +1664,41 @@ async function currentCashView(overrideBranch, overrideDate) {
     heading.appendChild(branchSelect);
   }
 
-  const balance = el("div", null, { class: "balance-card" });
-  balance.appendChild(el("h3", t("balance")));
+  // Workers see their own drawer's balance and card balance here. Admins get
+  // the same money broken out per branch inside the daily report instead, so
+  // the two cards are omitted for them.
+  const cardsRow = el("div", null, { class: "cash-cards" });
+  if (!isAdmin) {
+    const balance = el("div", null, { class: "balance-card" });
+    balance.appendChild(el("h3", t("balance")));
 
-  // Show each currency only when its balance is above/below 0.
-  const balances = data.balances || {};
-  const nonZero = Object.entries(balances).filter(
-    ([, value]) => Number(value) !== 0
-  );
-  if (nonZero.length === 0) {
-    balance.appendChild(el("p", money(0), { class: "big" }));
-  } else {
-    const list = el("div");
-    for (const [currency, value] of nonZero) {
-      list.appendChild(
-        el("p", `${money(value)} ${currency}`, { class: "big" })
-      );
+    // Show each currency only when its balance is above/below 0.
+    const balances = data.balances || {};
+    const nonZero = Object.entries(balances).filter(
+      ([, value]) => Number(value) !== 0
+    );
+    if (nonZero.length === 0) {
+      balance.appendChild(el("p", money(0), { class: "big" }));
+    } else {
+      const list = el("div");
+      for (const [currency, value] of nonZero) {
+        list.appendChild(
+          el("p", `${money(value)} ${currency}`, { class: "big" })
+        );
+      }
+      balance.appendChild(list);
     }
-    balance.appendChild(list);
-  }
 
-  // The branch's card balance - cleared together with the cash by "Reset to 0".
-  const cardCard = el("div", null, { class: "balance-card" });
-  cardCard.appendChild(el("h3", t("cardBalance")));
-  cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
+    // The branch's card balance - cleared together with the cash by "Reset to 0".
+    const cardCard = el("div", null, { class: "balance-card" });
+    cardCard.appendChild(el("h3", t("cardBalance")));
+    cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
+
+    const leftCol = el("div", null, { class: "cash-cards-left" });
+    leftCol.appendChild(balance);
+    leftCol.appendChild(cardCard);
+    cardsRow.appendChild(leftCol);
+  }
 
   // Country-wide daily report for the picked day. It is independent of the
   // branch selector above: insurances and cash are counted across all branches.
@@ -1689,6 +1710,32 @@ async function currentCashView(overrideBranch, overrideDate) {
     const row = el("div", null, attrs);
     row.appendChild(el("span", label, { class: "muted" }));
     row.appendChild(el("span", value));
+    return row;
+  };
+  // A per-branch money entry: one row per branch, each showing the branch name
+  // and its per-currency amounts.
+  const dailyBranchStat = (label, rows, hint) => {
+    const attrs = { class: "daily-report-row" };
+    if (hint) attrs.title = hint;
+    const row = el("div", null, attrs);
+    row.appendChild(el("span", label, { class: "muted" }));
+    const list = el("div", null, { class: "daily-report-branches" });
+    const items = rows || [];
+    for (const entry of items) {
+      const line = el("div", null, { class: "daily-report-branch" });
+      line.appendChild(
+        el("span", entry.Branch || t("unassignedBranch"), { class: "muted" })
+      );
+      line.appendChild(
+        el(
+          "span",
+          renderCashBalances({ EUR: entry.EUR, USD: entry.USD, TRY: entry.TRY })
+        )
+      );
+      list.appendChild(line);
+    }
+    if (items.length === 0) list.appendChild(el("span", money(0)));
+    row.appendChild(list);
     return row;
   };
   dailyCard.appendChild(
@@ -1703,19 +1750,41 @@ async function currentCashView(overrideBranch, overrideDate) {
   dailyCard.appendChild(
     dailyStat(t("countryWideInsurances"), String(daily.countryWideInsurances ?? 0))
   );
-  // Total daily cash is a per-currency net (walk-in cash + manual increases −
-  // manual reductions), rendered exactly like the balance card above. Hovering
-  // over it explains precisely what it means and what it consists of.
-  dailyCard.appendChild(
-    dailyStat(
-      t("totalDailyCash"),
-      renderCashBalances(daily.totalDailyCash || {}),
-      t("totalDailyCashHint")
-    )
-  );
+
+  if (isAdmin) {
+    // Card payments and broker-balance totals are daily, per-branch figures:
+    // each branch's card money and its broker-balance-funded money for the day.
+    dailyCard.appendChild(
+      dailyBranchStat(
+        t("cardPayments"),
+        daily.cardPayments || [],
+        t("cardPaymentsHint")
+      )
+    );
+    dailyCard.appendChild(
+      dailyBranchStat(
+        t("brokerBalanceTotal"),
+        daily.brokerBalance || [],
+        t("brokerBalanceTotalHint")
+      )
+    );
+  } else {
+    // Total daily cash is a per-currency net (walk-in cash + manual increases −
+    // manual reductions), rendered exactly like the balance card above. Hovering
+    // over it explains precisely what it means and what it consists of.
+    dailyCard.appendChild(
+      dailyStat(
+        t("totalDailyCash"),
+        renderCashBalances(daily.totalDailyCash || {}),
+        t("totalDailyCashHint")
+      )
+    );
+  }
+
   // The selected branch's cash drawer balance at the end of the picked day. It
   // is walked back from the live balance, so choosing an older date shows how
-  // much cash that branch actually had available on that day.
+  // much cash that branch actually had available on that day. Kept at the
+  // bottom of the report.
   dailyCard.appendChild(
     dailyStat(
       fmt(t("availableCashBranch"), {
@@ -1726,13 +1795,6 @@ async function currentCashView(overrideBranch, overrideDate) {
     )
   );
 
-  // Balance and card balance stay on the left; the daily report sits to their
-  // right.
-  const cardsRow = el("div", null, { class: "cash-cards" });
-  const leftCol = el("div", null, { class: "cash-cards-left" });
-  leftCol.appendChild(balance);
-  leftCol.appendChild(cardCard);
-  cardsRow.appendChild(leftCol);
   cardsRow.appendChild(dailyCard);
 
   const actions = el("div", null, { class: "row" });
@@ -1974,6 +2036,34 @@ async function brokersView() {
     toolbar.appendChild(expCsv);
   }
 
+  // Admin-only toggle: accept broker requests that would push the broker
+  // balance below zero. When off, such requests are rejected by the server.
+  if (isAdmin) {
+    const toggle = el("label", null, { class: "broker-toggle" });
+    const toggleInput = input("checkbox");
+    toggleInput.checked = data.allowNegativeBalance !== false;
+    toggle.appendChild(toggleInput);
+    toggle.appendChild(el("span", t("brokerAllowNegative")));
+    toggle.title = t("brokerAllowNegativeHint");
+    toggleInput.addEventListener("change", async () => {
+      toggleInput.disabled = true;
+      try {
+        await api("/brokers/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ allowNegativeBalance: toggleInput.checked }),
+        });
+        toast(t("settingSaved"), "success");
+      } catch (err) {
+        toggleInput.checked = !toggleInput.checked;
+        toast(err.message, "error");
+      } finally {
+        toggleInput.disabled = false;
+      }
+    });
+    toolbar.appendChild(toggle);
+  }
+
   const tableHolder = el("div");
   const buildTable = () => {
     let brokers = data.brokers || [];
@@ -2066,12 +2156,108 @@ async function brokersView() {
             ]
           : []),
       ],
-      (b) => (brokerHasNoEmail(b) ? "row-broker-alert" : "")
+      (b) => (brokerHasNoEmail(b) ? "row-broker-alert" : ""),
+      (b) => brokerHistoryView(b)
     );
   };
   tableHolder.appendChild(buildTable());
 
   Content.replaceChildren(el("h2", t("brokers")), toolbar, tableHolder);
+}
+
+// Label for a broker balance movement type (policy, annulment, deletion,
+// price_change, increase, reduce, adjust). Unknown types are shown as they are.
+function movementTypeLabel(type) {
+  return t(`movement.${type}`, type || "");
+}
+
+// Signed, currency-precise amount (e.g. "+25.00" / "-10.00").
+function signedMoney(value) {
+  const n = Number(value);
+  const abs = money(Math.abs(Number.isFinite(n) ? n : 0));
+  return `${n >= 0 ? "+" : "-"}${abs}`;
+}
+
+// Pagination controls (Prev / "Page x of y" / Next).
+function pagerControls(totalPages, page, onPage) {
+  const wrap = el("div", null, { class: "row pagination" });
+  const info = el(
+    "span",
+    t("pageOf").replace("{page}", page).replace("{total}", totalPages),
+    { class: "muted" }
+  );
+  const prev = el("button", t("previous"), {
+    class: "secondary small",
+    type: "button",
+  });
+  prev.disabled = page <= 1;
+  prev.addEventListener("click", () => onPage(page - 1));
+  const next = el("button", t("next"), {
+    class: "secondary small",
+    type: "button",
+  });
+  next.disabled = page >= totalPages;
+  next.addEventListener("click", () => onPage(page + 1));
+  wrap.appendChild(prev);
+  wrap.appendChild(info);
+  wrap.appendChild(next);
+  return wrap;
+}
+
+// The broker balance history "page": the broker's balance movements for the
+// last month, 40 per page, newest first, with a back button to the list.
+async function brokerHistoryView(broker, page = 1) {
+  Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
+  try {
+    const pageSize = 40;
+    const data = await api(
+      `/brokers/${broker.id}/history?page=${page}&pageSize=${pageSize}`
+    );
+    renderBrokerHistory(broker, data, page);
+  } catch (err) {
+    const message = translateError(err && err.message ? err.message : "");
+    Content.replaceChildren(
+      el("p", `${t("errorPrefix")}: ${message}`, { class: "muted" })
+    );
+  }
+}
+
+function renderBrokerHistory(broker, data, page) {
+  const backBtn = el("button", t("back"), { class: "secondary", type: "button" });
+  backBtn.addEventListener("click", () => brokersView());
+
+  const heading = el("h2", `${t("brokerHistory")}: ${broker.Name}`);
+  const range = `${formatDateTime(data.since)} – ${formatDateTime(data.until)}`;
+  const summary = el(
+    "p",
+    `${t("balance")}: ${money(data.broker.CashBalance)} · ${t("netChange")}: ${signedMoney(data.netChange)} · ${range}`,
+    { class: "muted" }
+  );
+
+  const table = renderTable(data.movements || [], [
+    { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
+    { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
+    { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
+    { key: "Reason", label: t("reason") },
+    {
+      key: "Amount",
+      label: t("amount"),
+      format: (v) => signedMoney(v),
+      cellClass: (m) => (Number(m.Amount) >= 0 ? "num-pos" : "num-neg"),
+    },
+    {
+      key: "BalanceAfter",
+      label: t("balanceAfter"),
+      format: (v) => money(v),
+      cellClass: (m) => (Number(m.BalanceAfter) < 0 ? "num-neg" : ""),
+    },
+  ]);
+
+  const pager = pagerControls(data.totalPages, page, (p) =>
+    brokerHistoryView(broker, p)
+  );
+
+  Content.replaceChildren(backBtn, heading, summary, table, pager);
 }
 
 function brokerAdjust(broker, kind) {
@@ -2584,6 +2770,39 @@ function insuranceStatusLabel(item) {
   return item.Annulled ? t("annulled") : "";
 }
 
+// ---------------------------------------------------------------------------
+// Broker name matching (script-insensitive)
+// ---------------------------------------------------------------------------
+
+// Bulgarian Cyrillic → Latin transliteration so the broker lookup is insensitive
+// to the Cyrillic/Latin script difference: "Lesovo" finds the walk-in policies
+// stored under "ГКПП Лесово", and "kap andreevo" finds "ГКПП Капитан Андреево".
+// Mirrors the server-side match in InsuranceServer/Requests/TierEndpoints.js.
+const BROKER_CYR_TO_LAT = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ж: "zh", з: "z",
+  и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p",
+  р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts", ч: "ch",
+  ш: "sh", щ: "sht", ъ: "a", ь: "y", ю: "yu", я: "ya",
+};
+function transliterateBrokerName(value) {
+  return String(value == null ? "" : value)
+    .toLowerCase()
+    .replace(/[а-я]/g, (ch) => BROKER_CYR_TO_LAT[ch] || ch);
+}
+function brokerNameMatches(storedBroker, query) {
+  const haystack = transliterateBrokerName(storedBroker);
+  const words = transliterateBrokerName(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  let from = 0;
+  for (const word of words) {
+    const idx = haystack.indexOf(word, from);
+    if (idx === -1) return false;
+    from = idx + word.length;
+  }
+  return true;
+}
+
+
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
   // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
   // All fields are optional, but at least one must be filled in to search. Any
@@ -2604,6 +2823,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   const policyNumberInput = input("text", "");
   const blancNumberInput = input("text", "");
   const carNumberInput = input("text", "");
+  const annulledInput = input("checkbox");
   const apply = el("button", t("load"));
   const clearBtn = el("button", t("clear"), {
     class: "secondary",
@@ -2616,6 +2836,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
+  form.appendChild(field(t("onlyAnnulled"), annulledInput));
   // Admins can also look up soft-deleted insurances (e.g. to check who deleted
   // a policy and when). Workers never get the option - the server ignores the
   // flag for them anyway.
@@ -2778,6 +2999,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     const policyNumber = policyNumberInput.value.trim();
     const blancNumber = blancNumberInput.value.trim();
     const carNumber = carNumberInput.value.trim();
+    const annulled = annulledInput.checked;
 
     if (
       !author &&
@@ -2785,7 +3007,8 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       !date &&
       !policyNumber &&
       !blancNumber &&
-      !carNumber
+      !carNumber &&
+      !annulled
     ) {
       toast(t("searchCriteriaRequired"), "error");
       return;
@@ -2798,6 +3021,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
     if (carNumber) params.set("carNumber", carNumber);
+    if (annulled) params.set("annulled", "1");
     if (includeDeletedInput && includeDeletedInput.checked) {
       params.set("includeDeleted", "1");
     }
@@ -2805,16 +3029,13 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     try {
       const data = await api(`/insurances?${params.toString()}`);
       let rows = data.insurances || [];
-      // The server applies `Broker LIKE %name%` itself. This extra pass only
-      // matters while the deployed server still predates the `broker`
-      // parameter, so the new field keeps working right after a client update;
-      // once the server filters too, every returned row already matches and
-      // the pass is a no-op.
+      // The server matches the broker name itself (script-insensitively). This
+      // extra pass only matters while the deployed server still predates the
+      // `broker` parameter, so the new field keeps working right after a client
+      // update; once the server filters too, every returned row already matches
+      // and the pass is a no-op. It uses the same transliteration-aware match.
       if (broker) {
-        const needle = broker.toLowerCase();
-        rows = rows.filter((r) =>
-          String(r.Broker || "").toLowerCase().includes(needle)
-        );
+        rows = rows.filter((r) => brokerNameMatches(r.Broker, broker));
       }
       // Keep the rows so the column headers can re-sort them locally.
       lastRows = rows;
@@ -2848,6 +3069,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     policyNumberInput.value = "";
     blancNumberInput.value = "";
     carNumberInput.value = "";
+    annulledInput.checked = false;
     if (includeDeletedInput) includeDeletedInput.checked = false;
     // Clearing drops the results, so the sort order is reset with them: the
     // next search starts in the default (server) order again.

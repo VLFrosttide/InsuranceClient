@@ -950,11 +950,14 @@ const ledger = () =>
         walkInInsurances: 3,
         totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
         countryWideInsurances: 3,
+        cardPayments: [],
+        brokerBalance: [],
       },
       "defaults to today and computes the report"
     );
-    eq(seen.length, 3, "counts + span + cash queries");
-    for (const q of seen) {
+    const dayQueries = seen.filter((q) => q.params && q.params.length);
+    eq(dayQueries.length, 5, "counts + span + cash + card + broker queries");
+    for (const q of dayQueries) {
       eq(q.params, [today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
 
@@ -1033,6 +1036,8 @@ const ledger = () =>
         walkInInsurances: 3,
         totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
         countryWideInsurances: 3,
+        cardPayments: [],
+        brokerBalance: [],
         availableCash: { EUR: 15, USD: 0, TRY: 10 },
       },
       "the report carries the branch's walked-back available cash"

@@ -107,6 +107,9 @@ const I18N = {
 
     newUser: "New user",
     newBroker: "New broker",
+    brokerAllowNegative: "Accept broker requests with negative balance",
+    brokerAllowNegativeHint:
+      "When off, broker requests that would push the balance below zero are rejected, and emails from brokers with a negative balance are not shown.",
     edit: "Edit",
     promote: "Promote",
     suspend: "Suspend",
@@ -119,7 +122,7 @@ const I18N = {
 
     increase: "Increase",
     reduce: "Reduce",
-    resetTo0: "Reset to 0",
+    resetTo0: "End shift",
     amount: "Amount",
     reason: "Reason",
     type: "Type",
@@ -127,6 +130,20 @@ const I18N = {
     created: "Created",
     transactions: "Transactions",
     resets: "Resets",
+    back: "Back",
+    previous: "Previous",
+    next: "Next",
+    pageOf: "Page {page} of {total}",
+    brokerHistory: "Balance history",
+    balanceAfter: "Balance after",
+    netChange: "Change",
+    "movement.policy": "Policy",
+    "movement.annulment": "Annulment",
+    "movement.deletion": "Deletion",
+    "movement.price_change": "Price change",
+    "movement.increase": "Increase",
+    "movement.reduce": "Reduce",
+    "movement.adjust": "Adjustment",
     myProfile: "My Profile",
     myInsurances: "My Insurances",
 
@@ -135,7 +152,7 @@ const I18N = {
     load: "Load",
     clear: "Clear",
     searchCriteriaRequired:
-      "Enter at least one search criteria (author, date, policy number, blank number or car number)",
+      "Enter at least one search criteria (author, date, policy number, blank number, car number, broker or annulled)",
     blankNo: "Blank No.",
     client: "Client",
     price: "Price",
@@ -171,6 +188,7 @@ const I18N = {
     brokerDeleted: "Broker deleted",
     exportFailed: "Export failed",
     balanceUpdated: "Balance updated",
+    settingSaved: "Setting saved",
     setBalanceFor: "Set balance for",
     deleteConfirm: "Delete",
     emailClaimed: "This email was already opened by another worker",
@@ -214,6 +232,11 @@ const I18N = {
     availableCashHint:
       "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
     countryWideInsurances: "Country-wide insurances",
+    cardPaymentsHint:
+      "Card payments collected at each branch on this day.",
+    brokerBalanceTotal: "Broker balance total",
+    brokerBalanceTotalHint:
+      "Money funded from a broker's balance at each branch on this day (email policies).",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -235,6 +258,7 @@ const I18N = {
 
     deleted: "Deleted",
     includeDeleted: "Include deleted",
+    onlyAnnulled: "Only annulled",
     deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
     insuranceDeleted: "Insurance deleted",
 
@@ -385,6 +409,8 @@ const I18N = {
     "err.onlyEmailBroker": "Only email policies can be paid from a broker balance",
     "err.nonTurkWalkInOnly": "The non-Turk tax only applies to walk-in policies",
     "err.senderNotBroker": "The email sender is not linked to a broker",
+    "err.brokerNegativeBalance":
+      "Broker request rejected: the broker balance would go negative",
     "err.payerInvalid": "The fee payer must be 'broker', 'worker' or 'none'",
     "err.dateFormat": "Date must be in YYYY-MM-DD format",
     "err.creationDateFormat": "Creation date must be in YYYY-MM-DD HH:MM:SS format",
@@ -527,6 +553,9 @@ const I18N = {
 
     newUser: "Нов потребител",
     newBroker: "Нов брокер",
+    brokerAllowNegative: "Приемане на заявки от брокери с отрицателен баланс",
+    brokerAllowNegativeHint:
+      "Когато е изключено, заявките от брокери, които биха свалили баланса под нула, се отхвърлят, а имейлите от брокери с отрицателен баланс не се показват.",
     edit: "Редактирай",
     promote: "Повиши",
     suspend: "Спри",
@@ -539,7 +568,7 @@ const I18N = {
 
     increase: "Увеличи",
     reduce: "Намали",
-    resetTo0: "Нулирай",
+    resetTo0: "Завърши смяна",
     amount: "Сума",
     reason: "Причина",
     type: "Тип",
@@ -547,6 +576,20 @@ const I18N = {
     created: "Създаден",
     transactions: "Транзакции",
     resets: "Нулирания",
+    back: "Назад",
+    previous: "Предишна",
+    next: "Следваща",
+    pageOf: "Страница {page} от {total}",
+    brokerHistory: "История на баланса",
+    balanceAfter: "Баланс след",
+    netChange: "Промяна",
+    "movement.policy": "Полица",
+    "movement.annulment": "Анулиране",
+    "movement.deletion": "Изтриване",
+    "movement.price_change": "Промяна на цена",
+    "movement.increase": "Увеличение",
+    "movement.reduce": "Намаление",
+    "movement.adjust": "Корекция",
     myProfile: "Моят профил",
     myInsurances: "Моите застраховки",
 
@@ -555,7 +598,7 @@ const I18N = {
     load: "Зареди",
     clear: "Изчисти",
     searchCriteriaRequired:
-      "Въведете поне един критерий за търсене (автор, дата, номер на полица, номер на бланка или номер на автомобил)",
+      "Въведете поне един критерий за търсене (автор, дата, номер на полица, номер на бланка, номер на автомобил, брокер или анулирани)",
     blankNo: "Бланка №",
     client: "Клиент",
     price: "Цена",
@@ -591,10 +634,12 @@ const I18N = {
     brokerDeleted: "Брокерът е изтрит",
     exportFailed: "Експортът не успя",
     balanceUpdated: "Балансът е обновен",
+    settingSaved: "Настройката е запазена",
     setBalanceFor: "Задай баланс за",
     deleteConfirm: "Изтриване",
     deleted: "Изтрита",
     includeDeleted: "Включи изтритите",
+    onlyAnnulled: "Само анулирани",
     deleteInsuranceConfirm:
       "Да се изтрие ли застраховка {b}? Тя ще остане в базата данни, но ще бъде скрита от списъците и справките.",
     insuranceDeleted: "Застраховката е изтрита",
@@ -639,6 +684,11 @@ const I18N = {
     availableCashHint:
       "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
     countryWideInsurances: "Застраховки в страната",
+    cardPaymentsHint:
+      "Плащания с карта, събрани във всеки клон на този ден.",
+    brokerBalanceTotal: "Общ баланс на брокери",
+    brokerBalanceTotalHint:
+      "Пари, финансирани от баланс на брокер, във всеки клон на този ден (застраховки по имейл).",
 
     annul: "Анулирай",
     annulled: "Анулирана",
@@ -805,6 +855,8 @@ const I18N = {
     "err.onlyEmailBroker": "Само имейл полици могат да се плащат от баланс на брокер",
     "err.nonTurkWalkInOnly": "Данъкът за чужденци важи само за полици на място",
     "err.senderNotBroker": "Подателят на имейла не е свързан с брокер",
+    "err.brokerNegativeBalance":
+      "Заявката на брокера е отхвърлена: балансът на брокера ще стане отрицателен",
     "err.payerInvalid": "Платецът на таксата трябва да е 'брокер', 'служител' или 'без вина'",
     "err.dateFormat": "Датата трябва да е във формат ГГГГ-ММ-ДД",
     "err.creationDateFormat":
@@ -912,6 +964,8 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Only email policies can be paid from a broker balance": "err.onlyEmailBroker",
   "The non-Turk tax only applies to walk-in policies": "err.nonTurkWalkInOnly",
   "The email sender is not linked to a broker": "err.senderNotBroker",
+  "Broker request rejected: negative balance not allowed":
+    "err.brokerNegativeBalance",
   "Attach at least one file before saving an email policy": "add.attachmentsRequired",
   "payer must be one of 'broker', 'worker' or 'none'": "err.payerInvalid",
   "date must be in YYYY-MM-DD format": "err.dateFormat",

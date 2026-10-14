@@ -163,6 +163,20 @@ body {
 .daily-report-row[title] span:first-child {
   border-bottom: 1px dotted var(--muted);
 }
+.daily-report-branches {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.daily-report-branch {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.daily-report-branch span:last-child {
+  font-weight: 600;
+}
 
 .filter-row {
   margin-bottom: 16px;
@@ -530,3 +544,20 @@ input[type="file"].hidden {
 .recon-results .recon-good-text {
   color: rgba(120, 200, 120, 0.95);
 }
+
+/* Admin broker toggle (accept negative-balance requests). Pushed to the right
+   of the toolbar so it stays visually separate from the action buttons. */
+.broker-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  user-select: none;
+}
+.broker-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+

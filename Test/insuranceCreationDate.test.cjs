@@ -68,6 +68,7 @@ const STUBS = {
     restoreBrokerForAnnulment: async () => {},
     adjustBrokerForPriceChange: async () => {},
     resolveBrokerCutOff: async () => false,
+    getBrokerAllowNegativeBalance: async () => true,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
   "../Mail/SendReply.js": { sendReply: async () => {} },
