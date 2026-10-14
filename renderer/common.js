@@ -233,10 +233,10 @@ const I18N = {
       "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
     countryWideInsurances: "Country-wide insurances",
     cardPaymentsHint:
-      "Card payments collected at each branch on this day.",
+      "Card payments collected at this branch on this day.",
     brokerBalanceTotal: "Broker balance total",
     brokerBalanceTotalHint:
-      "Money funded from a broker's balance at each branch on this day (email policies).",
+      "Money funded from a broker's balance at this branch on this day (email policies).",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -685,10 +685,10 @@ const I18N = {
       "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
     countryWideInsurances: "Застраховки в страната",
     cardPaymentsHint:
-      "Плащания с карта, събрани във всеки клон на този ден.",
+      "Плащания с карта, събрани в този клон на този ден.",
     brokerBalanceTotal: "Общ баланс на брокери",
     brokerBalanceTotalHint:
-      "Пари, финансирани от баланс на брокер, във всеки клон на този ден (застраховки по имейл).",
+      "Пари, финансирани от баланс на брокер, в този клон на този ден (застраховки по имейл).",
 
     annul: "Анулирай",
     annulled: "Анулирана",

@@ -14,3 +14,5 @@ for blanc numbers. If blanc number exist in range
 Show daily reports from 12:00 to 00:00
 
 ask location and make sure branch selection 
+
+Rename the reductions to spends

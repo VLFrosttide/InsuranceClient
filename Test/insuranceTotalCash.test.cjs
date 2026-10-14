@@ -1044,6 +1044,97 @@ const ledger = () =>
     );
   });
 
+  await check(
+    "GET /currentcash/daily scopes card/broker to the branch and nets annulments by creation date",
+    async () => {
+      const routes = [];
+      const router = Object.assign({}, fakeRouter, {
+        get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+      });
+      const RouterCC = loadModule("CurrentCash.js", {
+        express: { Router: () => router },
+      });
+      const seen = [];
+      const db = {
+        query: async (sql, params) => {
+          const s = String(sql).replace(/\s+/g, " ").trim();
+          seen.push({ s, params });
+          if (/MIN\(CAST\(PolicyNumber AS UNSIGNED\)\)/.test(s)) {
+            return [[{ firstPolicy: "101", lastPolicy: "104" }]];
+          }
+          if (/COUNT\(\*\) AS total/.test(s)) {
+            return [[{ total: 5, broker: 2, walkIn: 3 }]];
+          }
+          if (/FROM cash_transactions/.test(s)) {
+            if (s.includes("Branch = ?"))
+              return [[{ Currency: "EUR", Net: 30 }]];
+            return [[{ Currency: "EUR", Net: 50 }, { Currency: "TRY", Net: -5 }]];
+          }
+          if (/FROM insurance/.test(s)) {
+            if (s.includes("PaymentType = 'Card'")) {
+              return [[{ Branch: BRANCH, Currency: "EUR", Net: 80 }]];
+            }
+            if (s.includes("BrokerId IS NOT NULL")) {
+              return [[{ Branch: BRANCH, Currency: "EUR", Net: 25 }]];
+            }
+            return [[]];
+          }
+          if (/FROM cash_resets/.test(s)) return [[{ Currency: "EUR", Kept: 5 }]];
+          return [[]];
+        },
+      };
+      RouterCC.createCurrentCashRouter(db);
+      const route = routes.find((r) => r.path === "/currentcash/daily");
+      ok(route, "route registered");
+
+      const res = {
+        code: 200,
+        status(c) {
+          this.code = c;
+          return this;
+        },
+        json(b) {
+          this.body = b;
+          return this;
+        },
+      };
+      const today = CC.clientLocalDate(0);
+      await route.handler(
+        { query: { branch: BRANCH, tzOffset: "0" }, user: { username: USER } },
+        res
+      );
+      eq(res.code, 200, "status");
+      eq(
+        res.body.cardPayments,
+        [{ Branch: BRANCH, EUR: 80, USD: 0, TRY: 0 }],
+        "card payments restricted to the branch"
+      );
+      eq(
+        res.body.brokerBalance,
+        [{ Branch: BRANCH, EUR: 25, USD: 0, TRY: 0 }],
+        "broker balance restricted to the branch"
+      );
+
+      const cardQ = seen.find(
+        (q) => /FROM insurance/.test(q.s) && q.s.includes("PaymentType = 'Card'")
+      );
+      const brokerQ = seen.find(
+        (q) =>
+          /FROM insurance/.test(q.s) && q.s.includes("WHERE BrokerId IS NOT NULL")
+      );
+      ok(cardQ, "card query issued");
+      ok(brokerQ, "broker query issued");
+      ok(/BrokerId IS NULL/.test(cardQ.s), "card counts walk-ins only: " + cardQ.s);
+      ok(/CASE WHEN Annulled = 0/.test(cardQ.s), "card nets annulments (fee after annul): " + cardQ.s);
+      ok(/CreationDate >= \?/.test(cardQ.s), "card is keyed on the creation date: " + cardQ.s);
+      ok(/AND Branch = \?/.test(cardQ.s), "card query is branch-scoped: " + cardQ.s);
+      ok(/AND Branch = \?/.test(brokerQ.s), "broker query is branch-scoped: " + brokerQ.s);
+      eq(cardQ.params, [today, CC.addDays(today, 1), BRANCH], "card query params");
+      eq(brokerQ.params, [today, CC.addDays(today, 1), BRANCH], "broker query params");
+    }
+  );
+
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
