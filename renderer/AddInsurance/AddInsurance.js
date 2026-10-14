@@ -164,10 +164,140 @@ let emailSocket = null;
 // maps an attachment id to its on-screen element so the get_attachment reply
 // can fill it in once the bytes arrive: images get an <img> preview, any other
 // file gets a clickable tile that opens it with the system's default app.
-const emailAttachmentEntries = new Map(); // id -> { img|tile, att, requested, base64 }
+const emailAttachmentEntries = new Map(); // id -> { img|tile, att, wrap, requested, attempts, gaveUp, base64 }
 
 function isImageAttachment(att) {
   return typeof att.mimeType === "string" && att.mimeType.startsWith("image/");
+}
+
+// --- Attachment loading resilience -------------------------------------------
+// Attachment bytes are fetched lazily over the WebSocket. A slow or unstable
+// connection can lose either the request or its reply (a half-open socket
+// swallows the send silently even though its readyState is still OPEN), which
+// previously left pictures stuck in the "loading" state forever. These bounds
+// retry automatically with backoff, give up gracefully only after several
+// failures, and re-request anything still missing whenever the socket
+// reconnects.
+const ATTACHMENT_TIMEOUT_BASE_MS = 30000; // grace period before assuming the request was lost
+const ATTACHMENT_TIMEOUT_MAX_MS = 5 * 60 * 1000; // hard cap for very large files
+const ATTACHMENT_SLOW_BYTES_PER_SEC = 32 * 1024; // floor for a genuinely slow link
+const ATTACHMENT_MAX_ATTEMPTS = 6; // requests per attachment per connection
+const ATTACHMENT_RETRY_BASE_MS = 1500; // first retry delay (doubles each time)
+
+// A request is only "done" once the bytes have actually arrived.
+function isAttachmentLoaded(entry) {
+  return Boolean(entry && ((entry.img && entry.img.src) || entry.base64));
+}
+
+// Timeout for one request: a fixed grace period plus the time the bytes need at
+// the slowest speed we still want to support, so a big photo on a bad
+// connection is not aborted mid-transfer.
+function attachmentTimeoutMs(entry) {
+  const size = (entry.att && entry.att.size) || 0;
+  const transferMs = (size * 1.37 * 1000) / ATTACHMENT_SLOW_BYTES_PER_SEC;
+  return Math.min(ATTACHMENT_TIMEOUT_BASE_MS + transferMs, ATTACHMENT_TIMEOUT_MAX_MS);
+}
+
+function clearAttachmentTimers(entry) {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry.retryTimer) {
+    clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
+  }
+}
+
+// The server answered but could not deliver the bytes (too large / fetch
+// failed). Retry a few times in case it was transient, then fall back to the
+// filename placeholder / a disabled tile.
+function onAttachmentFailed(entry) {
+  if (entry.gaveUp) return;
+  if (entry.attempts >= ATTACHMENT_MAX_ATTEMPTS) {
+    giveUpOnAttachment(entry);
+  } else {
+    scheduleAttachmentRetry(entry);
+  }
+}
+
+function scheduleAttachmentRetry(entry) {
+  if (entry.gaveUp || isAttachmentLoaded(entry)) return;
+  clearTimeout(entry.retryTimer);
+  const delay = Math.min(
+    ATTACHMENT_RETRY_BASE_MS * Math.pow(2, entry.attempts - 1),
+    30000
+  );
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    requestAttachment(entry);
+  }, delay);
+}
+
+// Permanent fallback: show the filename instead of a broken preview.
+function giveUpOnAttachment(entry) {
+  if (entry.gaveUp) return;
+  entry.gaveUp = true;
+  clearAttachmentTimers(entry);
+  if (entry.tile) {
+    entry.tile.classList.remove("attachment-loading");
+    entry.tile.classList.add("attachment-unavailable");
+    entry.tile.disabled = true;
+  } else if (entry.img && entry.img.parentNode) {
+    entry.img.replaceWith(
+      el("span", entry.att.filename || t("email.attachment"), {
+        class: "muted",
+      })
+    );
+  }
+}
+
+// Ask the server for one attachment's bytes, guarding against a lost request so
+// a picture is never left spinning forever on a bad connection.
+function requestAttachment(entry) {
+  if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
+  if (entry.requested || entry.gaveUp || isAttachmentLoaded(entry)) return;
+  if (entry.attempts >= ATTACHMENT_MAX_ATTEMPTS) {
+    giveUpOnAttachment(entry);
+    return;
+  }
+  entry.requested = true;
+  entry.attempts += 1;
+  try {
+    emailSocket.send({
+      type: "get_attachment",
+      messageId: PendingEmail.messageId,
+      id: entry.att.id,
+    });
+  } catch (err) {
+    entry.requested = false;
+    reportError("Failed to request email attachment", err, "emailSendFailed");
+    scheduleAttachmentRetry(entry);
+    return;
+  }
+  // If the reply never arrives (half-open socket: the send succeeded locally
+  // but never reached the server), ask again after the timeout.
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    if (entry.requested && !isAttachmentLoaded(entry)) {
+      entry.requested = false;
+      scheduleAttachmentRetry(entry);
+    }
+  }, attachmentTimeoutMs(entry));
+}
+
+// Shared click behaviour for an <img> preview: open the picture in the viewer,
+// or externally (Ctrl/Cmd-click).
+function wireAttachmentImage(img, filename) {
+  img.addEventListener("click", (e) => {
+    if (!img.src) return;
+    if (e.ctrlKey || e.metaKey) {
+      openImageExternal(img.src);
+    } else {
+      openImageViewer(img.src, filename || "");
+    }
+  });
 }
 
 // Short type label for a non-image attachment tile, e.g. "PDF" or "DOCX".
@@ -299,6 +429,12 @@ function renderEmailSide() {
     return;
   }
 
+  // Re-rendering replaces every attachment element, so clear any pending
+  // timeout/retry timers on the old entries first. Otherwise an orphaned timer
+  // would keep re-sending get_attachment for a detached image forever.
+  for (const old of emailAttachmentEntries.values()) clearAttachmentTimers(old);
+  emailAttachmentEntries.clear();
+
   // The reply UI only makes sense when the form was opened from an email card.
   if (ReplySection) ReplySection.classList.remove("hidden");
 
@@ -330,15 +466,17 @@ function renderEmailSide() {
         const img = el("img");
         img.alt = att.filename || t("email.attachment");
         img.classList.add("attachment-loading");
-        emailAttachmentEntries.set(att.id, { img, att, requested: false });
-        img.addEventListener("click", (e) => {
-          if (!img.src) return;
-          if (e.ctrlKey || e.metaKey) {
-            openImageExternal(img.src);
-          } else {
-            openImageViewer(img.src, att.filename || "");
-          }
+        emailAttachmentEntries.set(att.id, {
+          img,
+          att,
+          wrap,
+          requested: false,
+          attempts: 0,
+          gaveUp: false,
+          timer: null,
+          retryTimer: null,
         });
+        wireAttachmentImage(img, att.filename);
         wrap.appendChild(img);
       } else if (att.id != null) {
         // PDFs and any other file type: a tile that opens the file with the
@@ -348,7 +486,16 @@ function renderEmailSide() {
           type: "button",
           title: att.filename || t("email.attachment"),
         });
-        const entry = { tile, att, requested: false, base64: null };
+        const entry = {
+          tile,
+          att,
+          requested: false,
+          attempts: 0,
+          gaveUp: false,
+          timer: null,
+          retryTimer: null,
+          base64: null,
+        };
         emailAttachmentEntries.set(att.id, entry);
         tile.addEventListener("click", () => openAttachmentExternal(entry));
         wrap.appendChild(tile);
@@ -380,18 +527,24 @@ function requestEmailAttachments() {
   for (const att of PendingEmail.attachments || []) {
     if (att.id == null) continue;
     const entry = emailAttachmentEntries.get(att.id);
-    if (!entry || entry.requested) continue;
-    try {
-      emailSocket.send({
-        type: "get_attachment",
-        messageId: PendingEmail.messageId,
-        id: att.id,
-      });
-      entry.requested = true;
-    } catch (err) {
-      reportError("Failed to request email attachment", err, "emailSendFailed");
-    }
+    if (!entry) continue;
+    requestAttachment(entry);
   }
+}
+
+// The socket reconnected (auth_ok): any in-flight request died with the old
+// socket, so allow still-missing attachments to be requested again on the
+// fresh connection. This is the key recovery for an unstable connection that
+// drops in the middle of loading a picture.
+function retryPendingAttachments() {
+  for (const entry of emailAttachmentEntries.values()) {
+    if (isAttachmentLoaded(entry)) continue;
+    entry.requested = false;
+    entry.gaveUp = false;
+    entry.attempts = 0;
+    clearAttachmentTimers(entry);
+  }
+  requestEmailAttachments();
 }
 
 // Set once the worker completes (saves) or cancels the email. From then on a
@@ -444,7 +597,9 @@ function setupEmailSocket() {
         reportError("Failed to claim email", err, "emailSendFailed");
       }
       // Attachment bytes are not included on the card; fetch each one lazily.
-      requestEmailAttachments();
+      // On a reconnect this also re-requests any attachment whose earlier
+      // request/reply was lost to the dropped connection.
+      retryPendingAttachments();
     },
     claim_email: (msg) => {
       if (leavingEmail) return;
@@ -463,17 +618,23 @@ function setupEmailSocket() {
     get_attachment: (msg) => {
       const entry = emailAttachmentEntries.get(msg.id);
       if (!entry) return;
+      // A reply arrived, so cancel the "request was lost" timeout.
+      clearTimeout(entry.timer);
+      entry.timer = null;
+      entry.requested = false;
+
       if (entry.tile) {
         // Non-image attachment (PDF, document…): keep the bytes so a click on
         // the tile opens the file with the system's default application.
         if (msg.ok && msg.base64) {
           entry.base64 = msg.base64;
           entry.tile.classList.remove("attachment-loading");
+          // Re-enable a tile that was previously marked unavailable after a
+          // transient failure (e.g. the connection recovered on a reconnect).
+          entry.tile.classList.remove("attachment-unavailable");
+          entry.tile.disabled = false;
         } else {
-          // Too large to inline / fetch failed: the tile cannot be opened.
-          entry.tile.classList.remove("attachment-loading");
-          entry.tile.classList.add("attachment-unavailable");
-          entry.tile.disabled = true;
+          onAttachmentFailed(entry);
         }
         return;
       }
@@ -484,16 +645,28 @@ function setupEmailSocket() {
         typeof msg.mimeType === "string" &&
         msg.mimeType.startsWith("image/")
       ) {
-        entry.img.src = `data:${msg.mimeType};base64,${msg.base64}`;
-        entry.img.classList.remove("attachment-loading");
-        trackCtrlCursor(entry.img);
+        const src = `data:${msg.mimeType};base64,${msg.base64}`;
+        if (entry.img.parentNode) {
+          entry.img.src = src;
+          entry.img.classList.remove("attachment-loading");
+          trackCtrlCursor(entry.img);
+        } else {
+          // The preview was replaced with a filename placeholder after an
+          // earlier give-up; rebuild it now that the bytes have arrived.
+          const img = el("img");
+          img.alt = entry.att.filename || t("email.attachment");
+          img.src = src;
+          wireAttachmentImage(img, entry.att.filename);
+          trackCtrlCursor(img);
+          const placeholder = entry.wrap
+            ? entry.wrap.querySelector("span.muted")
+            : null;
+          if (placeholder) placeholder.replaceWith(img);
+          else if (entry.wrap) entry.wrap.appendChild(img);
+          entry.img = img;
+        }
       } else {
-        // Could not be inlined (too large / fetch failed): show the filename.
-        entry.img.replaceWith(
-          el("span", entry.att.filename || t("email.attachment"), {
-            class: "muted",
-          })
-        );
+        onAttachmentFailed(entry);
       }
     },
   });

@@ -1177,64 +1177,129 @@ function redirectToLogin() {
   window.bridge.LoadNewPage("renderer/LoginPage/index.html");
 }
 
+// How long a single REST request may run before it is aborted. Slow or unstable
+// connections would otherwise leave the UI stuck on a request that will never
+// finish. GETs are safe to retry, so they also get a couple of automatic
+// attempts; mutating requests (POST/PATCH/PUT/DELETE) are never retried because
+// a retry could apply the change twice.
+const API_TIMEOUT_MS = 45000;
+const API_MAX_ATTEMPTS = 3;
+const API_RETRY_BASE_MS = 800;
+
+function apiIsRetryable(method) {
+  const m = String(method || "GET").toUpperCase();
+  return m === "GET" || m === "HEAD";
+}
+
 // Fetch helper that attaches the Bearer token and handles 401 globally.
 async function api(path, options = {}) {
   const headers = Object.assign(
     { Authorization: `Bearer ${getToken()}` },
     options.headers || {}
   );
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const method = String(options.method || "GET").toUpperCase();
+  const retryable = apiIsRetryable(method);
+  const attempts = retryable ? API_MAX_ATTEMPTS : 1;
 
-  // Read the body as text first so a non-JSON reply (e.g. an HTML error page
-  // from the hosting CDN/firewall or a proxy) can still be diagnosed. Every
-  // error our own server sends is JSON with an `error` field.
-  let raw = "";
-  try {
-    raw = await res.text();
-  } catch {
-    raw = "";
-  }
-  let data = {};
-  let isJson = false;
-  if (raw) {
-    try {
-      data = JSON.parse(raw);
-      isJson = true;
-    } catch {
-      data = {};
-    }
-  }
-
-  if (res.status === 401) {
-    redirectToLogin();
-    throw new Error(data.error ? translateError(data.error) : t("sessionExpired"));
-  }
-  if (!res.ok) {
-    let message = data.error ? translateError(data.error) : "";
-    if (!message) {
-      // Not produced by the InsuranceServer API: the request was rejected
-      // before it reached the application (hosting CDN / web application
-      // firewall, antivirus or network proxy).
-      const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw);
-      const title = titleMatch ? titleMatch[1].replace(/\s+/g, " ").trim() : "";
-      message = isJson
-        ? `Request failed (${res.status})`
-        : `${t("blockedBeforeServer")} (HTTP ${res.status}${
-            title ? ` - ${title}` : ""
-          })`;
-      console.error(
-        `API ${options.method || "GET"} ${path} was rejected outside the ` +
-          `application: HTTP ${res.status}, server=${
-            res.headers.get("server") || "?"
-          }, request-id=${res.headers.get("x-hcdn-request-id") || "?"}, ` +
-          `body: ${raw.slice(0, 500)}`
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) =>
+        setTimeout(r, API_RETRY_BASE_MS * Math.pow(2, attempt - 1))
       );
     }
-    const error = new Error(message);
-    error.status = res.status;
-    throw error;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      // Timeout (AbortError) or a network-level failure (fetch rejects with a
+      // TypeError when the connection cannot be made). Retry idempotent
+      // requests so a momentary blip does not fail the whole operation.
+      if (
+        retryable &&
+        (err.name === "AbortError" || err instanceof TypeError)
+      ) {
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+
+    // Read the body as text first so a non-JSON reply (e.g. an HTML error page
+    // from the hosting CDN/firewall or a proxy) can still be diagnosed. Every
+    // error our own server sends is JSON with an `error` field.
+    let raw = "";
+    try {
+      raw = await res.text();
+    } catch {
+      raw = "";
+    }
+    let data = {};
+    let isJson = false;
+    if (raw) {
+      try {
+        data = JSON.parse(raw);
+        isJson = true;
+      } catch {
+        data = {};
+      }
+    }
+    clearTimeout(timer);
+
+    if (res.status === 401) {
+      redirectToLogin();
+      throw new Error(
+        data.error ? translateError(data.error) : t("sessionExpired")
+      );
+    }
+    if (!res.ok) {
+      // A transient server-side state (rate limit / 5xx): retry idempotent
+      // requests so a momentary server blip does not fail the whole operation.
+      if (retryable && (res.status === 429 || res.status >= 500)) {
+        lastError = new Error(
+          data.error ? translateError(data.error) : `Request failed (${res.status})`
+        );
+        lastError.status = res.status;
+        continue;
+      }
+      let message = data.error ? translateError(data.error) : "";
+      if (!message) {
+        // Not produced by the InsuranceServer API: the request was rejected
+        // before it reached the application (hosting CDN / web application
+        // firewall, antivirus or network proxy).
+        const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw);
+        const title = titleMatch ? titleMatch[1].replace(/\s+/g, " ").trim() : "";
+        message = isJson
+          ? `Request failed (${res.status})`
+          : `${t("blockedBeforeServer")} (HTTP ${res.status}${
+              title ? ` - ${title}` : ""
+            })`;
+        console.error(
+          `API ${method} ${path} was rejected outside the ` +
+            `application: HTTP ${res.status}, server=${
+              res.headers.get("server") || "?"
+            }, request-id=${res.headers.get("x-hcdn-request-id") || "?"}, ` +
+            `body: ${raw.slice(0, 500)}`
+        );
+      }
+      const error = new Error(message);
+      error.status = res.status;
+      throw error;
+    }
+    return data;
   }
-  return data;
+
+  // All retries were exhausted on a retryable request: surface the last error.
+  if (lastError) throw lastError;
+  throw new Error("Request failed");
 }
 
 // DOM factory.
