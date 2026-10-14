@@ -2,7 +2,7 @@
 
 // Node test for the GET /insurances search filters: the `broker` parameter
 // (added for the "My insurances" lookup tab) and the `annulled` parameter
-// (added for the "Only annulled" filter).
+// (added for the "Annulled" filter).
 //
 // The route handler lives in InsuranceServer/Requests/TierEndpoints.js (see
 // Test/serverPath.cjs). It is a CommonJS module that only needs `express` and a

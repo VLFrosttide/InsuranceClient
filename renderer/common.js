@@ -258,7 +258,7 @@ const I18N = {
 
     deleted: "Deleted",
     includeDeleted: "Include deleted",
-    onlyAnnulled: "Only annulled",
+    annulledFilter: "Annulled",
     deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
     insuranceDeleted: "Insurance deleted",
 
@@ -639,7 +639,7 @@ const I18N = {
     deleteConfirm: "Изтриване",
     deleted: "Изтрита",
     includeDeleted: "Включи изтритите",
-    onlyAnnulled: "Само анулирани",
+    annulledFilter: "Анулирани",
     deleteInsuranceConfirm:
       "Да се изтрие ли застраховка {b}? Тя ще остане в базата данни, но ще бъде скрита от списъците и справките.",
     insuranceDeleted: "Застраховката е изтрита",

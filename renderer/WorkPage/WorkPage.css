@@ -178,6 +178,34 @@ body {
   font-weight: 600;
 }
 
+/* Branch selector (Current cash): a row of buttons instead of a dropdown. */
+.branch-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+.branch-btn {
+  background: #3a4250; /* matches button.secondary */
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.branch-btn:hover {
+  background: #465065; /* matches button.secondary:hover */
+}
+.branch-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.branch-btn.active:hover {
+  background: var(--accent-hover);
+}
+
 .filter-row {
   margin-bottom: 16px;
   align-items: flex-end;

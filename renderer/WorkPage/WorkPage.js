@@ -1608,7 +1608,15 @@ function localDateString(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// Monotonic counter used to drop out-of-order renders: switching branch/date
+// starts a new load, and only the most recently started one may paint. Without
+// this, a slower earlier request can finish last and overwrite the UI with a
+// stale branch, mixing up the daily report.
+let currentCashSeq = 0;
+
 async function currentCashView(overrideBranch, overrideDate) {
+  const seq = ++currentCashSeq;
+
   // Admins can inspect/manage any branch's cash (not just the branch they
   // logged in with); workers are always scoped to their own login branch.
   const isAdmin = userRole === "1";
@@ -1641,6 +1649,11 @@ async function currentCashView(overrideBranch, overrideDate) {
         `&tzOffset=${tzOffset}&branch=${encodeURIComponent(branch)}`
     ),
   ]);
+
+  // A newer load (branch or date switch) started while this one was in flight;
+  // drop this stale response so it cannot overwrite the fresh view.
+  if (seq !== currentCashSeq) return;
+
   const heading = el("h2", t("currentCash"));
 
   // Always show which branch the cash balance belongs to — never display a
@@ -1651,17 +1664,22 @@ async function currentCashView(overrideBranch, overrideDate) {
     })
   );
 
-  // Admins get a dropdown to switch between branches without needing to log
-  // out/in with a different branch selected.
+  // Admins get a row of buttons to switch between branches without needing to
+  // log out/in with a different branch selected. The active branch is
+  // highlighted; clicking another branch reloads the view for it.
+  const branchSelector = el("div", null, { class: "branch-selector" });
   if (isAdmin && allBranchNames.length > 1) {
-    const branchSelect = select(
-      allBranchNames.map((b) => ({ label: b, value: b })),
-      branch
-    );
-    branchSelect.addEventListener("change", () => {
-      currentCashView(branchSelect.value, date);
-    });
-    heading.appendChild(branchSelect);
+    for (const name of allBranchNames) {
+      const isActive = name === branch;
+      const btn = el("button", name, {
+        class: isActive ? "branch-btn active" : "branch-btn",
+        "aria-pressed": isActive ? "true" : "false",
+      });
+      btn.addEventListener("click", () => {
+        currentCashView(name, date).catch((err) => toast(err.message, "error"));
+      });
+      branchSelector.appendChild(btn);
+    }
   }
 
   // Workers see their own drawer's balance and card balance here. Admins get
@@ -1959,8 +1977,11 @@ async function currentCashView(overrideBranch, overrideDate) {
   const dateRow = el("div", null, { class: "row filter-row" });
   dateRow.appendChild(field(t("date"), dateInput));
 
+  const topNodes = [heading];
+  if (branchSelector.children.length > 0) topNodes.push(branchSelector);
+
   Content.replaceChildren(
-    heading,
+    ...topNodes,
     cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
@@ -2836,7 +2857,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
-  form.appendChild(field(t("onlyAnnulled"), annulledInput));
+  form.appendChild(field(t("annulledFilter"), annulledInput));
   // Admins can also look up soft-deleted insurances (e.g. to check who deleted
   // a policy and when). Workers never get the option - the server ignores the
   // flag for them anyway.
