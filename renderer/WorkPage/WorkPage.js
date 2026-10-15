@@ -1062,6 +1062,26 @@ function wireEditPriceRecalc(form, insurance) {
 // ---------------------------------------------------------------------------
 // Modal form for editing an insurance (admins + workers)
 // ---------------------------------------------------------------------------
+
+// Normalise a stored date to the "YYYY-MM-DD" string an <input type="date">
+// needs in order to display it. The server may return the start date as a full
+// "YYYY-MM-DD HH:MM:SS" datetime (or a Date object), which a date input rejects
+// and leaves blank, so only the calendar-day part is kept. Empty or unparsable
+// values become "" so the field is simply left unset rather than wrongly filled.
+function dateInputValue(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return "";
+    const p = (n) => String(n).padStart(2, "0");
+    return `${value.getFullYear()}-${p(value.getMonth() + 1)}-${p(
+      value.getDate()
+    )}`;
+  }
+  const m = String(value)
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : "";
+}
 // `onDone` (optional) runs after a successful save so the calling view can
 // refresh itself — the same pattern openAnnulForm/deleteInsurance use. Editing
 // the price, the payment type, the branch or the currency also moves the money
@@ -1146,7 +1166,7 @@ function openInsuranceEditor(insurance, onDone) {
       key: "StartDate",
       label: t("add.startDate"),
       type: "date",
-      value: insurance.StartDate,
+      value: dateInputValue(insurance.StartDate),
     },
   ];
   if (!isEmailPolicy) {

@@ -192,6 +192,16 @@ function open(row, response, onDone) {
     eq(e.specValue("CurrencyType"), "EUR", "currency");
   });
 
+  await check("the start date is normalised for the date input", async () => {
+    // The server may hand back a full "YYYY-MM-DD HH:MM:SS" datetime for the
+    // start date; an <input type="date"> only shows it when it is "YYYY-MM-DD".
+    // dateInputValue has to strip the time so the field is not left blank.
+    eq(open({ ...storedRow(), StartDate: "2026-10-01 00:00:00" }).specValue("StartDate"), "2026-10-01", "datetime -> date");
+    eq(open({ ...storedRow(), StartDate: "2026-10-01" }).specValue("StartDate"), "2026-10-01", "plain date is unchanged");
+    eq(open({ ...storedRow(), StartDate: null }).specValue("StartDate"), "", "missing date stays empty");
+    eq(open({ ...storedRow(), StartDate: "" }).specValue("StartDate"), "", "blank date stays empty");
+  });
+
   await check("the form offers the blank number and the car number", async () => {
     const e = open({ ...storedRow(), CarNumber: "CB1234AB" });
     eq(e.specValue("BlancNumber"), "1234567", "blank number");

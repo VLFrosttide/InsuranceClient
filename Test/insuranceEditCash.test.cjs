@@ -155,6 +155,20 @@ const STUBS = {
       });
       return decimal;
     },
+    // A branch move transfers the policy's money and re-branches its ledger rows
+    // instead of writing a reduce+increase pair. Recorded as a single transfer.
+    movePolicyBranch: async (conn, payment, m) => {
+      movements.push({
+        where: "transfer",
+        payment,
+        amount: m.amount,
+        currency: m.currency || "EUR",
+        from: String(m.fromBranch || ""),
+        to: String(m.toBranch || ""),
+        reason: String(m.reason || "").trim(),
+      });
+      return m.amount;
+    },
   },
   "./CardPayments.js": {
     // The card balance is per branch: the real helpers take the branch first.
@@ -316,6 +330,8 @@ const describe = (m) =>
     ? `cash ${m.type} ${m.amount} ${m.currency} @ ${m.branch} (${m.reason}) by ${m.username}`
     : m.where === "total"
     ? `total/${m.source} ${m.type} ${m.amount} ${m.currency} @ ${m.branch} (${m.reason}) by ${m.username}`
+    : m.where === "transfer"
+    ? `transfer ${m.payment} ${m.amount} ${m.currency} @ ${m.from} -> ${m.to} (${m.reason})`
     : `card ${m.type} ${m.amount} (${m.reason}) by ${m.username}`;
 
 const BASE_ROW = {
@@ -470,16 +486,28 @@ async function patch(body, opts = {}) {
     );
   });
 
-  await check("a new branch moves the money between the branch drawers", async () => {
+  await check("a new branch re-branches the policy and transfers its money", async () => {
     const r = await patch({ Branch: "ГКПП Лесово" });
     eq(
       r.movements,
+      ["transfer Cash 100 EUR @ Офис Харманли -> ГКПП Лесово (1234567)"],
+      "movements"
+    );
+  });
+
+  await check("a branch move and a price change can happen in one edit", async () => {
+    const r = await patch({ Branch: "ГКПП Лесово", Price: 120 });
+    eq(
+      r.movements,
       [
-        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
-        "cash increase 100 EUR @ ГКПП Лесово (1234567) by admin1",
+        "transfer Cash 100 EUR @ Офис Харманли -> ГКПП Лесово (1234567)",
+        "cash reduce 100 EUR @ ГКПП Лесово (Edit 1234567) by admin1",
+        "cash increase 120 EUR @ ГКПП Лесово (1234567) by admin1",
       ],
       "movements"
     );
+    eq(r.row.Branch, "ГКПП Лесово", "stored branch");
+    eq(r.row.Price, "120", "stored price");
   });
 
   await check("a new currency moves the money between the currency balances", async () => {
@@ -701,10 +729,7 @@ async function patch(body, opts = {}) {
     const r = await patch({ Branch: "ГКПП Лесово" }, { row: BROKER_ROW });
     eq(
       r.movements,
-      [
-        "total/Broker reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
-        "total/Broker increase 100 EUR @ ГКПП Лесово (1234567) by admin1",
-      ],
+      ["transfer Broker 100 EUR @ Офис Харманли -> ГКПП Лесово (1234567)"],
       "movements"
     );
     ok(

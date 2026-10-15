@@ -33,10 +33,66 @@ if (LangButton) {
 }
 syncLangButton();
 
+// Distance beyond which a login is treated as "far from the selected branch"
+// and needs an explicit confirmation before it proceeds.
+const GEO_WARNING_KM = 15;
+
+// Rough coordinates of each branch, used only to sanity-check that a login
+// comes from near the branch being selected (the wrong desk, or a stray login,
+// is more than a short drive away). They are approximate and never stored —
+// they are only compared against the user's own rough position.
+const BRANCH_COORDINATES = {
+  "ГКПП Капитан Андреево": { lat: 41.720692, lng: 26.321553 },
+  "ГКПП Лесово": { lat: 41.96, lng: 26.608333 },
+  "Офис Харманли": { lat: 41.9325, lng: 25.9017 },
+};
+
+// Distance between two {lat, lng} points in kilometres (haversine).
+function haversineKm(a, b) {
+  const R = 6371;
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// The user's rough position from the OS location service, or null when it is
+// unavailable (permission denied, no location source, or a timeout). A missing
+// position is treated as "unknown", never as a reason to block the login.
+function userLocation() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => resolve(null),
+      { enableHighAccuracy: false, timeout: 6000, maximumAge: 5 * 60 * 1000 }
+    );
+  });
+}
+
 async function doLogin() {
   if (!UserName.value || !Pass.value) {
     setMessage(t("enterCredentials"), true);
     return;
+  }
+
+  // Warn when the login clearly comes from far away from the selected branch,
+  // so a wrong selection (or an unexpected location) needs an explicit "yes".
+  const coords = BRANCH_COORDINATES[BranchInput ? BranchInput.value : ""];
+  if (coords) {
+    const here = await userLocation();
+    if (here) {
+      const km = haversineKm(coords, here);
+      if (km > GEO_WARNING_KM) {
+        const msg = t("geo.warning")
+          .replace("{branch}", BranchInput.value)
+          .replace("{km}", String(Math.round(km)));
+        if (!window.confirm(msg)) return;
+      }
+    }
   }
 
   try {

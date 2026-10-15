@@ -29,6 +29,8 @@ const I18N = {
     blockedBeforeServer:
       "The request was blocked before reaching the server (hosting firewall, antivirus or network proxy)",
     logout: "Logout",
+    "geo.warning":
+      "The selected branch ({branch}) is about {km} km from your current location. Log in to this branch anyway?",
 
     "nav.dashboard": "Dashboard",
     "nav.users": "Users",
@@ -481,6 +483,8 @@ const I18N = {
     blockedBeforeServer:
       "Заявката е блокирана преди да достигне сървъра (защитна стена на хостинга, антивирус или мрежов прокси)",
     logout: "Изход",
+    "geo.warning":
+      "Избраният клон ({branch}) е на около {km} км от вашето местоположение. Да се влезе ли в този клон?",
 
     "nav.dashboard": "Табло",
     "nav.users": "Потребители",

@@ -379,8 +379,24 @@ function StopDesktopPdfWatch() {
   DesktopPdfWatch = null;
 }
 
-function ScanDesktopPdfs() {
-  if (!DesktopPdfWatch) return;
+// How long to wait before re-attempting a print that was cancelled or failed.
+const DesktopPdfRetryMs = 3000;
+
+let DesktopPdfScanning = false;
+
+// Single-flight guard: only one scan runs at a time so the print dialogs (which
+// wait for user input) never stack on top of each other.
+async function ScanDesktopPdfs() {
+  if (!DesktopPdfWatch || DesktopPdfScanning) return;
+  DesktopPdfScanning = true;
+  try {
+    await ScanDesktopPdfsOnce();
+  } finally {
+    DesktopPdfScanning = false;
+  }
+}
+
+async function ScanDesktopPdfsOnce() {
   const dir = DesktopPdfDirectory();
   if (!dir) return;
 
@@ -398,6 +414,13 @@ function ScanDesktopPdfs() {
 
     const filePath = path.join(dir, entry.name);
     if (DesktopPdfWatch.emitted.has(filePath)) continue;
+
+    // Honor the retry delay set after a failed/cancelled print.
+    const retryAt = DesktopPdfWatch.retryAfter.get(filePath);
+    if (retryAt !== undefined) {
+      if (Date.now() < retryAt) continue;
+      DesktopPdfWatch.retryAfter.delete(filePath);
+    }
 
     let stat;
     try {
@@ -421,7 +444,6 @@ function ScanDesktopPdfs() {
       continue;
     }
     DesktopPdfWatch.sizes.delete(filePath);
-    DesktopPdfWatch.emitted.add(filePath);
 
     let base64;
     try {
@@ -431,7 +453,36 @@ function ScanDesktopPdfs() {
       continue;
     }
 
-    // The bytes are captured above, so the Desktop copy can be removed now.
+    // Print the captured PDF before its Desktop copy is removed, and only
+    // delete the file once printing has actually succeeded — a policy PDF must
+    // never be lost without a paper copy. If the worker cancels the dialog or
+    // printing fails, the print is re-attempted after a short delay.
+    let printed = false;
+    try {
+      const result = await PrintPdf(base64, entry.name);
+      printed = !!(result && result.ok);
+    } catch (err) {
+      console.error(`[DesktopPdfWatch] Print threw for "${entry.name}":`, err);
+    }
+
+    if (!printed) {
+      // Do not delete yet — retry the print after a short delay so the policy
+      // PDF is only ever removed once it has actually been printed.
+      console.warn(
+        `[DesktopPdfWatch] "${entry.name}" was not printed; retrying in ${
+          DesktopPdfRetryMs / 1000
+        }s.`
+      );
+      DesktopPdfWatch.retryAfter.set(filePath, Date.now() + DesktopPdfRetryMs);
+      // The file is already fully written and read, so mark its size as stable
+      // again to skip the extra size-confirmation poll on the retry.
+      DesktopPdfWatch.sizes.set(filePath, stat.size);
+      continue;
+    }
+
+    // The file has been printed, so it is marked handled and its Desktop copy
+    // can now be removed.
+    DesktopPdfWatch.emitted.add(filePath);
     try {
       fs.unlinkSync(filePath);
     } catch (err) {
@@ -455,6 +506,116 @@ function ScanDesktopPdfs() {
   }
 }
 
+// Print a PDF (bytes already captured as base64) to the system printer before
+// its Desktop copy is removed. Mirrors PrintImage: the bytes are written to a
+// temp file, loaded in a hidden window and handed to webContents.print(), which
+// opens the native print dialog. A short settle delay after the page loads lets
+// Chromium's PDF viewer finish rendering before the print is issued (printing
+// too early used to produce blank pages).
+function PrintPdf(base64, filename) {
+  return new Promise((resolve) => {
+    let tempFile = "";
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (printWin && !printWin.isDestroyed()) printWin.close();
+      } catch (err) {
+        console.error(`[DesktopPdfWatch] Error closing print window for "${filename}".`, err);
+      }
+      if (tempFile) {
+        fs.promises.unlink(tempFile).catch((err) => {
+          console.error(`[DesktopPdfWatch] Failed to remove temp print file for "${filename}":`, err);
+        });
+      }
+      resolve(result);
+    };
+
+    let printWin;
+    try {
+      printWin = new BrowserWindow({
+        show: false,
+        webPreferences: { sandbox: true, contextIsolation: true },
+      });
+    } catch (err) {
+      console.error(`[DesktopPdfWatch] Failed to create print window for "${filename}".`, err);
+      finish({ ok: false, error: "Failed to open the print window." });
+      return;
+    }
+
+    printWin.webContents.on("did-fail-load", (e, errorCode, errorDescription) => {
+      console.error(
+        `[DesktopPdfWatch] Failed to load "${filename}" for printing` +
+          ` (${errorCode}${errorDescription ? ": " + errorDescription : ""}).`
+      );
+      finish({ ok: false, error: errorDescription || "Failed to load the PDF for printing." });
+    });
+
+    printWin.webContents.on("did-finish-load", () => {
+      // Give the PDF viewer a moment to finish rendering, then print.
+      setTimeout(() => {
+        try {
+          const result = printWin.webContents.print({}, (success, failureReason) => {
+            if (success) {
+              console.log(`[DesktopPdfWatch] "${filename}" sent to printer.`);
+              finish({ ok: true });
+            } else {
+              const cancelled = /cancel/i.test(failureReason || "");
+              console.log(
+                `[DesktopPdfWatch] Print of "${filename}" ${cancelled ? "cancelled" : "failed"}` +
+                  (failureReason ? `: ${failureReason}` : ".")
+              );
+              finish({
+                ok: false,
+                cancelled,
+                error: failureReason || (cancelled ? "Print cancelled." : "Print failed."),
+              });
+            }
+          });
+          // Newer Electron versions return a Promise from print().
+          if (result && typeof result.then === "function") {
+            result.then(
+              () => {
+                console.log(`[DesktopPdfWatch] "${filename}" sent to printer (promise).`);
+                finish({ ok: true });
+              },
+              (err) => {
+                console.error(`[DesktopPdfWatch] print() promise rejected for "${filename}".`, err);
+                finish({ ok: false, error: String(err) });
+              }
+            );
+          }
+        } catch (err) {
+          console.error(`[DesktopPdfWatch] Exception printing "${filename}".`, err);
+          finish({ ok: false, error: String(err) });
+        }
+      }, 300);
+    });
+
+    const dir = path.join(app.getPath("temp"), "insurance-print");
+    tempFile = path.join(dir, `print-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`);
+
+    (async () => {
+      try {
+        await fs.promises.mkdir(dir, { recursive: true });
+        await fs.promises.writeFile(tempFile, Buffer.from(base64, "base64"));
+      } catch (err) {
+        console.error(`[DesktopPdfWatch] Failed to write temp print file for "${filename}".`, err);
+        finish({ ok: false, error: "Failed to prepare the print document." });
+        return;
+      }
+      try {
+        await printWin.loadFile(tempFile);
+      } catch (err) {
+        console.error(`[DesktopPdfWatch] Failed to load temp print file for "${filename}".`, err);
+        finish({ ok: false, error: String(err) });
+      }
+    })();
+  });
+}
+
 ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs) => {
   const dir = DesktopPdfDirectory();
   if (!dir) return { ok: false };
@@ -466,6 +627,7 @@ ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs) => {
     timer: setInterval(ScanDesktopPdfs, 1000),
     emitted: new Set(),
     sizes: new Map(),
+    retryAfter: new Map(),
     found: 0,
   };
   return { ok: true };

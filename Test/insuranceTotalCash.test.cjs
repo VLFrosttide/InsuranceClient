@@ -226,6 +226,23 @@ async function query(sql, params = []) {
     return [{ insertId: tables.card_resets.length }];
   }
 
+  // --- re-branching (movePolicyBranch) ----------------------------------------
+  // p = [to, from, reason, "Edit reason", "Annul reason", "Delete reason", "Restore reason"]
+  if (s.startsWith("UPDATE cash_transactions SET Branch")) {
+    const [to, from, ...reasons] = p;
+    for (const row of tables.cash_transactions) {
+      if (row.Branch === from && reasons.includes(row.Reason)) row.Branch = to;
+    }
+    return [{ affectedRows: 1 }];
+  }
+  if (s.startsWith("UPDATE total_cash_transactions SET Branch")) {
+    const [to, from, ...reasons] = p;
+    for (const row of tables.total_cash_transactions) {
+      if (row.Branch === from && reasons.includes(row.Reason)) row.Branch = to;
+    }
+    return [{ affectedRows: 1 }];
+  }
+
   throw new Error("fake DB: unhandled SQL -> " + s);
 }
 
@@ -1133,6 +1150,60 @@ const ledger = () =>
       eq(brokerQ.params, [today, CC.addDays(today, 1), BRANCH], "broker query params");
     }
   );
+
+
+  await check("movePolicyBranch transfers the balance and re-branches the ledger", async () => {
+    resetTables();
+    await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 25, "168655", "EUR");
+    eq((await CC.getCurrentCash(fakeDb, BRANCH)).EUR, 25, "cash in the old branch");
+    eq((await CC.getCurrentCash(fakeDb, OTHER)).EUR, 0, "nothing in the new branch yet");
+
+    await CC.movePolicyBranch(fakeDb, "Cash", {
+      fromBranch: BRANCH,
+      toBranch: OTHER,
+      amount: 25,
+      reason: "168655",
+      currency: "EUR",
+    });
+
+    eq((await CC.getCurrentCash(fakeDb, BRANCH)).EUR, 0, "old branch drawn down");
+    eq((await CC.getCurrentCash(fakeDb, OTHER)).EUR, 25, "new branch now holds the money");
+
+    eq(
+      tables.cash_transactions.map((r) => `${r.Branch} ${r.Type} ${r.Reason}`),
+      [`${OTHER} increase 168655`],
+      "cash ledger row follows the policy"
+    );
+    eq(
+      tables.total_cash_transactions.map(
+        (r) => `${r.Branch} ${r.Source} ${r.Type} ${r.Reason}`
+      ),
+      [`${OTHER} Cash increase 168655`],
+      "total cash ledger row follows the policy"
+    );
+    await assertSuperset("after a branch transfer", OTHER);
+  });
+
+  await check("movePolicyBranch only moves the policy's own rows", async () => {
+    resetTables();
+    await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 25, "168655", "EUR");
+    await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 10, "999999", "EUR");
+
+    await CC.movePolicyBranch(fakeDb, "Cash", {
+      fromBranch: BRANCH,
+      toBranch: OTHER,
+      amount: 25,
+      reason: "168655",
+      currency: "EUR",
+    });
+
+    const byReason = (row) => `${row.Branch} ${row.Reason}`;
+    eq(
+      tables.cash_transactions.map(byReason).sort(),
+      [`${OTHER} 168655`, `${BRANCH} 999999`].sort(),
+      "the other policy's row stays put"
+    );
+  });
 
 
   console.log(`\n${passed} passed, ${failed} failed`);
