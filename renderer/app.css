@@ -438,6 +438,11 @@ td.num-neg {
   align-items: center;
   gap: 10px;
 }
+/* Total of the shown broker-history movements, right-aligned above the table. */
+.history-total-row {
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
 .small {
   font-size: 12px;
 }

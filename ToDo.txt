@@ -13,6 +13,17 @@ for blanc numbers. If blanc number exist in range
 
 Show daily reports from 12:00 to 00:00
 
+
 ask location and make sure branch selection 
 
 Rename the reductions to spends
+
+Current cash transactions time uses old server time instead of new client side time.
+
+Sort insurances by branch.
+
+Sort only brokers
+
+Sort only walk-ins.
+
+tell daria to send msg to all not to walk away when money isnt right 

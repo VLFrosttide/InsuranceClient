@@ -325,6 +325,10 @@ async function search(query, user = { role: 2, username: "worker1" }) {
       String(r.body && r.body.error).includes("annulled"),
       "error should list annulled: " + JSON.stringify(r.body)
     );
+    ok(
+      String(r.body && r.body.error).includes("payment"),
+      "error should list payment: " + JSON.stringify(r.body)
+    );
   });
 
   await check("a blank broker is not a criterion", async () => {
@@ -340,6 +344,54 @@ async function search(query, user = { role: 2, username: "worker1" }) {
       String(r.body && r.body.error).includes("YYYY-MM-DD"),
       "error: " + JSON.stringify(r.body)
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // payment - restrict the result to a single payment type (Cash/Card/Broker).
+  // -------------------------------------------------------------------------
+
+  await check("payment=Cash alone is accepted as a search criterion", async () => {
+    const r = await search({ payment: "Cash" });
+    eq(r.status, 200, "status");
+    eq(r.queried, true, "hits the database");
+    ok(flat(r.sql).includes("PaymentType = ?"), flat(r.sql));
+    eq(r.params, ["Cash"], "bound params");
+  });
+
+  await check("payment=Card and payment=Broker map to their literals", async () => {
+    for (const v of ["Card", "Broker"]) {
+      const r = await search({ payment: v });
+      eq(r.status, 200, "status");
+      ok(flat(r.sql).includes("PaymentType = ?"), `${v}: ` + flat(r.sql));
+      eq(r.params, [v], `bound param for ${v}`);
+    }
+  });
+
+  await check("payment is case-insensitive and normalised to the stored literal", async () => {
+    for (const v of ["cash", "CASH", "Cash"]) {
+      const r = await search({ payment: v });
+      eq(r.params, ["Cash"], `${v}: ` + JSON.stringify(r.params));
+    }
+    const r = await search({ payment: "bRoKeR" });
+    eq(r.params, ["Broker"], "broker: " + JSON.stringify(r.params));
+  });
+
+  await check("an unknown payment is rejected", async () => {
+    const r = await search({ payment: "cheque" });
+    eq(r.status, 400, "status");
+    ok(r.queried === false, "must not hit the database");
+    ok(
+      String(r.body && r.body.error).includes("payment"),
+      "error: " + JSON.stringify(r.body)
+    );
+  });
+
+  await check("payment combines with the other filters", async () => {
+    const r = await search({ date: "2026-10-01", payment: "Broker" });
+    eq(r.status, 200, "status");
+    ok(flat(r.sql).includes("DATE(CreationDate) = DATE(?)"), "date condition");
+    ok(flat(r.sql).includes("PaymentType = ?"), "payment condition");
+    eq(r.params, ["2026-10-01", "Broker"], "bound params in order");
   });
 
   // -------------------------------------------------------------------------

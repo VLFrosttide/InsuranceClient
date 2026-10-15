@@ -137,6 +137,7 @@ const I18N = {
     brokerHistory: "Balance history",
     balanceAfter: "Balance after",
     netChange: "Change",
+    total: "Total",
     "movement.policy": "Policy",
     "movement.annulment": "Annulment",
     "movement.deletion": "Deletion",
@@ -152,7 +153,7 @@ const I18N = {
     load: "Load",
     clear: "Clear",
     searchCriteriaRequired:
-      "Enter at least one search criteria (author, date, policy number, blank number, car number, broker or annulled)",
+      "Enter at least one search criteria (author, date, policy number, blank number, car number, broker, payment or annulled)",
     blankNo: "Blank No.",
     client: "Client",
     price: "Price",
@@ -587,6 +588,7 @@ const I18N = {
     brokerHistory: "История на баланса",
     balanceAfter: "Баланс след",
     netChange: "Промяна",
+    total: "Общо",
     "movement.policy": "Полица",
     "movement.annulment": "Анулиране",
     "movement.deletion": "Изтриване",
@@ -602,7 +604,7 @@ const I18N = {
     load: "Зареди",
     clear: "Изчисти",
     searchCriteriaRequired:
-      "Въведете поне един критерий за търсене (автор, дата, номер на полица, номер на бланка, номер на автомобил, брокер или анулирани)",
+      "Въведете поне един критерий за търсене (автор, дата, номер на полица, номер на бланка, номер на автомобил, брокер, начин на плащане или анулирани)",
     blankNo: "Бланка №",
     client: "Клиент",
     price: "Цена",

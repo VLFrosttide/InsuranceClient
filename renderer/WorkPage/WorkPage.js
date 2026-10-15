@@ -1659,6 +1659,12 @@ function localDateString(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// "YYYY-MM-DD" one calendar day after the given local date string.
+function nextLocalDate(dateString) {
+  const [y, m, d] = dateString.split("-").map(Number);
+  return localDateString(new Date(y, m - 1, d + 1));
+}
+
 // Monotonic counter used to drop out-of-order renders: switching branch/date
 // starts a new load, and only the most recently started one may paint. Without
 // this, a slower earlier request can finish last and overwrite the UI with a
@@ -2277,15 +2283,22 @@ function pagerControls(totalPages, page, onPage) {
 }
 
 // The broker balance history "page": the broker's balance movements for the
-// last month, 40 per page, newest first, with a back button to the list.
-async function brokerHistoryView(broker, page = 1) {
+// last month, 40 per page, newest first, with a back button to the list. A
+// calendar picker scopes it to a single day.
+async function brokerHistoryView(broker, page = 1, date = "") {
   Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
     const pageSize = 40;
-    const data = await api(
-      `/brokers/${broker.id}/history?page=${page}&pageSize=${pageSize}`
-    );
-    renderBrokerHistory(broker, data, page);
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+    });
+    if (date) {
+      params.set("since", date);
+      params.set("until", nextLocalDate(date));
+    }
+    const data = await api(`/brokers/${broker.id}/history?${params.toString()}`);
+    renderBrokerHistory(broker, data, page, date);
   } catch (err) {
     const message = translateError(err && err.message ? err.message : "");
     Content.replaceChildren(
@@ -2294,7 +2307,7 @@ async function brokerHistoryView(broker, page = 1) {
   }
 }
 
-function renderBrokerHistory(broker, data, page) {
+function renderBrokerHistory(broker, data, page, date = "") {
   const backBtn = el("button", t("back"), { class: "secondary", type: "button" });
   backBtn.addEventListener("click", () => brokersView());
 
@@ -2304,6 +2317,25 @@ function renderBrokerHistory(broker, data, page) {
     "p",
     `${t("balance")}: ${money(data.broker.CashBalance)} · ${t("netChange")}: ${signedMoney(data.netChange)} · ${range}`,
     { class: "muted" }
+  );
+
+  // Calendar picker scopes the history to a single day; clearing it falls back
+  // to the default last-month window.
+  const dateInput = input("date", date || "");
+  dateInput.addEventListener("change", () => {
+    brokerHistoryView(broker, 1, dateInput.value).catch((err) =>
+      toast(err.message, "error")
+    );
+  });
+  const dateRow = el("div", null, { class: "row filter-row" });
+  dateRow.appendChild(field(t("date"), dateInput));
+
+  // Total (net) sum of the movements across the whole scoped range, right-aligned
+  // above the table. The server returns this as netChange over the entire window,
+  // so it stays correct regardless of which page is shown.
+  const totalRow = el("div", null, { class: "row history-total-row" });
+  totalRow.appendChild(
+    el("span", `${t("total")}: ${signedMoney(data.netChange)}`, { class: "muted" })
   );
 
   const table = renderTable(data.movements || [], [
@@ -2326,10 +2358,18 @@ function renderBrokerHistory(broker, data, page) {
   ]);
 
   const pager = pagerControls(data.totalPages, page, (p) =>
-    brokerHistoryView(broker, p)
+    brokerHistoryView(broker, p, date)
   );
 
-  Content.replaceChildren(backBtn, heading, summary, table, pager);
+  Content.replaceChildren(
+    backBtn,
+    heading,
+    summary,
+    dateRow,
+    totalRow,
+    table,
+    pager
+  );
 }
 
 function brokerAdjust(broker, kind) {
@@ -2876,7 +2916,7 @@ function brokerNameMatches(storedBroker, query) {
 
 
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
-  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&annulled=&payment=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
@@ -2895,6 +2935,15 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   const policyNumberInput = input("text", "");
   const blancNumberInput = input("text", "");
   const carNumberInput = input("text", "");
+  const paymentInput = select(
+    [
+      { label: "", value: "" },
+      { label: t("payment.Cash"), value: "Cash" },
+      { label: t("payment.Card"), value: "Card" },
+      { label: t("payment.Broker"), value: "Broker" },
+    ],
+    ""
+  );
   const annulledInput = input("checkbox");
   const apply = el("button", t("load"));
   const clearBtn = el("button", t("clear"), {
@@ -2908,6 +2957,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
+  form.appendChild(field(t("payment"), paymentInput));
   form.appendChild(field(t("annulledFilter"), annulledInput));
   // Admins can also look up soft-deleted insurances (e.g. to check who deleted
   // a policy and when). Workers never get the option - the server ignores the
@@ -3069,11 +3119,11 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
                 },
               ]
             : []),
-        ]),
+        ],
         (i) =>
           i.Deleted ? "row-deleted" : i.Annulled ? "row-annulled" : ""
       )
-    
+    );
   }
 
   async function runSearch() {
@@ -3083,6 +3133,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     const policyNumber = policyNumberInput.value.trim();
     const blancNumber = blancNumberInput.value.trim();
     const carNumber = carNumberInput.value.trim();
+    const payment = paymentInput.value;
     const annulled = annulledInput.checked;
 
     if (
@@ -3092,6 +3143,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       !policyNumber &&
       !blancNumber &&
       !carNumber &&
+      !payment &&
       !annulled
     ) {
       toast(t("searchCriteriaRequired"), "error");
@@ -3105,6 +3157,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
     if (carNumber) params.set("carNumber", carNumber);
+    if (payment) params.set("payment", payment);
     if (annulled) params.set("annulled", "1");
     if (includeDeletedInput && includeDeletedInput.checked) {
       params.set("includeDeleted", "1");
@@ -3153,6 +3206,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     policyNumberInput.value = "";
     blancNumberInput.value = "";
     carNumberInput.value = "";
+    paymentInput.value = "";
     annulledInput.checked = false;
     if (includeDeletedInput) includeDeletedInput.checked = false;
     // Clearing drops the results, so the sort order is reset with them: the
