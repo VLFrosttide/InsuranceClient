@@ -1633,6 +1633,25 @@ async function deleteInsurance(insurance, onDone) {
   }
 }
 
+// Restore a previously soft-deleted insurance from the admin panel. The server
+// re-applies the money the deletion removed (re-charging the broker when the
+// policy was broker-funded) and sets Deleted back to 0, so the policy reappears
+// in lists and reports.
+async function restoreInsurance(insurance, onDone) {
+  if (
+    !confirm(t("restoreInsuranceConfirm").replace("{b}", insurance.BlancNumber))
+  ) {
+    return;
+  }
+  try {
+    await api(`/insurances/${insurance.BlancNumber}/restore`, { method: "POST" });
+    toast(t("insuranceRestored"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 // Local calendar day as "YYYY-MM-DD" (built from local components, not
 // toISOString, so the day never shifts around midnight).
 function localDateString(d = new Date()) {
@@ -3006,8 +3025,20 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
           },
         ],
         // A deleted policy can no longer be edited, annulled or deleted (the
-        // server rejects all three), so it is shown read-only.
-        (i) => (i.Deleted ? [] : [
+        // server rejects all three). Admin users get a "Restore" action instead
+        // to bring it back; anyone else sees it read-only.
+        (i) =>
+          i.Deleted
+            ? userRole === "1"
+              ? [
+                  {
+                    label: t("restore"),
+                    class: "",
+                    onClick: () => restoreInsurance(i, () => runSearch()),
+                  },
+                ]
+              : []
+            : [
           {
             label: t("edit"),
             class: "",

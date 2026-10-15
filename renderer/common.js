@@ -261,6 +261,9 @@ const I18N = {
     annulledFilter: "Annulled",
     deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
     insuranceDeleted: "Insurance deleted",
+    restore: "Restore",
+    restoreInsuranceConfirm: "Restore insurance {b}? Its money and broker balance will be reapplied and it will reappear in lists and reports.",
+    insuranceRestored: "Insurance restored",
 
     "add.back": "← Dashboard",
 
@@ -644,6 +647,10 @@ const I18N = {
     deleteInsuranceConfirm:
       "Да се изтрие ли застраховка {b}? Тя ще остане в базата данни, но ще бъде скрита от списъците и справките.",
     insuranceDeleted: "Застраховката е изтрита",
+    restore: "Възстанови",
+    restoreInsuranceConfirm:
+      "Да се възстанови ли застраховка {b}? Нейните суми и балансът на брокера ще бъдат приложени отново и тя ще се появи отново в списъците и справките.",
+    insuranceRestored: "Застраховката е възстановена",
     emailClaimed: "Този имейл вече е отворен от друг служител",
     emailConnUnavailable: "Връзката с имейл е недостъпна",
     emailClaimTimeout: "Сървърът не отговори. Опитайте отново.",
