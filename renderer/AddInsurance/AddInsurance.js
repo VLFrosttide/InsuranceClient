@@ -846,6 +846,78 @@ if (DropArea && FileInput) {
 }
 
 // ---------------------------------------------------------------------------
+// Desktop PDF watcher
+// ---------------------------------------------------------------------------
+// While an email-sourced policy is being processed, the worker's tools download
+// the two policy PDFs to the Desktop. We watch for PDFs created after the email
+// card was clicked and attach them automatically; the main process performs the
+// actual 2-second polling and deletes each file once its bytes are captured.
+const DesktopWatchStorageKey = "desktopPdfWatchSinceMs";
+
+function desktopWatchAvailable() {
+  return (
+    window.bridge &&
+    typeof window.bridge.StartDesktopPdfWatch === "function" &&
+    typeof window.bridge.StopDesktopPdfWatch === "function" &&
+    typeof window.bridge.OnDesktopPdfFound === "function"
+  );
+}
+
+function stopDesktopPdfWatch() {
+  if (!desktopWatchAvailable()) return;
+  window.bridge.StopDesktopPdfWatch().catch((err) => {
+    console.error("[DesktopPdfWatch] Failed to stop watching the Desktop:", err);
+  });
+}
+
+// Files discovered on the Desktop, ready to be attached to the policy.
+// Deduplicates by filename as a safety net (the main process already avoids
+// re-sending the same file).
+function attachDesktopPdf(files) {
+  const seen = new Set(droppedFiles.map((f) => f.filename));
+  let added = 0;
+  for (const file of files || []) {
+    if (!file || typeof file.base64 !== "string" || !file.base64) continue;
+    if (seen.has(file.filename)) continue;
+    seen.add(file.filename);
+    droppedFiles.push({
+      filename: file.filename,
+      mimeType: file.mimeType || "application/pdf",
+      size: Number(file.size) || 0,
+      base64: file.base64,
+    });
+    added += 1;
+  }
+  if (added) {
+    renderDroppedFiles();
+    toast(t("add.desktopPdfAttached"), "info");
+  }
+}
+
+function startDesktopPdfWatch() {
+  if (!OpenedFromEmail || !desktopWatchAvailable()) return;
+
+  // The moment the email card was clicked, stored by the dashboard. It is the
+  // lower bound for which Desktop PDFs count as "new" for this policy.
+  let sinceMs = Date.now();
+  try {
+    const raw = localStorage.getItem(DesktopWatchStorageKey);
+    if (raw) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) sinceMs = parsed;
+    }
+    localStorage.removeItem(DesktopWatchStorageKey);
+  } catch (err) {
+    console.error("[DesktopPdfWatch] Failed to read the start time:", err);
+  }
+
+  window.bridge.OnDesktopPdfFound((file) => attachDesktopPdf([file]));
+  window.bridge.StartDesktopPdfWatch(sinceMs).catch((err) => {
+    console.error("[DesktopPdfWatch] Failed to start watching the Desktop:", err);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Zoomable / printable picture viewer
 // ---------------------------------------------------------------------------
 // Open an image with the OS default viewer (outside Electron) via the preload
@@ -1280,6 +1352,7 @@ async function goBack() {
   // socket to authenticate, then flush the release frame before navigating.
   await waitForSocketAuth();
   releaseEmail();
+  stopDesktopPdfWatch();
   await new Promise((r) => setTimeout(r, 120));
   clearPendingEmail();
   window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
@@ -1527,6 +1600,7 @@ InsuranceForm.addEventListener("submit", async function (e) {
       console.error("Failed to store flash toast:", err);
     }
     // Keep Save disabled while the page unloads so it can't be submitted twice.
+    stopDesktopPdfWatch();
     redirecting = true;
     if (outcome.status === "auth") {
       // Session expired (401). The policy is safe in the outbox and is sent
@@ -1652,3 +1726,4 @@ configureWalkInMode();
 renderEmailSide();
 setupEmailSocket();
 setupPresenceSocket();
+startDesktopPdfWatch();

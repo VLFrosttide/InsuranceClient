@@ -353,6 +353,129 @@ ipcMain.handle("OutboxUpdateToken", async (event, username, token) => {
   return outbox.updateToken(username, token);
 });
 
+// ---------------------------------------------------------------------------
+// Desktop PDF watcher
+// ---------------------------------------------------------------------------
+// While a worker processes an email-sourced policy, an external tool downloads
+// the two policy PDFs to the user's Desktop. The renderer starts this watcher
+// when the email card is clicked; we then poll the Desktop every two seconds
+// for PDFs created after that moment, push their bytes to the form and delete
+// the source files. Exactly two files are expected, so the watcher stops itself
+// once both are collected.
+let DesktopPdfWatch = null; // { sinceMs, timer, emitted, sizes, found }
+
+function DesktopPdfDirectory() {
+  try {
+    return app.getPath("desktop");
+  } catch (err) {
+    console.error("[DesktopPdfWatch] Could not resolve the Desktop path:", err);
+    return null;
+  }
+}
+
+function StopDesktopPdfWatch() {
+  if (!DesktopPdfWatch) return;
+  if (DesktopPdfWatch.timer) clearInterval(DesktopPdfWatch.timer);
+  DesktopPdfWatch = null;
+}
+
+function ScanDesktopPdfs() {
+  if (!DesktopPdfWatch) return;
+  const dir = DesktopPdfDirectory();
+  if (!dir) return;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    console.error("[DesktopPdfWatch] Failed to list the Desktop:", err);
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (path.extname(entry.name).toLowerCase() !== ".pdf") continue;
+
+    const filePath = path.join(dir, entry.name);
+    if (DesktopPdfWatch.emitted.has(filePath)) continue;
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      continue; // transient (still being written) — retry next poll
+    }
+
+    // "Downloaded after the click": prefer the file's creation time and fall
+    // back to its modification time on filesystems that report birthtime as 0.
+    const createdMs =
+      Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
+        ? stat.birthtimeMs
+        : stat.mtimeMs;
+    if (!(createdMs > DesktopPdfWatch.sinceMs)) continue;
+
+    // A download may still be in progress (its size keeps growing). Accept the
+    // file only once its size has held steady across one poll cycle.
+    if (DesktopPdfWatch.sizes.get(filePath) !== stat.size) {
+      DesktopPdfWatch.sizes.set(filePath, stat.size);
+      continue;
+    }
+    DesktopPdfWatch.sizes.delete(filePath);
+    DesktopPdfWatch.emitted.add(filePath);
+
+    let base64;
+    try {
+      base64 = fs.readFileSync(filePath).toString("base64");
+    } catch (err) {
+      console.error(`[DesktopPdfWatch] Failed to read "${entry.name}":`, err);
+      continue;
+    }
+
+    // The bytes are captured above, so the Desktop copy can be removed now.
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      console.error(`[DesktopPdfWatch] Failed to delete "${entry.name}":`, err);
+    }
+
+    DesktopPdfWatch.found += 1;
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("DesktopPdfFound", {
+        filename: entry.name,
+        mimeType: "application/pdf",
+        size: stat.size,
+        base64,
+      });
+    }
+
+    if (DesktopPdfWatch.found >= 2) {
+      StopDesktopPdfWatch();
+      break;
+    }
+  }
+}
+
+ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs) => {
+  const dir = DesktopPdfDirectory();
+  if (!dir) return { ok: false };
+
+  const since = Number(sinceMs) || Date.now();
+  StopDesktopPdfWatch();
+  DesktopPdfWatch = {
+    sinceMs: since,
+    timer: setInterval(ScanDesktopPdfs, 1000),
+    emitted: new Set(),
+    sizes: new Map(),
+    found: 0,
+  };
+  return { ok: true };
+});
+
+ipcMain.handle("StopDesktopPdfWatch", () => {
+  StopDesktopPdfWatch();
+  return { ok: true };
+});
+
 // Closing the window with undelivered policies: they are stored on disk and
 // sent on the next start, but warn so the worker does not assume they landed.
 // Hooked on the window's "close" (not app "before-quit") so the window is still

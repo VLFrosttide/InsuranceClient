@@ -262,6 +262,15 @@ function openEmailInNewForm(email) {
   pendingClaimEmail = email;
   setCardBusy(email.messageId, true);
   claimSentAt = performance.now();
+
+  // Remember when this email card was clicked. The AddInsurance form uses it as
+  // the lower bound for the Desktop PDF watcher: only PDFs downloaded after this
+  // moment are auto-attached to the policy.
+  try {
+    localStorage.setItem("desktopPdfWatchSinceMs", String(Date.now()));
+  } catch (err) {
+    console.error("Failed to store the Desktop watch start time:", err);
+  }
   try {
     emailSocket.send({ type: "claim_email", messageId: email.messageId });
   } catch (err) {
@@ -821,6 +830,9 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
 // client and +2 for the card fee (only while the payment is by card).
 const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
+// Branch dropdown options for the edit form. Mirrors the login page's branch
+// dropdown and KNOWN_BRANCHES below, so the lists cannot drift apart.
+const EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
 const EDIT_NON_TURK_FEE = 5;
 const EDIT_CARD_FEE = 2;
 
@@ -876,6 +888,20 @@ function editVehicleOptions(current) {
   if (!hasCurrent) {
     options.unshift({ label: "", value: "" });
   } else if (!EDIT_VEHICLE_TYPES.includes(String(current))) {
+    options.push({ label: String(current), value: current });
+  }
+  return options;
+}
+
+// Branch dropdown options for the edit form. Like the duration/vehicle
+// dropdowns, an unknown stored value (a legacy or hand-typed branch) is kept as
+// an extra option so opening the editor never silently reassigns the policy.
+function editBranchOptions(current) {
+  const options = EDIT_BRANCHES.map((name) => ({ label: name, value: name }));
+  const hasCurrent = current !== undefined && current !== null && current !== "";
+  if (!hasCurrent) {
+    options.unshift({ label: "", value: "" });
+  } else if (!EDIT_BRANCHES.includes(String(current))) {
     options.push({ label: String(current), value: current });
   }
   return options;
@@ -1102,7 +1128,13 @@ function openInsuranceEditor(insurance, onDone) {
       options: editDurationOptions(insurance.Duration),
       value: insurance.Duration,
     },
-    { key: "Branch", label: t("add.branch"), value: insurance.Branch },
+    {
+      key: "Branch",
+      label: t("add.branch"),
+      type: "select",
+      options: editBranchOptions(insurance.Branch),
+      value: insurance.Branch,
+    },
     {
       key: "Otomobil",
       label: t("add.vehicleType"),

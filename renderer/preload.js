@@ -18,6 +18,19 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.send("OpenAttachmentExternal", file);
   },
 
+  // Desktop PDF watcher: while an email-sourced policy is being processed, the
+  // worker's tools download the two policy PDFs to the Desktop. The main process
+  // polls every two seconds, streams the new PDFs back here and then deletes
+  // them from the Desktop.
+  StartDesktopPdfWatch: (sinceMs) =>
+    ipcRenderer.invoke("StartDesktopPdfWatch", sinceMs),
+  StopDesktopPdfWatch: () => ipcRenderer.invoke("StopDesktopPdfWatch"),
+  OnDesktopPdfFound: (callback) => {
+    const listener = (event, file) => callback(file);
+    ipcRenderer.on("DesktopPdfFound", listener);
+    return () => ipcRenderer.removeListener("DesktopPdfFound", listener);
+  },
+
   // Durable outbox (main process): requests that keep retrying until they
   // reach the server, across page changes and app restarts.
   OutboxSubmit: (req, waitMs) => ipcRenderer.invoke("OutboxSubmit", req, waitMs),

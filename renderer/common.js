@@ -305,6 +305,7 @@ const I18N = {
     "add.attachmentsRequired":
       "Attach at least one file before saving an email policy. The return email cannot be sent without attachments.",
     "add.replyFailed": "Insurance saved, but the return email failed: {e}",
+    "add.desktopPdfAttached": "Policy PDF attached from the Desktop.",
     "add.emailLost":
       "This email is no longer reserved for you: it was taken by another worker or handled while you were disconnected.",
 
@@ -750,6 +751,7 @@ const I18N = {
       "Прикачете поне един файл, преди да запишете имейл полица. Обратният имейл не може да бъде изпратен без прикачени файлове.",
     "add.replyFailed":
       "Застраховката е запазена, но обратният имейл не беше изпратен: {e}",
+    "add.desktopPdfAttached": "PDF от работния плот е прикачен към полицата.",
     "add.emailLost":
       "Този имейл вече не е запазен за вас: бил е взет от друг служител или обработен, докато връзката беше прекъсната.",
 

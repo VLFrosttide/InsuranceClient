@@ -70,6 +70,9 @@ async function query(sql, params = []) {
   if (s.startsWith("SELECT id, Name, CashBalance FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ ...b }))];
   }
+  if (s.startsWith("SELECT id, CashBalance FROM brokers WHERE id = ?")) {
+    return [brokerById(p[0]).map((b) => ({ id: b.id, CashBalance: b.CashBalance }))];
+  }
   if (s.startsWith("SELECT id, Name, CashBalance FROM brokers ORDER BY id")) {
     return [db.brokers.map((b) => ({ ...b }))];
   }
@@ -148,6 +151,11 @@ async function query(sql, params = []) {
     db.broker_emails.push({ BrokerId: p[0], Email: p[1] });
     return [{}];
   }
+  // Signed broker-balance ledger entries (recordBrokerMovement). The helpers
+  // under test only await the insert, they never read the result.
+  if (s.startsWith("INSERT INTO broker_balance_movements")) {
+    return [{ insertId: 1 }];
+  }
   if (/^UPDATE brokers SET CashBalance = CashBalance [-+] \? WHERE id = \?$/.test(s)) {
     return [{ affectedRows: 1 }];
   }
@@ -166,12 +174,11 @@ const fakeDb = { query, withTransaction: async (fn) => fn(fakeDb) };
 
 // --- load the real router ----------------------------------------------------
 const routes = [];
+// Keep every handler (middleware + route handler) so the test can run the full
+// chain. The middleware matters: requireBrokerView sets req.brokerScope, which
+// the /brokers list now uses to decide whether to scope the query.
 const recorder = (method) => (routePath, ...handlers) => {
-  routes.push({
-    method,
-    path: routePath,
-    handler: handlers[handlers.length - 1],
-  });
+  routes.push({ method, path: routePath, handlers });
 };
 const fakeRouter = {
   get: recorder("get"),
@@ -223,7 +230,7 @@ M.createBrokerRouter(fakeDb);
 function route(method, p) {
   const r = routes.find((x) => x.method === method && x.path === p);
   if (!r) throw new Error(`route ${method.toUpperCase()} ${p} not registered`);
-  return r.handler;
+  return r.handlers;
 }
 
 // Objects built inside the vm come from another realm, so responses are
@@ -247,10 +254,17 @@ async function call(method, p, { params = {}, body = {}, query = {} } = {}) {
     },
     setHeader() {},
   };
-  await route(method, p)(
-    { params, body, query, user: { username: "admin1", role: 1 } },
-    res
-  );
+  const req = { params, body, query, user: { username: "admin1", role: 1 } };
+  // Run the middleware chain in order, the same way Express would: middleware
+  // calls next() to continue, the final handler responds without calling it.
+  for (const handler of route(method, p)) {
+    let calledNext = false;
+    const next = () => {
+      calledNext = true;
+    };
+    await handler(req, res, next);
+    if (!calledNext) break;
+  }
   return out;
 }
 

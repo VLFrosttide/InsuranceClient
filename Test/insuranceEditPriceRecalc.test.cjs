@@ -187,6 +187,34 @@ function open(row) {
     eq(v.options[v.options.length - 1].value, "Лек автомобил", "legacy kept");
   });
 
+  await check("the branch is a dropdown of the known branches", async () => {
+    open(walkIn());
+    const b = lastSpec.find((s) => s.key === "Branch");
+    eq(b.type, "select", "branch type");
+    eq(
+      b.options.map((o) => o.value),
+      ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"],
+      "branch options"
+    );
+    eq(b.value, "Офис Харманли", "stored branch selected");
+  });
+
+  await check("an unknown stored branch is kept as an extra option", async () => {
+    open(walkIn({ Branch: "Старият клон" }));
+    const b = lastSpec.find((s) => s.key === "Branch");
+    eq(
+      b.options[b.options.length - 1].value,
+      "Старият клон",
+      "legacy branch kept"
+    );
+  });
+
+  await check("a policy without a branch starts on the blank option", async () => {
+    open(walkIn({ Branch: "" }));
+    const b = lastSpec.find((s) => s.key === "Branch");
+    eq(b.options[0].value, "", "blank option first");
+  });
+
   await check("opening the editor does not touch the price or fetch tariffs", async () => {
     const e = open(walkIn({ Price: "50.00" }));
     eq(e.c.Price.value, "50.00", "price untouched");
