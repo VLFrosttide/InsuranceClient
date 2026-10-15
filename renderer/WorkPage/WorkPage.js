@@ -3073,7 +3073,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
         (i) =>
           i.Deleted ? "row-deleted" : i.Annulled ? "row-annulled" : ""
       )
-    );
+    
   }
 
   async function runSearch() {
