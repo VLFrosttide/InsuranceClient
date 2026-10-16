@@ -89,6 +89,41 @@ async function query(sql, params = []) {
     });
     return [out.slice(Number(p[5]), Number(p[5]) + Number(p[4]))];
   }
+  // --- admin edit / delete of a single movement (PATCH / DELETE history) -----
+  if (s.startsWith("SELECT id, BrokerId, Amount, Type, Reason, Author, BlancNumber")) {
+    const mov = db.movements.find(
+      (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1])
+    );
+    return [mov ? [mov] : []];
+  }
+  if (s.startsWith("SELECT id, Amount FROM broker_balance_movements")) {
+    const mov = db.movements.find(
+      (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1])
+    );
+    return [mov ? [{ id: mov.id, Amount: mov.Amount }] : []];
+  }
+  if (s.startsWith("UPDATE broker_balance_movements SET")) {
+    const m = /^UPDATE broker_balance_movements SET (.+?) WHERE id = \?$/.exec(s);
+    const cols = m[1].split(",").map((x) => x.trim().split(/\s+/)[0]);
+    const movementId = Number(p[p.length - 1]);
+    const mov = db.movements.find((x) => x.id === movementId);
+    if (mov) cols.forEach((col, i) => (mov[col] = p[i]));
+    return [{ affectedRows: mov ? 1 : 0 }];
+  }
+  if (s.startsWith("DELETE FROM broker_balance_movements")) {
+    const target = Number(p[0]);
+    const before = db.movements.length;
+    db.movements = db.movements.filter((m) => m.id !== target);
+    return [{ affectedRows: before - db.movements.length }];
+  }
+  if (s.startsWith("UPDATE brokers SET CashBalance")) {
+    const broker = db.brokers.find((b) => b.id === Number(p[1]));
+    if (broker) {
+      broker.CashBalance =
+        Math.round((Number(broker.CashBalance) + Number(p[0])) * 100) / 100;
+    }
+    return [{ affectedRows: broker ? 1 : 0 }];
+  }
   throw new Error("unexpected SQL in test: " + s);
 }
 
@@ -325,6 +360,108 @@ resetDb();
     ok(r.body.since && r.body.until, "window bounds returned");
     eq(r.body.total, 1, "only the recent movement is inside the window");
     eq(r.body.movements[0].Amount, 10, "recent movement returned");
+  });
+
+  await check("history PATCH: invalid broker id is rejected", async () => {
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "abc", movementId: "1" },
+      body: { reason: "x" },
+    });
+    eq(r.status, 400, "status");
+  });
+
+  await check("history PATCH: invalid movement id is rejected", async () => {
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "nope" },
+      body: { reason: "x" },
+    });
+    eq(r.status, 400, "status");
+  });
+
+  await check("history PATCH: unknown movement answers 404", async () => {
+    resetDb();
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "999" },
+      body: { reason: "x" },
+    });
+    eq(r.status, 404, "status");
+  });
+
+  await check("history PATCH: another broker's movement answers 404", async () => {
+    resetDb();
+    addMovement(2, 5, "2026-10-10 00:00:00");
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { reason: "x" },
+    });
+    eq(r.status, 404, "status");
+  });
+
+  await check("history PATCH: zero or non-numeric amount is rejected", async () => {
+    resetDb();
+    addMovement(1, 10, "2026-10-10 00:00:00");
+    for (const bad of [0, "0", "abc", ""]) {
+      const r = await call("patch", "/brokers/:id/history/:movementId", {
+        params: { id: "1", movementId: "1" },
+        body: { amount: bad },
+      });
+      eq(r.status, 400, `amount ${JSON.stringify(bad)}`);
+    }
+    eq(db.movements[0].Amount, 10, "movement untouched");
+  });
+
+  await check("history PATCH: an empty body is rejected", async () => {
+    resetDb();
+    addMovement(1, 10, "2026-10-10 00:00:00");
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: {},
+    });
+    eq(r.status, 400, "status");
+  });
+
+  await check("history PATCH: amount change shifts the broker balance by the delta", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+      Reason: "old",
+    });
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { amount: -25, reason: "corrected", author: "admin1" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.message, "Movement updated", "message");
+    eq(db.movements[0].Amount, -25, "stored amount");
+    eq(db.movements[0].Reason, "corrected", "stored reason");
+    eq(db.movements[0].Author, "admin1", "stored author");
+    eq(db.movements[0].BlancNumber, "100001", "blanc number kept");
+    // delta = -25 - (-10) = -15 → 70 - 15 = 55.
+    eq(db.brokers[0].CashBalance, 55, "broker balance shifted by the delta");
+    eq(r.body.broker.CashBalance, 55, "returned broker balance");
+  });
+
+  await check("history DELETE: removes the movement and reverses the balance", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    const r = await call("delete", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.message, "Movement deleted", "message");
+    eq(db.movements.length, 0, "movement removed");
+    // reversal = -(-10) = +10 → 70 + 10 = 80.
+    eq(db.brokers[0].CashBalance, 80, "balance reversed");
+    eq(r.body.broker.CashBalance, 80, "returned balance");
+  });
+
+  await check("history DELETE: unknown movement answers 404", async () => {
+    resetDb();
+    const r = await call("delete", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "123" },
+    });
+    eq(r.status, 404, "status");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

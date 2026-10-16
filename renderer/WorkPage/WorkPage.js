@@ -706,6 +706,7 @@ function buildForm(spec, onSubmit, submitLabel) {
       control = input("checkbox");
       control.checked = !!s.value;
     } else control = input(s.type, s.value, s.placeholder);
+    if (s.step !== undefined && s.step !== null) control.step = s.step;
     if (s.readonly) control.readOnly = true;
     control.dataset.key = s.key;
     values[s.key] = control;
@@ -2358,24 +2359,57 @@ function renderBrokerHistory(broker, data, page, date = "") {
     el("span", `${t("total")}: ${signedMoney(data.netChange)}`, { class: "muted" })
   );
 
-  const table = renderTable(data.movements || [], [
-    { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
-    { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
-    { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
-    { key: "Reason", label: t("reason") },
-    {
-      key: "Amount",
-      label: t("amount"),
-      format: (v) => signedMoney(v),
-      cellClass: (m) => (Number(m.Amount) >= 0 ? "num-pos" : "num-neg"),
-    },
-    {
-      key: "BalanceAfter",
-      label: t("balanceAfter"),
-      format: (v) => money(v),
-      cellClass: (m) => (Number(m.BalanceAfter) < 0 ? "num-neg" : ""),
-    },
-  ]);
+  // Admins can correct or remove a single movement; workers and broker
+  // clients only read the history, so the action column stays hidden for them.
+  const historyActions =
+    userRole === "1"
+      ? [
+          {
+            label: t("edit"),
+            class: "secondary",
+            onClick: (m) => brokerHistoryEditForm(broker, m, page, date),
+          },
+          {
+            label: t("delete"),
+            class: "danger",
+            onClick: async (m) => {
+              if (!confirm(t("deleteMovementConfirm"))) return;
+              try {
+                await api(`/brokers/${broker.id}/history/${m.id}`, {
+                  method: "DELETE",
+                });
+                toast(t("movementDeleted"), "success");
+                brokerHistoryView(broker, page, date);
+              } catch (err) {
+                toast(err.message, "error");
+              }
+            },
+          },
+        ]
+      : undefined;
+
+  const table = renderTable(
+    data.movements || [],
+    [
+      { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
+      { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
+      { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
+      { key: "Reason", label: t("reason") },
+      {
+        key: "Amount",
+        label: t("amount"),
+        format: (v) => signedMoney(v),
+        cellClass: (m) => (Number(m.Amount) >= 0 ? "num-pos" : "num-neg"),
+      },
+      {
+        key: "BalanceAfter",
+        label: t("balanceAfter"),
+        format: (v) => money(v),
+        cellClass: (m) => (Number(m.BalanceAfter) < 0 ? "num-neg" : ""),
+      },
+    ],
+    historyActions
+  );
 
   const pager = pagerControls(data.totalPages, page, (p) =>
     brokerHistoryView(broker, p, date)
@@ -2390,6 +2424,59 @@ function renderBrokerHistory(broker, data, page, date = "") {
     table,
     pager
   );
+}
+
+// Admin-only modal to correct a single broker balance movement. The amount is
+// shown signed (positive = increase, negative = decrease); changing it shifts
+// the broker balance by the difference. Type, blank number, reason and author
+// are stored as entered.
+function brokerHistoryEditForm(broker, movement, page, date) {
+  const typeOptions = [
+    "policy",
+    "annulment",
+    "deletion",
+    "price_change",
+    "increase",
+    "reduce",
+    "adjust",
+  ].map((value) => ({ label: movementTypeLabel(value), value }));
+  const form = buildForm(
+    [
+      {
+        key: "amount",
+        label: t("amount"),
+        type: "number",
+        step: "0.01",
+        value: movement.Amount,
+      },
+      {
+        key: "type",
+        label: t("type"),
+        type: "select",
+        options: typeOptions,
+        value: movement.Type,
+      },
+      {
+        key: "blancNumber",
+        label: t("blankNo"),
+        value: movement.BlancNumber || "",
+      },
+      { key: "reason", label: t("reason"), value: movement.Reason || "" },
+      { key: "author", label: t("author"), value: movement.Author || "" },
+    ],
+    async (payload) => {
+      await api(`/brokers/${broker.id}/history/${movement.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      toast(t("movementUpdated"), "success");
+      closeModal();
+      brokerHistoryView(broker, page, date);
+    },
+    t("save")
+  );
+  openModal(`${t("editMovement")} — ${broker.Name}`, form);
 }
 
 function brokerAdjust(broker, kind) {
