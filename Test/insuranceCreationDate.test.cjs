@@ -25,6 +25,7 @@ const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 // --- fakes -------------------------------------------------------------------
 const routes = [];
 const queries = [];
+const movements = []; // ledger movements recorded by the stubbed CurrentCash
 
 const recorder = (method) => (routePath, ...handlers) => {
   routes.push({ method, path: routePath, handlers });
@@ -54,8 +55,31 @@ const STUBS = {
     extractToken: () => "",
   },
   "./CurrentCash.js": {
-    recordCashMovement: async () => {},
-    recordChannelMovement: async () => {},
+    recordCashMovement: async (
+      conn,
+      branch,
+      username,
+      type,
+      amount,
+      reason,
+      currency,
+      createdAt
+    ) => {
+      movements.push({ channel: "Cash", type, createdAt });
+    },
+    recordChannelMovement: async (
+      conn,
+      branch,
+      username,
+      type,
+      amount,
+      reason,
+      currency,
+      source,
+      createdAt
+    ) => {
+      movements.push({ channel: source, type, createdAt });
+    },
     toDecimal: (v) => (Number.isFinite(Number(v)) ? Number(v) : null),
   },
   "./CardPayments.js": {
@@ -139,6 +163,7 @@ const DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 // Creates a walk-in policy and returns the INSERT that was issued.
 async function create(body) {
   queries.length = 0;
+  movements.length = 0;
   const res = {
     statusCode: 200,
     body: undefined,
@@ -297,6 +322,27 @@ async function create(body) {
     eq(r.status, 201, "status");
     const stored = r.insert.params[1];
     ok(stored >= before && stored <= after, `stored ${stored} not UTC`);
+  });
+
+  await check("the cash movement stores the policy's CreationDate", async () => {
+    const r = await create({ CreationDate: "2026-10-10 09:15:42" });
+    eq(r.status, 201, "status");
+    eq(movements.length, 1, "one ledger movement");
+    eq(movements[0].channel, "Cash", "channel");
+    eq(movements[0].type, "increase", "movement type");
+    eq(movements[0].createdAt, "2026-10-10 09:15:42", "client's creation time");
+  });
+
+  await check("a card policy's movement uses the worker's CreationDate too", async () => {
+    const r = await create({
+      PaymentType: "Card",
+      CreationDate: "2026-10-10 10:00:00",
+    });
+    eq(r.status, 201, "status");
+    eq(movements.length, 1, "one ledger movement");
+    eq(movements[0].channel, "Card", "channel");
+    eq(movements[0].type, "increase", "movement type");
+    eq(movements[0].createdAt, "2026-10-10 10:00:00", "client's creation time");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

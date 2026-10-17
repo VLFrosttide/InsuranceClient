@@ -172,6 +172,37 @@ async function query(sql, params = []) {
 
 const fakeDb = { query, withTransaction: async (fn) => fn(fakeDb) };
 
+// Faithful copies of CurrentCash.js's exported helpers (Brokers.js now depends
+// on them for stamping broker movements in the client's local time).
+function parseClientDateTime(value) {
+  if (typeof value !== "string") return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  if (
+    t.getUTCFullYear() !== y ||
+    t.getUTCMonth() !== mo - 1 ||
+    t.getUTCDate() !== d ||
+    t.getUTCHours() !== h ||
+    t.getUTCMinutes() !== mi ||
+    t.getUTCSeconds() !== s
+  ) {
+    return null;
+  }
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}`;
+}
+function clientLocalDateTime(offsetMinutes, now = new Date()) {
+  let offset = Number(offsetMinutes);
+  if (!Number.isFinite(offset) || offset < -720 || offset > 840) offset = 0;
+  const local = new Date(now.getTime() + Math.round(offset) * 60000);
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}-${p(local.getUTCDate())} ` +
+    `${p(local.getUTCHours())}:${p(local.getUTCMinutes())}:${p(local.getUTCSeconds())}`
+  );
+}
+
 // --- load the real router ----------------------------------------------------
 const routes = [];
 // Keep every handler (middleware + route handler) so the test can run the full
@@ -204,6 +235,8 @@ const STUBS = {
     recordCashMovement: async () => {},
     normalizeCurrency: (c) => c || "EUR",
     normalizeBranch: (b) => b || "",
+    clientLocalDateTime,
+    parseClientDateTime,
   },
   "./PaymentSchedule.js": { getSchedule: () => ({}) },
 };

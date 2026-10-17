@@ -1217,6 +1217,9 @@ function openInsuranceEditor(insurance, onDone) {
       }
       // The URL always names the policy by its CURRENT (stored) blank number;
       // a new one travels in the body and is adopted below once saved.
+      // Stamp the resulting ledger movements with the worker's local time (the
+      // server stores CreatedAt as sent instead of its own UTC clock).
+      payload.CreatedAt = localDateTimeNow();
       const data = await api(`/insurances/${insurance.BlancNumber}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1344,7 +1347,10 @@ function openAnnulForm(insurance, onDone) {
       const data = await api(`/insurances/${insurance.BlancNumber}/annul`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payer: payerSelect.value }),
+        body: JSON.stringify({
+          payer: payerSelect.value,
+          CreatedAt: localDateTimeNow(),
+        }),
       });
       toast(t("insuranceAnnulled"), "success");
       closeModal();
@@ -1646,7 +1652,13 @@ async function deleteInsurance(insurance, onDone) {
     return;
   }
   try {
-    await api(`/insurances/${insurance.BlancNumber}`, { method: "DELETE" });
+    await api(`/insurances/${insurance.BlancNumber}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        CreatedAt: localDateTimeNow(),
+      }),
+    });
     toast(t("insuranceDeleted"), "success");
     if (onDone) onDone();
   } catch (err) {
@@ -1665,7 +1677,13 @@ async function restoreInsurance(insurance, onDone) {
     return;
   }
   try {
-    await api(`/insurances/${insurance.BlancNumber}/restore`, { method: "POST" });
+    await api(`/insurances/${insurance.BlancNumber}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        CreatedAt: localDateTimeNow(),
+      }),
+    });
     toast(t("insuranceRestored"), "success");
     if (onDone) onDone();
   } catch (err) {
@@ -2012,6 +2030,9 @@ async function currentCashView(overrideBranch, overrideDate) {
         { key: "reason", label: t("reason"), value: tx.Reason },
       ],
       async (payload) => {
+        // Stamp the correction's own ledger entries with the worker's local
+        // time (the original transaction keeps its CreatedAt).
+        payload.CreatedAt = localDateTimeNow();
         await api(`/currentcash/transactions/${tx.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -2332,6 +2353,9 @@ async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = f
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
+      // Lets the server resolve the default "last 30 days" window in the
+      // worker's local time, matching the client-stamped movement times.
+      tzOffset: String(-new Date().getTimezoneOffset()),
     });
     if (date) {
       params.set("since", date);
@@ -2582,6 +2606,9 @@ function brokerAdjust(broker, kind) {
       { key: "reason", label: t("reason"), value: "" },
     ],
     async (payload) => {
+      // The resulting broker movement (and, for an increase, the mirrored cash
+      // transaction) is stamped with the worker's local time.
+      payload.CreatedAt = localDateTimeNow();
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2699,6 +2726,9 @@ async function brokerEditForm(broker) {
       },
     ],
     async (payload) => {
+      // A balance change records an "adjust" broker movement; stamp it with the
+      // worker's local time.
+      payload.CreatedAt = localDateTimeNow();
       await api(`/brokers/${broker.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

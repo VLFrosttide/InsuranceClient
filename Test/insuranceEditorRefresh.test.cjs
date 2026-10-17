@@ -70,9 +70,14 @@ let lastSpec = null;
 // What the stubbed api() resolves/rejects with for the next save.
 let apiResponse = null;
 let apiError = null;
+// Fixed timestamp so the body assertions below stay deterministic.
+const FIXED_CREATED_AT = "2026-10-10 12:34:56";
 
 const CTX = {
   console,
+  // The edit now stamps its own CreatedAt (the worker's local time); the test
+  // pins a fixed value so the body assertions below are deterministic.
+  localDateTimeNow: () => FIXED_CREATED_AT,
   // The production code reads the viewer's role to hide the price field from
   // workers; these tests exercise the admin (role "1") editing path.
   userRole: "1",
@@ -222,7 +227,7 @@ function open(row, response, onDone) {
     eq(apiCalls[0].url, "/insurances/1234567", "URL uses the stored number");
     eq(
       JSON.parse(apiCalls[0].opts.body),
-      { BlancNumber: "7654321", CarNumber: "X1" },
+      { BlancNumber: "7654321", CarNumber: "X1", CreatedAt: FIXED_CREATED_AT },
       "trimmed values in the body"
     );
     eq(e.row.BlancNumber, "7654321", "the row adopts the new blank number");
@@ -251,7 +256,7 @@ function open(row, response, onDone) {
     eq(apiCalls[0].opts.method, "PATCH", "method");
     eq(
       JSON.parse(apiCalls[0].opts.body),
-      { Price: 120, PaymentType: "Card" },
+      { Price: 120, PaymentType: "Card", CreatedAt: FIXED_CREATED_AT },
       "body"
     );
   });
