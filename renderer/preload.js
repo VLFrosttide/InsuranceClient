@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld("bridge", {
   OpenAttachmentExternal: (file) => {
     ipcRenderer.send("OpenAttachmentExternal", file);
   },
+  // Open the native print dialog for a single attached file (image or PDF) so
+  // the worker can manually print a paper copy on demand.
+  // file: { filename, mimeType, base64 }
+  PrintAttachment: (file) => {
+    return ipcRenderer.invoke("PrintAttachment", file);
+  },
 
   // Desktop PDF watcher: while an email-sourced policy is being processed, the
   // worker's tools download the two policy PDFs to the Desktop. The main process

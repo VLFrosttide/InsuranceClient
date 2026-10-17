@@ -380,17 +380,18 @@ function StopDesktopPdfWatch() {
   DesktopPdfWatch = null;
 }
 
-// How long to wait before re-attempting a print that was cancelled or failed.
-const DesktopPdfRetryMs = 3000;
-// Give up on a paper copy after this many failed attempts (dialog cancelled,
-// printer error, ...) so a stubborn PDF cannot block the queue forever.
-const DesktopPdfMaxPrintAttempts = 5;
 // Give up loading a document for printing after this long (did-finish-load
 // never firing otherwise wedges the print request).
 const PrintLoadTimeoutMs = 20000;
 // Settle time after the document finishes loading before print is issued;
 // printing too early can produce blank pages.
 const PrintRenderDelayMs = 500;
+// Give up waiting for webContents.print() to finish after this long. On some
+// Electron versions printing a loaded PDF never fires the print callback, which
+// would otherwise leave the print promise (and the queue) hanging and the
+// "Print" window open forever. Generous because the native dialog is
+// interactive; the timer only fires when nothing settles the print in time.
+const PrintResultTimeoutMs = 5 * 60 * 1000;
 
 let DesktopPdfScanning = false;
 
@@ -494,11 +495,12 @@ async function ScanDesktopPdfsOnce() {
 // Printing a paper copy is decoupled from the Desktop scan so the native print
 // dialog — which blocks until the worker responds — can never stall the upload
 // of the next PDF or wedge the watcher. PDFs are printed one at a time in the
-// background, re-tried after a short delay, and abandoned after a bounded
-// number of attempts so a stubborn PDF cannot block the queue forever.
+// background. Each job is attempted exactly once: once the user has interacted
+// with the dialog (printed or cancelled) — or the print has failed — the dialog
+// is never re-opened automatically, so the print window cannot pop up again
+// after the user is already done with it.
 let DesktopPrintQueue = []; // { base64, filename }
 let DesktopPrintRunning = false;
-let DesktopPrintAttempts = new Map(); // filename -> failed attempts
 
 function enqueueDesktopPrint(base64, filename) {
   if (!base64) return;
@@ -512,66 +514,68 @@ async function drainDesktopPrintQueue() {
   DesktopPrintRunning = true;
   try {
     while (DesktopPrintQueue.length) {
-      const job = DesktopPrintQueue[0];
-      let ok = false;
+      const job = DesktopPrintQueue.shift();
+
+      let result;
       try {
-        const result = await PrintPdf(job.base64, job.filename);
-        ok = !!(result && result.ok);
+        result = await PrintDocument(job.base64, job.filename);
       } catch (err) {
         console.error(`[DesktopPdfWatch] Print threw for "${job.filename}":`, err);
+        result = { ok: false, error: String((err && err.message) || err) };
       }
 
-      if (ok) {
-        DesktopPrintQueue.shift();
-        DesktopPrintAttempts.delete(job.filename);
-        continue;
-      }
+      if (result && result.ok) continue;
 
-      const attempts = (DesktopPrintAttempts.get(job.filename) || 0) + 1;
-      if (attempts >= DesktopPdfMaxPrintAttempts) {
+      // The paper copy is finished one way or another: it printed, the user
+      // dismissed the dialog, or it failed. Do NOT re-open the print dialog on
+      // its own — that made the dialog reappear even after the user had already
+      // clicked Print (and after the physical page had finished). Log the
+      // outcome and move on to the next queued PDF instead.
+      if (result && result.cancelled) {
+        console.log(`[DesktopPdfWatch] Printing of "${job.filename}" was cancelled.`);
+      } else {
         console.warn(
-          `[DesktopPdfWatch] Giving up printing "${job.filename}" after ${attempts} attempts.`
+          `[DesktopPdfWatch] Printing of "${job.filename}" did not complete` +
+            (result && result.error ? `: ${result.error}` : ".")
         );
-        DesktopPrintQueue.shift();
-        DesktopPrintAttempts.delete(job.filename);
-        continue;
       }
-
-      DesktopPrintAttempts.set(job.filename, attempts);
-      console.warn(
-        `[DesktopPdfWatch] "${job.filename}" was not printed (attempt ${attempts}/${DesktopPdfMaxPrintAttempts}); retrying in ${DesktopPdfRetryMs / 1000}s.`
-      );
-      await new Promise((r) => setTimeout(r, DesktopPdfRetryMs));
     }
   } finally {
     DesktopPrintRunning = false;
   }
 }
 
-// Print a PDF (bytes captured as base64) to the system printer as its paper
-// copy. Mirrors PrintImage: the bytes are written to a temp file, loaded in a
-// hidden window and handed to webContents.print(), which opens the native print
-// dialog. A settle delay after the page loads lets Chromium's PDF viewer finish
-// rendering before the print is issued (printing too early used to produce
-// blank pages), and a load timeout prevents a stalled view from hanging forever.
-function PrintPdf(base64, filename) {
+// Print a document (usually a PDF, but any file Chromium can render) to the
+// system printer. Mirrors printImageDataUrl: the bytes are written to a temp
+// file, loaded in a visible window and handed to webContents.print(), which
+// opens the native print dialog. A settle delay after the page loads lets the
+// viewer finish rendering before the print is issued (printing too early used
+// to produce blank pages), and a load timeout prevents a stalled view from
+// hanging forever.
+//
+// `ext` is the temp-file extension (default ".pdf") so the same helper also
+// prints other attachments, and `logTag` prefixes the log lines so the Desktop
+// queue and the manual print button are easy to tell apart.
+function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatch]") {
   return new Promise((resolve) => {
     let tempFile = "";
     let settled = false;
     let loadTimer = null;
+    let printTimer = null;
 
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (loadTimer) clearTimeout(loadTimer);
+      if (printTimer) clearTimeout(printTimer);
       try {
         if (printWin && !printWin.isDestroyed()) printWin.close();
       } catch (err) {
-        console.error(`[DesktopPdfWatch] Error closing print window for "${filename}".`, err);
+        console.error(`${logTag} Error closing print window for "${filename}".`, err);
       }
       if (tempFile) {
         fs.promises.unlink(tempFile).catch((err) => {
-          console.error(`[DesktopPdfWatch] Failed to remove temp print file for "${filename}":`, err);
+          console.error(`${logTag} Failed to remove temp print file for "${filename}":`, err);
         });
       }
       resolve(result);
@@ -589,7 +593,7 @@ function PrintPdf(base64, filename) {
         webPreferences: { sandbox: true, contextIsolation: true },
       });
     } catch (err) {
-      console.error(`[DesktopPdfWatch] Failed to create print window for "${filename}".`, err);
+      console.error(`${logTag} Failed to create print window for "${filename}".`, err);
       finish({ ok: false, error: "Failed to open the print window." });
       return;
     }
@@ -609,7 +613,7 @@ function PrintPdf(base64, filename) {
 
     printWin.webContents.on("did-fail-load", (e, errorCode, errorDescription) => {
       console.error(
-        `[DesktopPdfWatch] Failed to load "${filename}" for printing` +
+        `${logTag} Failed to load "${filename}" for printing` +
           ` (${errorCode}${errorDescription ? ": " + errorDescription : ""}).`
       );
       finish({ ok: false, error: errorDescription || "Failed to load the PDF for printing." });
@@ -625,15 +629,21 @@ function PrintPdf(base64, filename) {
           // the dialog) sits in the foreground rather than behind other windows.
           printWin.focus();
           printWin.webContents.focus();
+          // Fail-safe: if print() never reports back (some Electron versions
+          // skip the callback when printing a PDF), settle and clean up rather
+          // than leaving the promise hanging and the window open forever.
+          printTimer = setTimeout(() => {
+            finish({ ok: false, error: "Timed out waiting for the print dialog." });
+          }, PrintResultTimeoutMs);
           const result = printWin.webContents.print({}, (success, failureReason) => {
             if (settled) return;
             if (success) {
-              console.log(`[DesktopPdfWatch] "${filename}" sent to printer.`);
+              console.log(`${logTag} "${filename}" sent to printer.`);
               finish({ ok: true });
             } else {
               const cancelled = /cancel/i.test(failureReason || "");
               console.log(
-                `[DesktopPdfWatch] Print of "${filename}" ${cancelled ? "cancelled" : "failed"}` +
+                `${logTag} Print of "${filename}" ${cancelled ? "cancelled" : "failed"}` +
                   (failureReason ? `: ${failureReason}` : ".")
               );
               finish({
@@ -650,40 +660,40 @@ function PrintPdf(base64, filename) {
             result.then(
               () => {
                 if (settled) return;
-                console.log(`[DesktopPdfWatch] "${filename}" sent to printer (promise).`);
+                console.log(`${logTag} "${filename}" sent to printer (promise).`);
                 finish({ ok: true });
               },
               (err) => {
                 if (settled) return;
                 const message = String((err && err.message) || err);
-                console.error(`[DesktopPdfWatch] print() promise rejected for "${filename}".`, err);
+                console.error(`${logTag} print() promise rejected for "${filename}".`, err);
                 finish({ ok: false, cancelled: /cancel/i.test(message), error: message });
               }
             );
           }
         } catch (err) {
-          console.error(`[DesktopPdfWatch] Exception printing "${filename}".`, err);
+          console.error(`${logTag} Exception printing "${filename}".`, err);
           finish({ ok: false, error: String(err) });
         }
       }, PrintRenderDelayMs);
     });
 
     const dir = path.join(app.getPath("temp"), "insurance-print");
-    tempFile = path.join(dir, `print-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`);
+    tempFile = path.join(dir, `print-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
 
     (async () => {
       try {
         await fs.promises.mkdir(dir, { recursive: true });
         await fs.promises.writeFile(tempFile, Buffer.from(base64, "base64"));
       } catch (err) {
-        console.error(`[DesktopPdfWatch] Failed to write temp print file for "${filename}".`, err);
+        console.error(`${logTag} Failed to write temp print file for "${filename}".`, err);
         finish({ ok: false, error: "Failed to prepare the print document." });
         return;
       }
       try {
         await printWin.loadFile(tempFile);
       } catch (err) {
-        console.error(`[DesktopPdfWatch] Failed to load temp print file for "${filename}".`, err);
+        console.error(`${logTag} Failed to load temp print file for "${filename}".`, err);
         finish({ ok: false, error: String(err) });
       }
     })();
@@ -755,15 +765,16 @@ ipcMain.on("LoadPage", (event, page) => {
 });
 
 // Print an image (data URL) by loading it in a visible window and invoking the
-// system print dialog. Used by the "printable picture" feature.
+// system print dialog. Used by the "printable picture" feature and by the
+// per-file "Print" button for image attachments.
 //
 // Resolves with `{ ok: true }` on success, or
-// `{ ok: false, error, cancelled }` on failure/cancellation so the renderer can
+// `{ ok: false, error, cancelled }` on failure/cancellation so the caller can
 // surface a toast to the user.
-ipcMain.handle("PrintImage", async (event, dataUrl) => {
+function printImageDataUrl(dataUrl) {
   if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) {
     console.error("[PrintImage] Invalid image data received (expected a data URL).");
-    return { ok: false, error: "Invalid image data." };
+    return Promise.resolve({ ok: false, error: "Invalid image data." });
   }
 
   let printWin;
@@ -777,7 +788,7 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
     });
   } catch (err) {
     console.error("[PrintImage] Failed to create the print window.", err);
-    return { ok: false, error: "Failed to open the print window." };
+    return Promise.resolve({ ok: false, error: "Failed to open the print window." });
   }
 
   // Bring the print window (and the native print dialog it will open) to the
@@ -791,12 +802,14 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
     let tempFile = "";
     let settled = false;
     let loadTimer = null;
+    let printTimer = null;
 
     // Resolve exactly once and clean up (close the window + remove temp file).
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (loadTimer) clearTimeout(loadTimer);
+      if (printTimer) clearTimeout(printTimer);
       try {
         printWin.close();
       } catch (err) {
@@ -826,6 +839,11 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
           // the dialog) sits in the foreground rather than behind other windows.
           printWin.focus();
           printWin.webContents.focus();
+          // Fail-safe: if print() never reports back, settle and clean up rather
+          // than leaving a lingering print window behind.
+          printTimer = setTimeout(() => {
+            finish({ ok: false, error: "Timed out waiting for the print dialog." });
+          }, PrintResultTimeoutMs);
           const result = printWin.webContents.print({}, (success, failureReason) => {
             if (settled) return;
             if (success) {
@@ -918,6 +936,50 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
       }
     })();
   });
+}
+
+ipcMain.handle("PrintImage", async (event, dataUrl) => {
+  return printImageDataUrl(dataUrl);
+});
+
+// Pick a temp-file extension for a file the worker wants to print manually.
+// Prefer the original file's extension; fall back from the MIME type; default
+// to ".pdf" so policy PDFs (the common case) always print correctly.
+function AttachmentPrintExt(filename, mimeType) {
+  const name = String(filename || "");
+  const dot = name.lastIndexOf(".");
+  if (dot > -1 && dot < name.length - 1) {
+    const ext = name.slice(dot).toLowerCase();
+    if (/^\.[a-z0-9]{1,10}$/.test(ext)) return ext;
+  }
+
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime === "application/pdf") return ".pdf";
+  if (mime === "image/png") return ".png";
+  if (mime === "image/jpeg") return ".jpg";
+  if (mime === "image/gif") return ".gif";
+  if (mime === "image/webp") return ".webp";
+  if (mime === "image/bmp") return ".bmp";
+  return ".pdf";
+}
+
+// Print a single attached file on demand. The renderer shows a "Print" button
+// next to each upload so the worker can manually print a paper copy even after
+// the automatic Desktop print has already finished.
+ipcMain.handle("PrintAttachment", async (event, file) => {
+  if (!file || typeof file.base64 !== "string" || !file.base64) {
+    console.error("[PrintAttachment] Invalid attachment data received.");
+    return { ok: false, error: "Invalid attachment data." };
+  }
+
+  const filename = String(file.filename || "attachment");
+  const mimeType = String(file.mimeType || "").toLowerCase();
+
+  if (mimeType.startsWith("image/")) {
+    return printImageDataUrl(`data:${file.mimeType};base64,${file.base64}`);
+  }
+
+  return PrintDocument(file.base64, filename, AttachmentPrintExt(filename, mimeType), "[PrintAttachment]");
 });
 
 // Open an image (data URL) with the system's default image viewer, i.e.

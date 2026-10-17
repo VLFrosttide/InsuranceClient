@@ -767,6 +767,16 @@ function renderDroppedFiles() {
     li.appendChild(el("span", f.filename, { class: "file-name" }));
     li.appendChild(el("span", fileSizeLabel(f.size), { class: "file-size" }));
 
+    // Manual print button: opens the native print dialog for this one file so
+    // the worker can print a paper copy on demand.
+    const printBtn = el("button", t("add.printFile"), {
+      class: "secondary",
+      type: "button",
+      title: t("add.printFile"),
+    });
+    printBtn.addEventListener("click", () => printAttachment(f));
+    li.appendChild(printBtn);
+
     const removeBtn = el("button", t("add.removeFile"), {
       class: "secondary",
       type: "button",
@@ -778,6 +788,33 @@ function renderDroppedFiles() {
     li.appendChild(removeBtn);
 
     DroppedFiles.appendChild(li);
+  }
+}
+
+// Open the native print dialog for a single attached file so the worker can
+// manually print a paper copy on demand.
+async function printAttachment(file) {
+  if (!file || !file.base64) return;
+  if (window.bridge && typeof window.bridge.PrintAttachment === "function") {
+    try {
+      const result = await window.bridge.PrintAttachment({
+        filename: file.filename,
+        mimeType: file.mimeType,
+        base64: file.base64,
+      });
+      if (result && result.ok) {
+        toast(t("add.printSuccess"), "success");
+      } else if (result && result.cancelled) {
+        toast(t("email.printCancelled"), "info");
+      } else {
+        const reason = (result && result.error) || "unknown error";
+        console.error("PrintAttachment failed:", reason);
+        toast(t("add.printFailed"), "error");
+      }
+    } catch (err) {
+      console.error("PrintAttachment failed:", err);
+      toast(t("add.printFailed"), "error");
+    }
   }
 }
 
@@ -1041,10 +1078,17 @@ function zoomViewer(delta) {
   applyViewerScale();
 }
 
+// Guard against rapid/duplicate clicks: the native print dialog takes a moment
+// (~0.5s render delay + file load) to appear, so an impatient second click used
+// to open a second print window and dialog stacked on top of the first.
+let viewerPrinting = false;
+
 async function printViewerImage() {
   if (!ViewerImage || !ViewerImage.src) return;
-  if (window.bridge && typeof window.bridge.PrintImage === "function") {
-    try {
+  if (viewerPrinting) return;
+  viewerPrinting = true;
+  try {
+    if (window.bridge && typeof window.bridge.PrintImage === "function") {
       const result = await window.bridge.PrintImage(ViewerImage.src);
       if (result && result.ok) {
         toast(t("email.printSuccess"), "success");
@@ -1055,23 +1099,25 @@ async function printViewerImage() {
         console.error("PrintImage failed:", reason);
         toast(t("email.printFailed"), "error");
       }
-    } catch (err) {
-      console.error("PrintImage failed:", err);
-      toast(t("email.printFailed"), "error");
+    } else {
+      // Fallback for a plain browser context (no Electron bridge).
+      const w = window.open("", "_blank");
+      if (!w) {
+        toast(t("email.print"), "info");
+        return;
+      }
+      const html = `<html><head><title>${ViewerImage.alt || ""}</title></head>
+        <body style="margin:0;display:flex;align-items:center;justify-content:center;">
+          <img src="${ViewerImage.src}" style="max-width:100%;max-height:100%;" />
+        </body></html>`;
+      w.document.write(html);
+      w.document.close();
     }
-  } else {
-    // Fallback for a plain browser context (no Electron bridge).
-    const w = window.open("", "_blank");
-    if (!w) {
-      toast(t("email.print"), "info");
-      return;
-    }
-    const html = `<html><head><title>${ViewerImage.alt || ""}</title></head>
-      <body style="margin:0;display:flex;align-items:center;justify-content:center;">
-        <img src="${ViewerImage.src}" style="max-width:100%;max-height:100%;" />
-      </body></html>`;
-    w.document.write(html);
-    w.document.close();
+  } catch (err) {
+    console.error("PrintImage failed:", err);
+    toast(t("email.printFailed"), "error");
+  } finally {
+    viewerPrinting = false;
   }
 }
 

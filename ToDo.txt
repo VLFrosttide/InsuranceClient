@@ -18,9 +18,3 @@ ask location and make sure branch selection
 
 Rename the reductions to spends
 
-Current cash transactions time uses old server time instead of new client side time.
-
-Sort only brokers
-
-Sort only walk-ins.
-
