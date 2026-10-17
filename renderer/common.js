@@ -192,8 +192,12 @@ const I18N = {
     editMovement: "Edit movement",
     movementUpdated: "Movement updated",
     movementDeleted: "Movement deleted",
+    movementRestored: "Movement restored",
+    deletedMovements: "Deleted movements",
     deleteMovementConfirm:
-      "Delete this balance movement? Its amount will be added back to the broker's balance.",
+      "Hide this balance movement? It is kept in the database and can be restored; its amount is added back to the broker's balance.",
+    restoreMovementConfirm:
+      "Restore this balance movement? Its amount is applied to the broker's balance again.",
     exportFailed: "Export failed",
     balanceUpdated: "Balance updated",
     settingSaved: "Setting saved",
@@ -471,6 +475,8 @@ const I18N = {
     "err.movementIdInvalid": "Invalid movement id",
     "err.amountNonZero": "Amount must be a non-zero number",
     "err.typeEmpty": "Type cannot be empty",
+    "err.movementAlreadyDeleted": "Movement is already deleted",
+    "err.movementNotDeleted": "Movement is not deleted",
     "err.failedLoadInsurances": "Failed to load insurances",
     "err.failedUpdateInsurance": "Failed to update insurance",
     "err.failedAnnullInsurance": "Failed to annul insurance",
@@ -654,8 +660,12 @@ const I18N = {
     editMovement: "Редактирай движение",
     movementUpdated: "Движението е обновено",
     movementDeleted: "Движението е изтрито",
+    movementRestored: "Движението е възстановено",
+    deletedMovements: "Изтрити движения",
     deleteMovementConfirm:
-      "Да се изтрие ли това движение? Сумата му ще бъде върната към баланса на брокера.",
+      "Да се скрие ли това движение? То се запазва в базата данни и може да бъде възстановено; сумата му се връща към баланса на брокера.",
+    restoreMovementConfirm:
+      "Да се възстанови ли това движение? Сумата му ще бъде приложена отново към баланса на брокера.",
     exportFailed: "Експортът не успя",
     balanceUpdated: "Балансът е обновен",
     settingSaved: "Настройката е запазена",
@@ -935,6 +945,8 @@ const I18N = {
     "err.movementIdInvalid": "Невалидно движение",
     "err.amountNonZero": "Сумата трябва да е число, различно от нула",
     "err.typeEmpty": "Типът не може да е празен",
+    "err.movementAlreadyDeleted": "Движението вече е изтрито",
+    "err.movementNotDeleted": "Движението не е изтрито",
     "err.sourceInvalid": "Източникът трябва да е 'Card' или 'Broker'",
     "err.failedLoadInsurances": "Неуспешно зареждане на застраховките",
     "err.failedUpdateInsurance": "Неуспешно обновяване на застраховката",
@@ -1053,6 +1065,8 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Invalid movement id": "err.movementIdInvalid",
   "amount must be a non-zero number": "err.amountNonZero",
   "Type cannot be empty": "err.typeEmpty",
+  "Movement already deleted": "err.movementAlreadyDeleted",
+  "Movement is not deleted": "err.movementNotDeleted",
 
   // Generic 500s surfaced by common worker flows.
   "Failed to fetch insurances": "err.failedLoadInsurances",

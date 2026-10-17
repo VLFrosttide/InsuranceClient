@@ -34,6 +34,9 @@ function addMovement(brokerId, amount, createdAt, extra = {}) {
     Author: extra.Author || "",
     BlancNumber: extra.BlancNumber === undefined ? null : extra.BlancNumber,
     CreatedAt: createdAt,
+    Deleted: extra.Deleted ? 1 : 0,
+    DeletedAt: extra.DeletedAt === undefined ? null : extra.DeletedAt,
+    DeletedBy: extra.DeletedBy === undefined ? null : extra.DeletedBy,
   });
 }
 
@@ -62,7 +65,7 @@ async function query(sql, params = []) {
     )
   ) {
     const rows = db.movements.filter(
-      (m) => m.BrokerId === Number(p[0]) && m.CreatedAt >= p[1] && m.CreatedAt < p[2]
+      (m) => m.BrokerId === Number(p[0]) && m.CreatedAt >= p[1] && m.CreatedAt < p[2] && m.Deleted !== 1
     );
     return [[
       { total: rows.length, net: rows.reduce((sum, m) => sum + Number(m.Amount), 0) },
@@ -72,7 +75,7 @@ async function query(sql, params = []) {
     const balance = Number(p[0]);
     const rows = db.movements
       .filter(
-        (m) => m.BrokerId === Number(p[1]) && m.CreatedAt >= p[2] && m.CreatedAt < p[3]
+        (m) => m.BrokerId === Number(p[1]) && m.CreatedAt >= p[2] && m.CreatedAt < p[3] && m.Deleted !== 1
       )
       .sort((a, b) =>
         a.CreatedAt === b.CreatedAt
@@ -92,15 +95,31 @@ async function query(sql, params = []) {
   // --- admin edit / delete of a single movement (PATCH / DELETE history) -----
   if (s.startsWith("SELECT id, BrokerId, Amount, Type, Reason, Author, BlancNumber")) {
     const mov = db.movements.find(
-      (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1])
+      (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1]) && m.Deleted !== 1
     );
     return [mov ? [mov] : []];
   }
-  if (s.startsWith("SELECT id, Amount FROM broker_balance_movements")) {
+  if (s.startsWith("SELECT id, Amount, Deleted FROM broker_balance_movements")) {
     const mov = db.movements.find(
       (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1])
     );
-    return [mov ? [{ id: mov.id, Amount: mov.Amount }] : []];
+    return [mov ? [{ id: mov.id, Amount: mov.Amount, Deleted: mov.Deleted }] : []];
+  }
+  if (
+    s.startsWith(
+      "SELECT id, Type, Amount, Reason, Author, BlancNumber, CreatedAt, DeletedAt, DeletedBy"
+    )
+  ) {
+    const rows = db.movements
+      .filter((m) => m.BrokerId === Number(p[0]) && m.Deleted === 1)
+      .sort((a, b) =>
+        a.CreatedAt === b.CreatedAt
+          ? b.id - a.id
+          : a.CreatedAt < b.CreatedAt
+            ? 1
+            : -1
+      );
+    return [rows];
   }
   if (s.startsWith("UPDATE broker_balance_movements SET")) {
     const m = /^UPDATE broker_balance_movements SET (.+?) WHERE id = \?$/.exec(s);
@@ -109,12 +128,6 @@ async function query(sql, params = []) {
     const mov = db.movements.find((x) => x.id === movementId);
     if (mov) cols.forEach((col, i) => (mov[col] = p[i]));
     return [{ affectedRows: mov ? 1 : 0 }];
-  }
-  if (s.startsWith("DELETE FROM broker_balance_movements")) {
-    const target = Number(p[0]);
-    const before = db.movements.length;
-    db.movements = db.movements.filter((m) => m.id !== target);
-    return [{ affectedRows: before - db.movements.length }];
   }
   if (s.startsWith("UPDATE brokers SET CashBalance")) {
     const broker = db.brokers.find((b) => b.id === Number(p[1]));
@@ -442,7 +455,7 @@ resetDb();
     eq(r.body.broker.CashBalance, 55, "returned broker balance");
   });
 
-  await check("history DELETE: removes the movement and reverses the balance", async () => {
+  await check("history DELETE: soft-deletes the movement and reverses the balance", async () => {
     resetDb();
     addMovement(1, -10, "2026-10-10 00:00:00");
     const r = await call("delete", "/brokers/:id/history/:movementId", {
@@ -450,10 +463,23 @@ resetDb();
     });
     eq(r.status, 200, "status");
     eq(r.body.message, "Movement deleted", "message");
-    eq(db.movements.length, 0, "movement removed");
+    eq(db.movements.length, 1, "row is kept, not physically removed");
+    eq(db.movements[0].Deleted, 1, "flagged deleted");
+    eq(db.movements[0].DeletedBy, "admin1", "deleted by recorded");
+    ok(db.movements[0].DeletedAt, "deleted at recorded");
     // reversal = -(-10) = +10 → 70 + 10 = 80.
     eq(db.brokers[0].CashBalance, 80, "balance reversed");
     eq(r.body.broker.CashBalance, 80, "returned balance");
+  });
+
+  await check("history DELETE: a deleted movement cannot be deleted again", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00", { Deleted: true, DeletedBy: "admin1" });
+    const r = await call("delete", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "Movement already deleted", "error");
   });
 
   await check("history DELETE: unknown movement answers 404", async () => {
@@ -462,6 +488,86 @@ resetDb();
       params: { id: "1", movementId: "123" },
     });
     eq(r.status, 404, "status");
+  });
+
+  await check("history restore: brings a deleted movement back and re-applies the balance", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    await call("delete", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(db.brokers[0].CashBalance, 80, "precondition: reversed");
+    const r = await call("post", "/brokers/:id/history/:movementId/restore", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.message, "Movement restored", "message");
+    eq(db.movements[0].Deleted, 0, "flag cleared");
+    eq(db.movements[0].DeletedAt, null, "DeletedAt cleared");
+    eq(db.movements[0].DeletedBy, null, "DeletedBy cleared");
+    eq(db.brokers[0].CashBalance, 70, "balance re-applied");
+    eq(r.body.broker.CashBalance, 70, "returned balance");
+  });
+
+  await check("history restore: a live movement cannot be restored", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    const r = await call("post", "/brokers/:id/history/:movementId/restore", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "Movement is not deleted", "error");
+  });
+
+  await check("history GET: soft-deleted movements are excluded from the live list", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    addMovement(1, 20, "2026-10-12 00:00:00");
+    db.movements[0].Deleted = 1;
+    db.brokers[0].CashBalance = 80; // 70 + 10 reversed.
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 1, "only the live movement counts");
+    eq(r.body.movements.length, 1, "only the live movement returned");
+    eq(r.body.movements[0].Amount, 20, "live movement");
+    eq(r.body.netChange, 20, "net excludes the deleted movement");
+  });
+
+  await check("history GET: an admin can list deleted movements with includeDeleted", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    db.movements[0].Deleted = 1;
+    db.movements[0].DeletedBy = "admin1";
+    db.movements[0].DeletedAt = "2026-10-11 09:00:00";
+    db.brokers[0].CashBalance = 80;
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { ...WINDOW, includeDeleted: "1" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.includeDeleted, true, "flag echoed");
+    eq(r.body.deleted.length, 1, "one deleted movement listed");
+    eq(r.body.deleted[0].Amount, -10, "deleted amount");
+    eq(r.body.deleted[0].DeletedBy, "admin1", "deleted by");
+    eq(r.body.movements.length, 0, "live list still empty");
+  });
+
+  await check("history GET: includeDeleted is ignored for non-admins", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00");
+    db.movements[0].Deleted = 1;
+    db.brokers[0].CashBalance = 80;
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { ...WINDOW, includeDeleted: "1" },
+      user: { username: "worker1", role: 2 },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.includeDeleted, false, "flag off for non-admin");
+    eq(r.body.deleted.length, 0, "no deleted list for non-admin");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

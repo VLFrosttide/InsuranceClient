@@ -1680,6 +1680,17 @@ function localDateString(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// Current local wall-clock time as "YYYY-MM-DD HH:MM:SS" (MySQL DATETIME).
+// Sent as the transaction/reset creation time so the server stores the
+// client's local time instead of the database server's (UTC) clock.
+function localDateTimeNow(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
 // "YYYY-MM-DD" one calendar day after the given local date string.
 function nextLocalDate(dateString) {
   const [y, m, d] = dateString.split("-").map(Number);
@@ -1919,8 +1930,12 @@ async function currentCashView(overrideBranch, overrideDate) {
         { key: "reason", label: t("reason"), value: "" },
       ],
       async (payload) => {
-        // Attach the branch to the payload before sending.
+        // Attach the branch and the client's local creation time before sending.
+        // The server stores CreatedAt as sent, instead of stamping it with the
+        // database server's (UTC) clock.
         payload.branch = branch;
+        payload.CreatedAt = localDateTimeNow();
+        payload.TzOffset = -new Date().getTimezoneOffset();
         await api(`/currentcash/${kind}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1951,7 +1966,11 @@ async function currentCashView(overrideBranch, overrideDate) {
       await api("/currentcash/reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch }),
+        body: JSON.stringify({
+          branch,
+          CreatedAt: localDateTimeNow(),
+          TzOffset: -new Date().getTimezoneOffset(),
+        }),
       });
       toast(t("currentCashReset"), "success");
       currentCashView(branch, date);
@@ -2306,7 +2325,7 @@ function pagerControls(totalPages, page, onPage) {
 // The broker balance history "page": the broker's balance movements for the
 // last month, 40 per page, newest first, with a back button to the list. A
 // calendar picker scopes it to a single day.
-async function brokerHistoryView(broker, page = 1, date = "") {
+async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = false) {
   Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
     const pageSize = 40;
@@ -2318,8 +2337,9 @@ async function brokerHistoryView(broker, page = 1, date = "") {
       params.set("since", date);
       params.set("until", nextLocalDate(date));
     }
+    if (includeDeleted) params.set("includeDeleted", "1");
     const data = await api(`/brokers/${broker.id}/history?${params.toString()}`);
-    renderBrokerHistory(broker, data, page, date);
+    renderBrokerHistory(broker, data, page, date, includeDeleted);
   } catch (err) {
     const message = translateError(err && err.message ? err.message : "");
     Content.replaceChildren(
@@ -2328,7 +2348,7 @@ async function brokerHistoryView(broker, page = 1, date = "") {
   }
 }
 
-function renderBrokerHistory(broker, data, page, date = "") {
+function renderBrokerHistory(broker, data, page, date = "", includeDeleted = false) {
   const backBtn = el("button", t("back"), { class: "secondary", type: "button" });
   backBtn.addEventListener("click", () => brokersView());
 
@@ -2343,13 +2363,33 @@ function renderBrokerHistory(broker, data, page, date = "") {
   // Calendar picker scopes the history to a single day; clearing it falls back
   // to the default last-month window.
   const dateInput = input("date", date || "");
-  dateInput.addEventListener("change", () => {
-    brokerHistoryView(broker, 1, dateInput.value).catch((err) =>
-      toast(err.message, "error")
+
+  // Admins can also list the soft-deleted movements and restore them. The flag
+  // is re-read on every change so the deleted list tracks the current scope.
+  const includeDeletedInput = userRole === "1" ? input("checkbox") : null;
+  if (includeDeletedInput) {
+    includeDeletedInput.checked = !!includeDeleted;
+    includeDeletedInput.addEventListener("change", () =>
+      brokerHistoryView(broker, 1, dateInput.value, includeDeletedInput.checked).catch((err) =>
+        toast(err.message, "error")
+      )
     );
+  }
+
+  dateInput.addEventListener("change", () => {
+    brokerHistoryView(
+      broker,
+      1,
+      dateInput.value,
+      includeDeletedInput ? includeDeletedInput.checked : false
+    ).catch((err) => toast(err.message, "error"));
   });
+
   const dateRow = el("div", null, { class: "row filter-row" });
   dateRow.appendChild(field(t("date"), dateInput));
+  if (includeDeletedInput) {
+    dateRow.appendChild(field(t("includeDeleted"), includeDeletedInput));
+  }
 
   // Total (net) sum of the movements across the whole scoped range, right-aligned
   // above the table. The server returns this as netChange over the entire window,
@@ -2367,7 +2407,7 @@ function renderBrokerHistory(broker, data, page, date = "") {
           {
             label: t("edit"),
             class: "secondary",
-            onClick: (m) => brokerHistoryEditForm(broker, m, page, date),
+            onClick: (m) => brokerHistoryEditForm(broker, m, page, date, includeDeleted),
           },
           {
             label: t("delete"),
@@ -2379,7 +2419,7 @@ function renderBrokerHistory(broker, data, page, date = "") {
                   method: "DELETE",
                 });
                 toast(t("movementDeleted"), "success");
-                brokerHistoryView(broker, page, date);
+                brokerHistoryView(broker, page, date, includeDeleted);
               } catch (err) {
                 toast(err.message, "error");
               }
@@ -2412,25 +2452,70 @@ function renderBrokerHistory(broker, data, page, date = "") {
   );
 
   const pager = pagerControls(data.totalPages, page, (p) =>
-    brokerHistoryView(broker, p, date)
+    brokerHistoryView(broker, p, date, includeDeleted)
   );
 
-  Content.replaceChildren(
-    backBtn,
-    heading,
-    summary,
-    dateRow,
-    totalRow,
-    table,
-    pager
-  );
+  const children = [backBtn, heading, summary, dateRow, totalRow, table, pager];
+
+  // Soft-deleted movements are kept in the database and only shown when the
+  // admin asks for them (Include deleted). Each one can be brought straight back.
+  if (userRole === "1" && Array.isArray(data.deleted) && data.deleted.length) {
+    children.push(el("h3", t("deletedMovements")));
+    children.push(
+      renderTable(
+        data.deleted,
+        [
+          { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
+          { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
+          { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
+          {
+            key: "Reason",
+            label: t("reason"),
+            format: (v, m) => `${v || ""}${m.DeletedBy ? ` (${m.DeletedBy})` : ""}`,
+          },
+          {
+            key: "Amount",
+            label: t("amount"),
+            format: (v) => signedMoney(v),
+            cellClass: (m) => (Number(m.Amount) >= 0 ? "num-pos" : "num-neg"),
+          },
+        ],
+        [
+          {
+            label: t("restore"),
+            class: "",
+            onClick: (m) => restoreBrokerMovement(broker, m, page, date),
+          },
+        ],
+        () => "row-deleted"
+      )
+    );
+  }
+
+  Content.replaceChildren(...children);
+}
+
+// Restore a previously soft-deleted broker movement. The server re-applies the
+// movement's amount to the broker's balance and clears the Deleted flag, putting
+// the row back exactly where it was.
+async function restoreBrokerMovement(broker, movement, page, date) {
+  if (!confirm(t("restoreMovementConfirm"))) return;
+  try {
+    await api(`/brokers/${broker.id}/history/${movement.id}/restore`, {
+      method: "POST",
+    });
+    toast(t("movementRestored"), "success");
+    brokerHistoryView(broker, page, date, true);
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 // Admin-only modal to correct a single broker balance movement. The amount is
 // shown signed (positive = increase, negative = decrease); changing it shifts
 // the broker balance by the difference. Type, blank number, reason and author
 // are stored as entered.
-function brokerHistoryEditForm(broker, movement, page, date) {
+function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = false) {
   const typeOptions = [
     "policy",
     "annulment",
@@ -2472,7 +2557,7 @@ function brokerHistoryEditForm(broker, movement, page, date) {
       });
       toast(t("movementUpdated"), "success");
       closeModal();
-      brokerHistoryView(broker, page, date);
+      brokerHistoryView(broker, page, date, includeDeleted);
     },
     t("save")
   );

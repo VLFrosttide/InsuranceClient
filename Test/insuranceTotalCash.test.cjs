@@ -119,6 +119,7 @@ async function query(sql, params = []) {
       Currency: p[3],
       Username: p[4],
       Reason: p[5],
+      CreatedAt: p[6],
     });
     return [{ insertId: tables.cash_transactions.length }];
   }
@@ -128,6 +129,7 @@ async function query(sql, params = []) {
       Username: p[1],
       Currency: p[2],
       KeptAmount: p[3],
+      CreatedAt: p[4],
     });
     return [{ insertId: tables.cash_resets.length }];
   }
@@ -190,6 +192,7 @@ async function query(sql, params = []) {
       Source: p[4],
       Username: p[5],
       Reason: p[6],
+      CreatedAt: p[7],
     });
     return [{ insertId: tables.total_cash_transactions.length }];
   }
@@ -221,8 +224,13 @@ async function query(sql, params = []) {
     tables.branch_card_balance.set(p[0], 0);
     return [{ affectedRows: 1 }];
   }
-  if (s.startsWith("INSERT INTO card_resets (Branch, Username, KeptAmount)")) {
-    tables.card_resets.push({ Branch: p[0], Username: p[1], KeptAmount: p[2] });
+  if (s.startsWith("INSERT INTO card_resets (Branch, Username, KeptAmount")) {
+    tables.card_resets.push({
+      Branch: p[0],
+      Username: p[1],
+      KeptAmount: p[2],
+      CreatedAt: p[3],
+    });
     return [{ insertId: tables.card_resets.length }];
   }
 
@@ -597,7 +605,11 @@ const ledger = () =>
     );
     eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 100, "only the broker part survives");
     eq(
-      tables.card_resets,
+      tables.card_resets.map((r) => ({
+        Branch: r.Branch,
+        Username: r.Username,
+        KeptAmount: r.KeptAmount,
+      })),
       [{ Branch: BRANCH, Username: USER, KeptAmount: 70 }],
       "card reset recorded with its branch"
     );
@@ -1202,6 +1214,100 @@ const ledger = () =>
       tables.cash_transactions.map(byReason).sort(),
       [`${OTHER} 168655`, `${BRANCH} 999999`].sort(),
       "the other policy's row stays put"
+    );
+  });
+
+
+  // --- client-side creation time (CreatedAt) ---------------------------------
+  await check("parseClientDateTime validates and normalises", () => {
+    eq(
+      CC.parseClientDateTime("2026-10-10 09:15:42"),
+      "2026-10-10 09:15:42",
+      "space separator"
+    );
+    eq(
+      CC.parseClientDateTime("2026-10-10T09:15:42"),
+      "2026-10-10 09:15:42",
+      "T separator"
+    );
+    eq(CC.parseClientDateTime("2026-02-31 10:00:00"), null, "impossible date");
+    eq(CC.parseClientDateTime("2026-10-10 25:00:00"), null, "impossible time");
+    eq(CC.parseClientDateTime("nope"), null, "garbage");
+  });
+
+  await check("clientLocalDateTime shifts by the client's offset", () => {
+    const INSTANT = new Date(Date.UTC(2026, 9, 10, 6, 30, 0));
+    eq(CC.clientLocalDateTime(180, INSTANT), "2026-10-10 09:30:00", "+3h");
+    eq(CC.clientLocalDateTime(0, INSTANT), "2026-10-10 06:30:00", "UTC");
+  });
+
+  await check("resolveRequestCreatedAt prefers the client's own value", () => {
+    eq(
+      CC.resolveRequestCreatedAt({
+        CreatedAt: "2026-10-10 12:00:00",
+        TzOffset: 180,
+      }).createdAt,
+      "2026-10-10 12:00:00",
+      "CreatedAt wins over TzOffset"
+    );
+    eq(
+      CC.resolveRequestCreatedAt({ createdAt: "2026-10-10 12:00:00" }).createdAt,
+      "2026-10-10 12:00:00",
+      "lowercase key accepted"
+    );
+    const INSTANT = new Date(Date.UTC(2026, 9, 10, 6, 0, 0));
+    eq(
+      CC.resolveRequestCreatedAt({ TzOffset: 180 }, INSTANT).createdAt,
+      "2026-10-10 09:00:00",
+      "TzOffset fallback"
+    );
+    ok(
+      CC.resolveRequestCreatedAt({ CreatedAt: "bad" }).error,
+      "invalid value rejected"
+    );
+  });
+
+  await check("a movement stores the client's CreatedAt as sent", async () => {
+    resetTables();
+    await CC.recordCashMovement(
+      fakeDb,
+      BRANCH,
+      USER,
+      "increase",
+      10,
+      "top-up",
+      "EUR",
+      "2026-10-20 09:15:42"
+    );
+    eq(
+      tables.cash_transactions[0].CreatedAt,
+      "2026-10-20 09:15:42",
+      "cash ledger"
+    );
+    eq(
+      tables.total_cash_transactions[0].CreatedAt,
+      "2026-10-20 09:15:42",
+      "total cash ledger"
+    );
+  });
+
+  await check("resets are stamped with the client's CreatedAt", async () => {
+    resetTables();
+    await CC.recordCashMovement(
+      fakeDb,
+      BRANCH,
+      USER,
+      "increase",
+      50,
+      "A",
+      "EUR"
+    );
+    await CC.resetBranch(fakeDb, BRANCH, USER, "2026-10-20 18:30:00");
+    eq(tables.cash_resets[0].CreatedAt, "2026-10-20 18:30:00", "cash reset");
+    eq(
+      tables.card_resets[0] && tables.card_resets[0].CreatedAt,
+      "2026-10-20 18:30:00",
+      "card reset"
     );
   });
 
