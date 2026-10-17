@@ -3190,7 +3190,8 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     form.appendChild(field(t("includeDeleted"), includeDeletedInput));
   }
   // Exports exactly what the table shows (same rows, same order, same row
-  // numbers) as an .xlsx file. Disabled until a search returns rows.
+  // numbers) as an .xlsx file. Disabled until a search returns rows. Workers
+  // get the same button; the broker prices they cannot see stay blank.
   const exportBtn = el("button", t("exportExcel"), {
     class: "secondary",
     type: "button",
@@ -3199,9 +3200,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(apply);
   form.appendChild(clearBtn);
   form.appendChild(el("div", null, { class: "spacer" }));
-  // The sheet includes prices, so only admins get the export button. Workers
-  // reuse this same view ("My insurances") without it.
-  if (userRole === "1") form.appendChild(exportBtn);
+  form.appendChild(exportBtn);
 
   const result = el("div");
 
@@ -3438,24 +3437,22 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     exportBtn.disabled = true;
     result.replaceChildren();
   });
-  if (userRole === "1") {
-    exportBtn.addEventListener("click", () => {
-      const sorted = sortInsuranceRows(
-        lastRows,
-        insuranceSort.key,
-        insuranceSort.dir
-      );
-      if (!sorted.length) {
-        toast(t("noData"), "error");
-        return;
-      }
-      try {
-        downloadInsurancesXlsx(sorted, dateInput.value);
-      } catch (err) {
-        toast(`${t("exportFailed")}: ${err.message}`, "error");
-      }
-    });
-  }
+  exportBtn.addEventListener("click", () => {
+    const sorted = sortInsuranceRows(
+      lastRows,
+      insuranceSort.key,
+      insuranceSort.dir
+    );
+    if (!sorted.length) {
+      toast(t("noData"), "error");
+      return;
+    }
+    try {
+      downloadInsurancesXlsx(sorted, dateInput.value, canSeePrice);
+    } catch (err) {
+      toast(`${t("exportFailed")}: ${err.message}`, "error");
+    }
+  });
 
   Content.replaceChildren(el("h2", t(titleKey)), form, result);
 }
@@ -3466,8 +3463,12 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
 // Columns mirror the result table (row number included). Prices are written
 // as real numbers (0.00 format) and creation dates as real Excel date/times,
 // so the sheet can be summed, filtered and sorted in Excel.
+//
+// `canSeePrice` (optional) is the caller's price-visibility predicate: admins
+// omit it and export every price, workers pass the same predicate the table
+// uses so broker (email) prices they must not see become blank cells.
 // ---------------------------------------------------------------------------
-function insuranceExportSheet(rows) {
+function insuranceExportSheet(rows, canSeePrice) {
   const columns = [
     { label: t("rowNo"), width: 6 },
     { label: t("blankNo"), width: 14 },
@@ -3484,6 +3485,7 @@ function insuranceExportSheet(rows) {
   const text = (v) => (v === undefined || v === null ? "" : String(v));
   const body = (rows || []).map((r, idx) => {
     const price = Number(r.Price);
+    const showPrice = !canSeePrice || canSeePrice(r);
     // Same parsing as the display/sort (local wall-clock time).
     const ms = insuranceSortValue(r, "CreationDate");
     const serial = ms === null ? null : xlsxDateSerial(new Date(ms));
@@ -3492,7 +3494,9 @@ function insuranceExportSheet(rows) {
       text(r.BlancNumber),
       text(r.PolicyNumber),
       text(r.CarNumber),
-      Number.isFinite(price) ? { value: price, style: "money" } : "",
+      showPrice && Number.isFinite(price)
+        ? { value: price, style: "money" }
+        : "",
       text(r.CurrencyType),
       paymentLabel(r.PaymentType),
       text(r.Broker),
@@ -3506,8 +3510,8 @@ function insuranceExportSheet(rows) {
   return { columns, rows: body };
 }
 
-function downloadInsurancesXlsx(rows, date) {
-  const sheet = insuranceExportSheet(rows);
+function downloadInsurancesXlsx(rows, date, canSeePrice) {
+  const sheet = insuranceExportSheet(rows, canSeePrice);
   const bytes = buildXlsxFile({
     sheetName: t("nav.insurances"),
     columns: sheet.columns,
