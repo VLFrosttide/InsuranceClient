@@ -594,6 +594,13 @@ function PrintPdf(base64, filename) {
       return;
     }
 
+    // Bring the print window (and the native print dialog it will open) to the
+    // foreground so it is immediately visible and targetable instead of popping
+    // up behind the main window without focus.
+    printWin.show();
+    printWin.focus();
+    printWin.webContents.focus();
+
     // Fail-safe: if the PDF never finishes loading (stalled viewer, missing
     // plugin, ...), give up after a bounded wait instead of hanging forever.
     loadTimer = setTimeout(() => {
@@ -614,6 +621,10 @@ function PrintPdf(base64, filename) {
       setTimeout(() => {
         if (settled) return;
         try {
+          // Focus again right before the native print dialog opens so it (and
+          // the dialog) sits in the foreground rather than behind other windows.
+          printWin.focus();
+          printWin.webContents.focus();
           const result = printWin.webContents.print({}, (success, failureReason) => {
             if (settled) return;
             if (success) {
@@ -769,6 +780,13 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
     return { ok: false, error: "Failed to open the print window." };
   }
 
+  // Bring the print window (and the native print dialog it will open) to the
+  // foreground so it is immediately visible and targetable instead of popping
+  // up behind the main window without focus.
+  printWin.show();
+  printWin.focus();
+  printWin.webContents.focus();
+
   return new Promise((resolve) => {
     let tempFile = "";
     let settled = false;
@@ -804,6 +822,10 @@ ipcMain.handle("PrintImage", async (event, dataUrl) => {
       setTimeout(() => {
         if (settled) return;
         try {
+          // Focus again right before the native print dialog opens so it (and
+          // the dialog) sits in the foreground rather than behind other windows.
+          printWin.focus();
+          printWin.webContents.focus();
           const result = printWin.webContents.print({}, (success, failureReason) => {
             if (settled) return;
             if (success) {
