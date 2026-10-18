@@ -1135,7 +1135,6 @@ function openInsuranceEditor(insurance, onDone) {
       type: "select",
       options: [
         { label: "EUR", value: "EUR" },
-        { label: "USD", value: "USD" },
         { label: "TRY", value: "TRY" },
       ],
       value: insurance.CurrencyType || "EUR",
@@ -1935,7 +1934,7 @@ async function currentCashView(overrideBranch, overrideDate) {
       line.appendChild(
         el(
           "span",
-          renderCashBalances({ EUR: entry.EUR, USD: entry.USD, TRY: entry.TRY })
+          renderCashBalances({ EUR: entry.EUR, TRY: entry.TRY })
         )
       );
       list.appendChild(line);
@@ -2021,7 +2020,6 @@ async function currentCashView(overrideBranch, overrideDate) {
           type: "select",
           options: [
             { label: "EUR", value: "EUR" },
-            { label: "USD", value: "USD" },
             { label: "TRY", value: "TRY" },
           ],
           value: "EUR",
@@ -2103,7 +2101,6 @@ async function currentCashView(overrideBranch, overrideDate) {
           type: "select",
           options: [
             { label: "EUR", value: "EUR" },
-            { label: "USD", value: "USD" },
             { label: "TRY", value: "TRY" },
           ],
           value: tx.Currency || "EUR",
@@ -2693,7 +2690,6 @@ function brokerAdjust(broker, kind) {
         type: "select",
         options: [
           { label: "EUR", value: "EUR" },
-          { label: "USD", value: "USD" },
           { label: "TRY", value: "TRY" },
         ],
         value: "EUR",

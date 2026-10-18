@@ -1283,14 +1283,16 @@ renderTotalPrice();
 // branch pricing. Loaded from the server, with the locally cached pricing as
 // a fallback when the request fails.
 let policyPricing = null;
+let tryPricing = null;
 
-function lookupPrice(insuranceType, duration) {
+function lookupPrice(insuranceType, duration, currency) {
+  const source = currency === "TRY" ? tryPricing : policyPricing;
   if (
-    policyPricing &&
-    policyPricing[insuranceType] &&
-    policyPricing[insuranceType][duration] !== undefined
+    source &&
+    source[insuranceType] &&
+    source[insuranceType][duration] !== undefined
   ) {
-    return policyPricing[insuranceType][duration];
+    return source[insuranceType][duration];
   }
   return null;
 }
@@ -1306,9 +1308,11 @@ async function loadPolicyPricing() {
   try {
     const data = await api(`/tariffs/policy-pricing?${params.toString()}`);
     policyPricing = (data && data.pricing) || {};
+    tryPricing = (data && data.tryPricing) || {};
   } catch (err) {
     console.warn("Failed to load policy pricing:", err);
     policyPricing = getPricingCache() || {};
+    tryPricing = {};
   }
   pricingLoading = false;
   autofillPrice();
@@ -1339,8 +1343,10 @@ function autofillPrice() {
 
   // Look up the price. When there is none, "n/a" is shown instead of keeping
   // the previous value, and the policy cannot be saved.
+  const currencyInput = document.getElementById("CurrencyInput");
+  const currency = currencyInput ? currencyInput.value : "EUR";
   const price =
-    mappedType && duration ? lookupPrice(mappedType, duration) : null;
+    mappedType && duration ? lookupPrice(mappedType, duration, currency) : null;
   const numeric = price === null || price === "" ? NaN : Number(price);
   basePrice = Number.isFinite(numeric) ? numeric : null;
   renderTotalPrice();
@@ -1353,7 +1359,41 @@ if (DurationInput) {
 
 const AutoTypeInput = document.getElementById("AutoTypeInput");
 if (AutoTypeInput) {
-  AutoTypeInput.addEventListener("change", autofillPrice);
+  AutoTypeInput.addEventListener("change", () => {
+    autofillPrice();
+    syncCurrencyOptions();
+  });
+}
+
+// Turkish lira is only allowed for Auto policies at the Lesovo / Kap Andreevo
+// border crossings. Everywhere else the policy is EUR only, so the TRY option
+// is disabled and any TRY selection is reset to EUR while it does not apply.
+const CurrencyInput = document.getElementById("CurrencyInput");
+
+function tryCurrencyAllowed() {
+  const branch = localStorage.getItem("branch") || "";
+  const vehicle = AutoTypeInput ? AutoTypeInput.value : "";
+  const isBorderCrossing =
+    branch.includes("Лесово") || branch.includes("Андреево") ||
+    branch.includes("Lesovo") || branch.includes("Andreevo");
+  const isAuto = vehicle === "Automobile" || vehicle === "Otomobil";
+  return isBorderCrossing && isAuto;
+}
+
+function syncCurrencyOptions() {
+  if (!CurrencyInput) return;
+  const tryOption = Array.from(CurrencyInput.options).find((o) => o.value === "TRY");
+  const allowed = tryCurrencyAllowed();
+  if (tryOption) tryOption.disabled = !allowed;
+  if (!allowed && CurrencyInput.value === "TRY") CurrencyInput.value = "EUR";
+}
+
+if (CurrencyInput) {
+  CurrencyInput.addEventListener("change", () => {
+    syncCurrencyOptions();
+    autofillPrice();
+  });
+  syncCurrencyOptions();
 }
 
 // Initial calculation once pricing is loaded (duration + vehicle type already
