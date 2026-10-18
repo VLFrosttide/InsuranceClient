@@ -2233,7 +2233,9 @@ async function brokersView() {
         {
           key: "Name",
           label: t("name"),
-          onClick: (b) => brokerPricingEditor(b),
+          // Only admins may open a broker's pricing by clicking its name.
+          // Workers just see the plain name (row click opens balance history).
+          onClick: isAdmin ? (b) => brokerPricingEditor(b) : undefined,
         },
         {
           key: "CashBalance",
@@ -2867,6 +2869,8 @@ async function brokerBatchesView(broker) {
 }
 
 async function brokerPricingEditor(broker) {
+  // Only admins may view/edit a broker's pricing; workers have no access.
+  if (userRole !== "1") return;
   try {
     // Fetch broker pricing from the server
     const data = await api(`/brokers/${broker.id}/pricing`);
