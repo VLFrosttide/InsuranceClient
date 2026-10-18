@@ -109,6 +109,8 @@ const I18N = {
 
     newUser: "New user",
     newBroker: "New broker",
+    brokerName: "Broker",
+    mainBroker: "Main broker",
     brokerAllowNegative: "Accept broker requests with negative balance",
     brokerAllowNegativeHint:
       "When off, broker requests that would push the balance below zero are rejected, and emails from brokers with a negative balance are not shown.",
@@ -580,6 +582,8 @@ const I18N = {
 
     newUser: "Нов потребител",
     newBroker: "Нов брокер",
+    brokerName: "Брокер",
+    mainBroker: "Главен брокер",
     brokerAllowNegative: "Приемане на заявки от брокери с отрицателен баланс",
     brokerAllowNegativeHint:
       "Когато е изключено, заявките от брокери, които биха свалили баланса под нула, се отхвърлят, а имейлите от брокери с отрицателен баланс не се показват.",

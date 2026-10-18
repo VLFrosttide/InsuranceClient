@@ -1476,7 +1476,21 @@ async function adminDashboard() {
 }
 
 async function adminUsers() {
-  const data = await api("/admin/users");
+  const [data, brokerData] = await Promise.all([
+    api("/admin/users"),
+    api("/brokers"),
+  ]);
+  const brokerList = (brokerData && brokerData.brokers) || [];
+  const brokerById = new Map(brokerList.map((b) => [Number(b.id), b]));
+  const brokerNameOf = (id) => {
+    if (id === null || id === undefined || id === "") return "";
+    const b = brokerById.get(Number(id));
+    return b ? b.Name : "";
+  };
+  const mainBrokerOf = (u) => {
+    const b = brokerById.get(Number(u.BrokerId));
+    return b ? brokerNameOf(b.ParentBrokerId) : "";
+  };
   const roleOptions = [
     { label: t("role.1"), value: 1 },
     { label: t("role.2"), value: 2 },
@@ -1494,9 +1508,19 @@ async function adminUsers() {
       { key: "Username", label: t("username") },
       { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
       { key: "Balance", label: t("balance"), format: (v) => money(v) },
+      {
+        key: "BrokerId",
+        label: t("brokerName"),
+        format: (v) => brokerNameOf(v) || "—",
+      },
+      {
+        key: "BrokerId",
+        label: t("mainBroker"),
+        format: (_v, u) => mainBrokerOf(u) || "—",
+      },
       { key: "Status", label: t("status") },
     ],
-    [
+    (u) => [
       {
         label: t("edit"),
         class: "",
@@ -1564,6 +1588,15 @@ async function adminUsers() {
           openModal(`${t("promote")} ${u.Username}`, form);
         },
       },
+      ...(u.BrokerId != null
+        ? [
+            {
+              label: t("mainBroker"),
+              class: "secondary",
+              onClick: (u) => setMainBrokerForm(u),
+            },
+          ]
+        : []),
       {
         label: t("suspend"),
         class: "secondary",
@@ -1637,6 +1670,54 @@ function registerUserForm() {
     t("createUser")
   );
   openModal(t("newUser"), form);
+}
+
+// Mark a broker as a sub-broker of a main broker. `user` is a login account
+// linked to a broker via users.BrokerId; selecting a main broker sets that
+// broker's ParentBrokerId (positive id) or clears it (the "—" option). The
+// PATCH /brokers/:id endpoint already applies this and validates the parent.
+async function setMainBrokerForm(user) {
+  const brokerData = await api("/brokers");
+  const brokerList = (brokerData && brokerData.brokers) || [];
+  const currentBrokerId = Number(user.BrokerId);
+  const current = brokerList.find((b) => Number(b.id) === currentBrokerId);
+  const options = [
+    { label: "—", value: "" },
+    ...brokerList
+      .filter((b) => Number(b.id) !== currentBrokerId)
+      .map((b) => ({ label: b.Name, value: b.id })),
+  ];
+  const form = buildForm(
+    [
+      {
+        key: "ParentBrokerId",
+        label: t("mainBroker"),
+        type: "select",
+        options,
+        value:
+          current && current.ParentBrokerId != null ? current.ParentBrokerId : "",
+      },
+    ],
+    async (payload) => {
+      const parentId =
+        payload.ParentBrokerId === "" || payload.ParentBrokerId == null
+          ? null
+          : Number(payload.ParentBrokerId);
+      await api(`/brokers/${currentBrokerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ParentBrokerId: parentId }),
+      });
+      toast(t("brokerUpdated"), "success");
+      closeModal();
+      adminUsers();
+    },
+    t("save")
+  );
+  openModal(
+    `${t("mainBroker")} — ${current ? current.Name : user.Username}`,
+    form
+  );
 }
 
 // Soft-delete an insurance from the admin panel. The row is kept in the
@@ -2072,12 +2153,24 @@ async function currentCashView(overrideBranch, overrideDate) {
           ]
         : []
   );
-  const resetTable = renderTable(data.resets, [
-    { key: "Username", label: t("user") },
-    { key: "Currency", label: t("currency") },
-    { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
-    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
-  ]);
+  // A "Reset to 0" clears the cash drawer (one `cash_resets` row per currency)
+  // AND the branch's card balance (one `card_resets` row). Merge the two so the
+  // Resets table also shows the card amount kept, tagged as "Card payments".
+  const cardResets = (data.cardResets || []).map((r) => ({
+    ...r,
+    Currency: t("cardPayments"),
+  }));
+  const resetTable = renderTable(
+    [...(data.resets || []), ...cardResets].sort((a, b) =>
+      String(b.CreatedAt || "").localeCompare(String(a.CreatedAt || ""))
+    ),
+    [
+      { key: "Username", label: t("user") },
+      { key: "Currency", label: t("currency") },
+      { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
+      { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
+    ]
+  );
 
   // Day picker for the history below; changing it reloads the transactions
   // and resets of that day. Clearing it falls back to the shown day.

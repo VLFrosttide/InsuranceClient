@@ -904,7 +904,7 @@ const ledger = () =>
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
-    eq(seen.length, 2, "transactions + resets queried");
+    eq(seen.length, 3, "transactions + cash resets + card resets queried");
     for (const q of seen) {
       ok(/CreatedAt >= \? AND CreatedAt < \?/.test(q.s), "filtered by day: " + q.s);
       eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds");
