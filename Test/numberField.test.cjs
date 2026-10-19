@@ -21,7 +21,12 @@ vm.runInContext(
   CTX,
   { filename: "numberField.js" }
 );
-const { extractBlankNumber, extractCarNumber, stripWhitespace } = CTX;
+const {
+  extractBlankNumber,
+  extractCarNumber,
+  extractPolicyNumber,
+  stripWhitespace,
+} = CTX;
 
 // --- tiny assert helper ------------------------------------------------------
 let passed = 0;
@@ -104,6 +109,26 @@ function eq(actual, expected, label) {
     eq(extractCarNumber("nothing here"), null, "null");
     eq(extractCarNumber(""), null, "empty");
     eq(extractCarNumber(undefined), null, "undefined");
+  });
+
+  check("policy number is read from a BG_02_ PDF filename (FI stripped)", () => {
+    eq(extractPolicyNumber("BG_02_ FI26170121.pdf"), "26170121", "with space");
+    eq(extractPolicyNumber("BG_02_FI26170121.pdf"), "26170121", "no space");
+  });
+
+  check("policy number has no fixed length", () => {
+    eq(extractPolicyNumber("BG_02_ FI123.pdf"), "123", "short");
+    eq(extractPolicyNumber("BG_02_ FI1234567890.pdf"), "1234567890", "long");
+    eq(extractPolicyNumber("BG_02_ FIXYZ.pdf"), "XYZ", "letters");
+  });
+
+  check("a non-matching filename yields no policy number", () => {
+    eq(extractPolicyNumber("policy.pdf"), null, "plain");
+    eq(extractPolicyNumber("BG_01_ FI26170121.pdf"), null, "wrong code");
+    eq(extractPolicyNumber("BG_02_ 26167659.pdf"), null, "no FI marker");
+    eq(extractPolicyNumber("BG_02_ FI26170121.txt"), null, "wrong extension");
+    eq(extractPolicyNumber(""), null, "empty");
+    eq(extractPolicyNumber(undefined), null, "undefined");
   });
 
   check("stripWhitespace removes leading, trailing and inner spaces", () => {

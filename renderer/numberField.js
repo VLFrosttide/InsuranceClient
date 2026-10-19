@@ -19,6 +19,20 @@ function extractBlankNumber(text) {
   return m ? m[0] : null;
 }
 
+// Extract the policy number from a policy PDF filename. The insurer names the
+// PDF "BG_02_ FI<policy>.pdf": a "BG_02_ " prefix, then an "FI" marker, then
+// the policy number, then the ".pdf" extension marks the end. The "FI" marker
+// is stripped, and there is no fixed length, so everything between the marker
+// and the ".pdf" is returned.
+//
+//   extractPolicyNumber("BG_02_ FI26170121.pdf") -> "26170121"
+//   extractPolicyNumber("BG_02_FI12345.pdf")     -> "12345"
+//   extractPolicyNumber("policy.pdf")            -> null
+function extractPolicyNumber(filename) {
+  const m = String(filename || "").match(/BG_02_\s*FI([^.]+)\.pdf$/i);
+  return m ? m[1] : null;
+}
+
 // Find the first standalone 8-character alphanumeric token that contains at
 // least one letter — the shape of a car (registration) number such as
 // "CB1234AB" or "59ADJ391". The letter requirement keeps a pure 8-digit value

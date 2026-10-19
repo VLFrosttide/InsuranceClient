@@ -881,6 +881,7 @@ async function addFiles(fileList) {
         size: file.size,
         base64,
       });
+      prefillPolicyNumberFromFilename(file.name);
     } catch (err) {
       console.error("Failed to read dropped file:", err);
     }
@@ -946,6 +947,18 @@ function stopDesktopPdfWatch() {
   });
 }
 
+// Pre-fill the policy-number field from a policy PDF filename. The insurer
+// names one of the policy PDFs "BG_02_ FI<policy>.pdf", so the policy number
+// can be read straight out of the filename (the "FI" marker is stripped — see
+// extractPolicyNumber in numberField.js). Only fills the field when a number
+// is actually found and leaves any existing value untouched otherwise.
+function prefillPolicyNumberFromFilename(filename) {
+  const found = extractPolicyNumber(filename);
+  if (found === null) return;
+  const input = document.getElementById("PolicyNumberInput");
+  if (input) input.value = found;
+}
+
 // Files discovered on the Desktop, ready to be attached to the policy.
 // Deduplicates by filename as a safety net (the main process already avoids
 // re-sending the same file).
@@ -962,6 +975,7 @@ function attachDesktopPdf(files) {
       size: Number(file.size) || 0,
       base64: file.base64,
     });
+    prefillPolicyNumberFromFilename(file.filename);
     added += 1;
   }
   if (added) {
