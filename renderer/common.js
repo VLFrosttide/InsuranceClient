@@ -28,6 +28,10 @@ const I18N = {
     serverError: "Server Error",
     blockedBeforeServer:
       "The request was blocked before reaching the server (hosting firewall, antivirus or network proxy)",
+    "net.connected": "Connected",
+    "net.offline": "Offline",
+    "net.checking": "Checking…",
+    "login.retrying": "Server unreachable — retrying…",
     logout: "Logout",
     "geo.warning":
       "The selected branch ({branch}) is about {km} km from your current location. Log in to this branch anyway?",
@@ -502,6 +506,10 @@ const I18N = {
     serverError: "Сървърна грешка",
     blockedBeforeServer:
       "Заявката е блокирана преди да достигне сървъра (защитна стена на хостинга, антивирус или мрежов прокси)",
+    "net.connected": "Свързан",
+    "net.offline": "Няма връзка",
+    "net.checking": "Проверка…",
+    "login.retrying": "Сървърът е недостъпен — нов опит…",
     logout: "Изход",
     "geo.warning":
       "Избраният клон ({branch}) е на около {km} км от вашето местоположение. Да се влезе ли в този клон?",
@@ -1788,6 +1796,10 @@ class UnreadEmailSocket {
     this.failedAttempts = 0;
     this.outageReported = false;
     this.probing = false;
+    this.wsUrl = WS_URL;
+    this.diagnoseInFlight = false;
+    this.redirectCandidate = null;
+    this.redirectSeen = 0;
   }
 
   connect() {
@@ -1796,7 +1808,7 @@ class UnreadEmailSocket {
 
     let ws;
     try {
-      ws = new WebSocket(WS_URL);
+      ws = new WebSocket(this.wsUrl);
     } catch (err) {
       console.error("WebSocket error:", err);
       if (this.handlers.close) this.handlers.close(err);
@@ -1883,10 +1895,11 @@ class UnreadEmailSocket {
         // any other non-101 status) and the socket never opens.
         this.failedAttempts += 1;
         console.error(
-          `Email WebSocket handshake failed for ${WS_URL} ` +
+          `Email WebSocket handshake failed for ${this.wsUrl} ` +
             `(attempt ${this.failedAttempts}, retrying in ${this.reconnectDelay} ms)`
         );
         this.reportOutage();
+        this.diagnoseHandshakeFailure();
       }
       this.scheduleReconnect();
     });
@@ -1938,6 +1951,66 @@ class UnreadEmailSocket {
       );
     } finally {
       this.probing = false;
+    }
+  }
+
+  // A handshake failed (e.g. "Unexpected response code: 307"). Ask the main
+  // process to do a raw upgrade so we can see the status + Location the browser
+  // WebSocket API hides. This also tells us WHO is redirecting: `server: hcdn`
+  // means Hostinger's CDN; anything else points at a client-side proxy/AV/TLS
+  // inspector. A stable redirect target is adopted automatically (the browser
+  // refuses to follow WebSocket redirects, so we follow it ourselves).
+  diagnoseHandshakeFailure() {
+    if (!window.bridge || typeof window.bridge.WsHandshakeProbe !== "function") {
+      return;
+    }
+    if (this.diagnoseInFlight) return;
+    this.diagnoseInFlight = true;
+    window.bridge
+      .WsHandshakeProbe()
+      .then((r) => {
+        if (!r) return;
+        const viaHcdn = String(r.server || "").toLowerCase() === "hcdn";
+        console.warn(
+          `[ws] handshake probe: status=${r.status}` +
+            (r.location ? ` location=${r.location}` : "") +
+            (r.server ? ` server=${r.server}` : "") +
+            (r.requestId ? ` requestId=${r.requestId}` : "") +
+            (viaHcdn
+              ? "  (redirect/block from Hostinger CDN)"
+              : "  (NOT hcdn - likely a client-side proxy/AV/TLS inspector)")
+        );
+        if (r.status >= 300 && r.status < 400 && r.location) {
+          try {
+            this.registerRedirect(new URL(r.location, this.wsUrl).href);
+          } catch (err) {
+            console.error("[ws] bad redirect location:", err);
+          }
+        }
+      })
+      .catch((err) => console.error("[ws] handshake probe failed:", err))
+      .finally(() => {
+        this.diagnoseInFlight = false;
+      });
+  }
+
+  // Follow a redirect target only after seeing it twice in a row (a single
+  // observation could be a one-off; two means the CDN is consistently pointing
+  // somewhere else and we should stop fighting it).
+  registerRedirect(target) {
+    if (!target || target === this.wsUrl) return;
+    if (this.redirectCandidate !== target) {
+      this.redirectCandidate = target;
+      this.redirectSeen = 1;
+      return;
+    }
+    this.redirectSeen += 1;
+    if (this.redirectSeen >= 2) {
+      console.warn(`[ws] adopting stable redirect target: ${target}`);
+      this.wsUrl = target;
+      this.redirectCandidate = null;
+      this.redirectSeen = 0;
+      this.reconnectNow();
     }
   }
 

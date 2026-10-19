@@ -98,3 +98,49 @@ body {
 .msg.success {
   color: var(--success);
 }
+
+/* Server reachability pill (network monitor). */
+.net-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 16px;
+}
+.net-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.net-status.online {
+  color: var(--text);
+}
+.net-status.online::before {
+  background: var(--success);
+}
+.net-status.offline {
+  color: var(--danger);
+}
+.net-status.offline::before {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(220, 53, 69, 0.2);
+}
+.net-status.checking::before {
+  background: var(--muted);
+  animation: netPulse 1.2s ease-in-out infinite;
+}
+@keyframes netPulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}

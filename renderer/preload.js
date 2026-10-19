@@ -48,6 +48,9 @@ contextBridge.exposeInMainWorld("bridge", {
   OutboxAcknowledge: (id) => ipcRenderer.invoke("OutboxAcknowledge", id),
   OutboxUpdateToken: (username, token) =>
     ipcRenderer.invoke("OutboxUpdateToken", username, token),
+  // Privileged raw WebSocket-upgrade probe (bypasses CORS + browser redirect
+  // hiding) so the renderer can learn the status + Location a CDN returned.
+  WsHandshakeProbe: () => ipcRenderer.invoke("WsHandshakeProbe"),
   // Subscribe to queue changes / late deliveries. Returns an unsubscribe fn.
   OnOutboxState: (callback) => {
     const listener = (event, state) => callback(state);

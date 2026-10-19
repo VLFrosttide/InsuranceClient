@@ -16,6 +16,8 @@ import {
 } from "electron";
 import path from "path";
 import fs from "fs";
+import https from "node:https";
+import crypto from "node:crypto";
 import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
 const { autoUpdater } = electronUpdater;
@@ -352,6 +354,84 @@ ipcMain.handle("OutboxUpdateToken", async (event, username, token) => {
   await outboxReady;
   return outbox.updateToken(username, token);
 });
+
+// ---------------------------------------------------------------------------
+// WebSocket handshake probe (runs in the main process: no CORS, no browser
+// redirect-hiding).
+//
+// When `new WebSocket()` in the renderer fails, Chromium only reports
+// "Unexpected response code: 307" and hides the Location header. This raw
+// handshake captures the real status + Location + `server` header so the app
+// can (a) tell the worker whether the redirect came from Hostinger's CDN
+// (`server: hcdn`) or from a client-side proxy/antivirus, and (b) follow a
+// stable redirect target that the browser WebSocket API refuses to follow.
+// ---------------------------------------------------------------------------
+const WS_PROBE_HOST = new URL(OUTBOX_DEFAULT_ORIGIN).host;
+const WS_PROBE_PATH = "/ws";
+
+function probeWsHandshake() {
+  return new Promise((resolve) => {
+    const req = https.request({
+      host: WS_PROBE_HOST,
+      port: 443,
+      method: "GET",
+      path: WS_PROBE_PATH,
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": crypto.randomBytes(16).toString("base64"),
+      },
+    });
+
+    let done = false;
+    const finish = (summary) => {
+      if (done) return;
+      done = true;
+      try {
+        req.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(summary);
+    };
+
+    // Non-101 response (3xx redirects, 4xx, 5xx, ...).
+    req.on("response", (res) => {
+      const summary = {
+        status: res.statusCode,
+        location: res.headers.location || null,
+        server: res.headers.server || null,
+        requestId: res.headers["x-hcdn-request-id"] || null,
+      };
+      res.destroy();
+      finish(summary);
+    });
+
+    // 101 Switching Protocols: Node emits "upgrade" instead of "response".
+    req.on("upgrade", (res, socket) => {
+      const summary = {
+        status: res.statusCode,
+        location: res.headers.location || null,
+        server: res.headers.server || null,
+        requestId: res.headers["x-hcdn-request-id"] || null,
+        ok: res.statusCode === 101,
+      };
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      finish(summary);
+    });
+
+    req.setTimeout(6000, () => finish({ status: "timeout" }));
+    req.on("error", (err) => finish({ status: "error", error: err.message }));
+    req.end();
+  });
+}
+
+ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 
 // ---------------------------------------------------------------------------
 // Desktop PDF watcher

@@ -7,6 +7,7 @@ const BranchInput = document.getElementById("BranchInput");
 const DisplayMsg = document.getElementById("DisplayMsg");
 const LoginForm = document.getElementById("LoginForm");
 const LangButton = document.getElementById("LangButton");
+const NetStatus = document.getElementById("NetStatus");
 
 function setMessage(text, isError) {
   if (!DisplayMsg) return;
@@ -73,6 +74,47 @@ function userLocation() {
   });
 }
 
+// Login requests are retried a few times with a per-attempt timeout. A login
+// is idempotent from the client's point of view (the server deletes any prior
+// token before issuing a new one), so a transient network blip or server 5xx —
+// e.g. the daily 13:00-17:00 window — auto-recovers instead of showing a bare
+// "Server Error" and requiring the worker to retry by hand.
+const LOGIN_TIMEOUT_MS = 15000;
+const LOGIN_MAX_ATTEMPTS = 3;
+
+async function loginFetch(username, password) {
+  let lastNetworkError = null;
+  for (let attempt = 0; attempt < LOGIN_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      setMessage(t("login.retrying"), false);
+      await new Promise((r) => setTimeout(r, 800 * Math.pow(2, attempt - 1)));
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${API_BASE}/logme`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    } catch (err) {
+      clearTimeout(timer);
+      // Retry only transient failures: timeouts and network-level errors.
+      if (err.name === "AbortError" || err instanceof TypeError) {
+        lastNetworkError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastNetworkError || new Error("Login request failed");
+}
+
 async function doLogin() {
   if (!UserName.value || !Pass.value) {
     setMessage(t("enterCredentials"), true);
@@ -96,18 +138,9 @@ async function doLogin() {
   }
 
   try {
-    const LoginReq = await fetch(`${API_BASE}/logme`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: UserName.value,
-        password: Pass.value,
-      }),
-    });
+    const { res, data } = await loginFetch(UserName.value, Pass.value);
 
-    const data = await LoginReq.json().catch(() => ({}));
-
-    if (!LoginReq.ok) {
+    if (!res.ok) {
       setMessage(translateError(data.error) || t("accessDenied"), true);
       return;
     }
@@ -140,3 +173,20 @@ LoginForm.addEventListener("submit", (e) => {
   e.preventDefault();
   doLogin();
 });
+
+// Start the reachability monitor so the worker can see, before logging in,
+// whether the server is up (green) or unreachable (red) — and whether it is
+// recovering on its own during an intermittent outage.
+try {
+  startNetMonitor({
+    apiBase: API_BASE,
+    statusEl: NetStatus || undefined,
+    labels: {
+      online: t("net.connected"),
+      offline: t("net.offline"),
+      checking: t("net.checking"),
+    },
+  });
+} catch (err) {
+  console.error("Failed to start network monitor:", err);
+}
