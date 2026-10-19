@@ -341,6 +341,45 @@ function clearPendingEmail() {
   localStorage.removeItem("pendingEmail");
 }
 
+// ---------------------------------------------------------------------------
+// Blank-number autofill & paste trimming
+// ---------------------------------------------------------------------------
+
+// When the form is opened for a broker email, look through the email's subject
+// and body and pre-fill the blank-number field with the first 6-digit number
+// and the car-number field with the first 8-character alphanumeric car number
+// (both helpers live in numberField.js).
+function autofillEmailNumbers() {
+  if (!PendingEmail) return;
+  const text = [PendingEmail.subject, PendingEmail.body].filter(Boolean).join("\n");
+
+  const blancInput = document.getElementById("BlancNumberInput");
+  if (blancInput) {
+    const found = extractBlankNumber(text);
+    if (found !== null) blancInput.value = found;
+  }
+
+  const carInput = document.getElementById("CarNumberInput");
+  if (carInput) {
+    const found = extractCarNumber(text);
+    if (found !== null) carInput.value = found;
+  }
+}
+
+// Trim all whitespace the moment a value is pasted into the car / policy /
+// blank-number fields. The clipboard text is inserted by the browser's default
+// action AFTER the paste event handlers run, so trim on the next tick. Typing
+// is left alone; the save handler still trims leading/trailing space as a
+// backstop.
+function trimOnPaste(input) {
+  if (!input) return;
+  input.addEventListener("paste", () => {
+    setTimeout(() => {
+      input.value = stripWhitespace(input.value);
+    }, 0);
+  });
+}
+
 // Walk-in insurances are created directly from the "+ Нова застраховка" button
 // and have no associated broker email. There is no return email to send and no
 // files to attach, so the file drop area is hidden for them. The native file
@@ -1807,6 +1846,11 @@ function setupPresenceSocket() {
     if (status !== presenceStatus) sendPresence(status);
   }, PRESENCE_CHECK_MS);
 }
+
+trimOnPaste(document.getElementById("CarNumberInput"));
+trimOnPaste(document.getElementById("PolicyNumberInput"));
+trimOnPaste(document.getElementById("BlancNumberInput"));
+autofillEmailNumbers();
 
 configureWalkInMode();
 renderEmailSide();
