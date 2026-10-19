@@ -158,6 +158,12 @@ tr.row-broker-alert td {
   color: #ffd9d6;
 }
 
+/* Broker is two weeks behind on payment (overdue): paint the row dark red. */
+tr.row-broker-overdue td {
+  background: #7a1016;
+  color: #ffd9d6;
+}
+
 tr td.cell-broker-alert {
   background: #6b0f14;
   color: #ffd9d6;

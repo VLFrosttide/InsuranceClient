@@ -789,6 +789,13 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
         row.appendChild(linkCell);
         return;
       }
+      if (typeof c.render === "function") {
+        const cell = el("td");
+        const node = c.render(value, item);
+        if (node) cell.appendChild(node);
+        row.appendChild(cell);
+        return;
+      }
       const cellClass =
         typeof c.cellClass === "function" ? c.cellClass(item) : "";
       row.appendChild(
@@ -2242,6 +2249,53 @@ function brokerHasNoEmail(b) {
   return emails.length === 0;
 }
 
+// The "cut off" button shown in the leftmost column of the brokers list. It is
+// disabled until an admin can act: available once the broker is two weeks
+// behind on payment (overdue) or already cut off (so it can be re-enabled).
+function brokerCutOffButton(b) {
+  const cutOff = Boolean(b.cutOff);
+  const overdue = Boolean(b.overdue);
+  const canToggle = userRole === "1" && (overdue || cutOff);
+
+  const label = cutOff ? t("brokerCutOffRestore") : t("brokerCutOff");
+  const btn = el("button", label, {
+    class: `small ${cutOff ? "danger" : "secondary"}`,
+    type: "button",
+  });
+  btn.disabled = !canToggle;
+  btn.title = cutOff
+    ? t("brokerCutOffHint")
+    : overdue
+      ? t("brokerCutOffReady")
+      : userRole !== "1"
+        ? t("brokerCutOffAdminOnly")
+        : t("brokerCutOffDisabledHint");
+
+  if (canToggle) {
+    btn.addEventListener("click", () => toggleBrokerCutOff(b));
+  }
+  return btn;
+}
+
+async function toggleBrokerCutOff(b) {
+  const target = !Boolean(b.cutOff);
+  try {
+    await api(`/brokers/${b.id}/cutoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cutOff: target }),
+    });
+    toast(
+      target ? t("brokerCutOffSet") : t("brokerCutOffRestored"),
+      "success"
+    );
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  brokersView();
+}
+
 async function brokersView() {
   const data = await api("/brokers");
   const isAdmin = userRole === "1";
@@ -2321,6 +2375,11 @@ async function brokersView() {
       brokers,
       [
         {
+          key: "cutoff",
+          label: t("cutOff"),
+          render: (_value, b) => brokerCutOffButton(b),
+        },
+        {
           key: "Name",
           label: t("name"),
           // Only admins may open a broker's pricing by clicking its name.
@@ -2387,7 +2446,12 @@ async function brokersView() {
             ]
           : []),
       ],
-      (b) => (brokerHasNoEmail(b) ? "row-broker-alert" : ""),
+      (b) => {
+        const classes = [];
+        if (brokerHasNoEmail(b)) classes.push("row-broker-alert");
+        if (b.overdue) classes.push("row-broker-overdue");
+        return classes.join(" ");
+      },
       (b) => brokerHistoryView(b)
     );
   };

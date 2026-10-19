@@ -67,13 +67,13 @@ async function query(sql, params = []) {
   if (s.startsWith("SELECT id FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id }))];
   }
-  if (s.startsWith("SELECT id, Name, CashBalance FROM brokers WHERE id = ?")) {
+  if (s.startsWith("SELECT id, Name, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT id, CashBalance FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id, CashBalance: b.CashBalance }))];
   }
-  if (s.startsWith("SELECT id, Name, CashBalance FROM brokers ORDER BY id")) {
+  if (s.startsWith("SELECT id, Name, CashBalance, ParentBrokerId, CutOff FROM brokers ORDER BY id")) {
     return [db.brokers.map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT Email FROM broker_emails WHERE BrokerId = ?")) {
@@ -166,6 +166,16 @@ async function query(sql, params = []) {
   if (s.startsWith("INSERT INTO app_settings")) {
     db.app_settings[p[0]] = p[1];
     return [{}];
+  }
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_balance_movements")) {
+    return [{}];
+  }
+  if (
+    s.startsWith(
+      "SELECT BrokerId, COALESCE(SUM(Amount), 0) AS since FROM broker_balance_movements"
+    )
+  ) {
+    return [[]];
   }
   throw new Error("unexpected SQL in test: " + s);
 }

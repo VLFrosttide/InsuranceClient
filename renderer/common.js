@@ -118,6 +118,16 @@ const I18N = {
     brokerAllowNegative: "Accept broker requests with negative balance",
     brokerAllowNegativeHint:
       "When off, broker requests that would push the balance below zero are rejected, and emails from brokers with a negative balance are not shown.",
+    cutOff: "Cut off",
+    brokerCutOff: "Cut off",
+    brokerCutOffRestore: "Re-enable",
+    brokerCutOffHint: "Block new insurances for this broker",
+    brokerCutOffReady: "Two weeks without payment — click to cut this broker off",
+    brokerCutOffDisabledHint:
+      "Unavailable until the broker is two weeks behind on payment",
+    brokerCutOffAdminOnly: "Only admins can cut off a broker",
+    brokerCutOffSet: "Broker cut off — new insurances are blocked",
+    brokerCutOffRestored: "Broker re-enabled — new insurances are allowed again",
     edit: "Edit",
     promote: "Promote",
     suspend: "Suspend",
@@ -436,6 +446,8 @@ const I18N = {
     "err.senderNotBroker": "The email sender is not linked to a broker",
     "err.brokerNegativeBalance":
       "Broker request rejected: the broker balance would go negative",
+    "err.brokerCutOff":
+      "Broker is cut off; new insurances cannot be created until the broker is re-enabled",
     "err.payerInvalid": "The fee payer must be 'broker', 'worker' or 'none'",
     "err.dateFormat": "Date must be in YYYY-MM-DD format",
     "err.creationDateFormat": "Creation date must be in YYYY-MM-DD HH:MM:SS format",
@@ -595,6 +607,16 @@ const I18N = {
     brokerAllowNegative: "Приемане на заявки от брокери с отрицателен баланс",
     brokerAllowNegativeHint:
       "Когато е изключено, заявките от брокери, които биха свалили баланса под нула, се отхвърлят, а имейлите от брокери с отрицателен баланс не се показват.",
+    cutOff: "Спри",
+    brokerCutOff: "Спри",
+    brokerCutOffRestore: "Активирай",
+    brokerCutOffHint: "Спри новите застраховки за този брокер",
+    brokerCutOffReady: "Две седмици без плащане — натисни, за да спреш брокера",
+    brokerCutOffDisabledHint:
+      "Недостъпно, докато брокерът не е с две седмици закъснение с плащането",
+    brokerCutOffAdminOnly: "Само администратори могат да спират брокер",
+    brokerCutOffSet: "Брокерът е спрян — новите застраховки са блокирани",
+    brokerCutOffRestored: "Брокерът е активиран — новите застраховки са разрешени отново",
     edit: "Редактирай",
     promote: "Повиши",
     suspend: "Спри",
@@ -914,6 +936,8 @@ const I18N = {
     "err.senderNotBroker": "Подателят на имейла не е свързан с брокер",
     "err.brokerNegativeBalance":
       "Заявката на брокера е отхвърлена: балансът на брокера ще стане отрицателен",
+    "err.brokerCutOff":
+      "Брокерът е спрян; нови застраховки не могат да се създават, докато брокерът не бъде отново активиран",
     "err.payerInvalid": "Платецът на таксата трябва да е 'брокер', 'служител' или 'без вина'",
     "err.dateFormat": "Датата трябва да е във формат ГГГГ-ММ-ДД",
     "err.creationDateFormat":
@@ -1029,6 +1053,8 @@ const SERVER_ERROR_TRANSLATIONS = {
   "The email sender is not linked to a broker": "err.senderNotBroker",
   "Broker request rejected: negative balance not allowed":
     "err.brokerNegativeBalance",
+  "Broker is cut off; new insurances cannot be created until the broker is re-enabled":
+    "err.brokerCutOff",
   "Attach at least one file before saving an email policy": "add.attachmentsRequired",
   "payer must be one of 'broker', 'worker' or 'none'": "err.payerInvalid",
   "date must be in YYYY-MM-DD format": "err.dateFormat",
@@ -1779,6 +1805,13 @@ function initOutboxUi() {
 // platform recycles the Node process on deploy - so those stay in the console.
 const WS_OUTAGE_REPORT_AFTER = 3;
 
+// A handshake failure triggers a short burst of raw upgrade probes rather than
+// a single one. The 307 the app sees is intermittent (edge- or time-specific),
+// so one probe usually answers 101 and misses the redirect entirely; a few
+// staggered attempts catch its Location header often enough to matter.
+const WS_PROBE_ATTEMPTS = 4;
+const WS_PROBE_RETRY_MS = 250;
+
 class UnreadEmailSocket {
   constructor(handlers = {}) {
     this.handlers = handlers;
@@ -1960,26 +1993,42 @@ class UnreadEmailSocket {
   // means Hostinger's CDN; anything else points at a client-side proxy/AV/TLS
   // inspector. A stable redirect target is adopted automatically (the browser
   // refuses to follow WebSocket redirects, so we follow it ourselves).
-  diagnoseHandshakeFailure() {
+  //
+  // The probe runs a short burst of attempts (not just one) because the 307 is
+  // intermittent. Each result is logged with its attempt number, so the
+  // incident trail shows the status + Location + server for every try.
+  async diagnoseHandshakeFailure() {
     if (!window.bridge || typeof window.bridge.WsHandshakeProbe !== "function") {
       return;
     }
     if (this.diagnoseInFlight) return;
     this.diagnoseInFlight = true;
-    window.bridge
-      .WsHandshakeProbe()
-      .then((r) => {
-        if (!r) return;
-        const viaHcdn = String(r.server || "").toLowerCase() === "hcdn";
-        console.warn(
-          `[ws] handshake probe: status=${r.status}` +
-            (r.location ? ` location=${r.location}` : "") +
-            (r.server ? ` server=${r.server}` : "") +
-            (r.requestId ? ` requestId=${r.requestId}` : "") +
-            (viaHcdn
-              ? "  (redirect/block from Hostinger CDN)"
-              : "  (NOT hcdn - likely a client-side proxy/AV/TLS inspector)")
-        );
+    try {
+      for (let attempt = 1; attempt <= WS_PROBE_ATTEMPTS; attempt++) {
+        let r;
+        try {
+          r = await window.bridge.WsHandshakeProbe();
+        } catch (err) {
+          console.error("[ws] handshake probe failed:", err);
+          r = null;
+        }
+        if (!r) continue; // bridge-side failure; retry on the next attempt
+
+        // Network-level failures (timeout / connect error) cannot reveal a
+        // redirect on a retry, so report once and stop the burst early.
+        if (typeof r.status !== "number") {
+          console.warn(
+            `[ws] handshake probe ${attempt}/${WS_PROBE_ATTEMPTS}: ` +
+              `${r.status}${r.error ? ` (${r.error})` : ""} - server unreachable`
+          );
+          break;
+        }
+
+        this.logHandshakeProbeResult(attempt, WS_PROBE_ATTEMPTS, r);
+
+        // Adopt a redirect target once it has been observed consistently. The
+        // burst means the 307's Location header is captured even though a
+        // single probe usually answers 101.
         if (r.status >= 300 && r.status < 400 && r.location) {
           try {
             this.registerRedirect(new URL(r.location, this.wsUrl).href);
@@ -1987,11 +2036,42 @@ class UnreadEmailSocket {
             console.error("[ws] bad redirect location:", err);
           }
         }
-      })
-      .catch((err) => console.error("[ws] handshake probe failed:", err))
-      .finally(() => {
-        this.diagnoseInFlight = false;
-      });
+
+        if (attempt < WS_PROBE_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, WS_PROBE_RETRY_MS));
+        }
+      }
+    } finally {
+      this.diagnoseInFlight = false;
+    }
+  }
+
+  // Format and log one raw-upgrade probe result. Kept as its own method so the
+  // burst can print each attempt's status + Location + server clearly during an
+  // incident, instead of a single aggregate line.
+  logHandshakeProbeResult(attempt, total, r) {
+    const viaHcdn = String(r.server || "").toLowerCase() === "hcdn";
+    // Interpret the raw result honestly. A 101 is a *successful* upgrade, so a
+    // browser failure that the probe answers with 101 was transient (or hit a
+    // different CDN edge) and is NOT a block. Only a 3xx is a redirect; any
+    // other non-101 status is a genuine block.
+    const verdict =
+      r.status === 101
+        ? "raw upgrade succeeded - browser failure was transient/edge-specific"
+        : r.status >= 300 && r.status < 400
+        ? viaHcdn
+          ? "redirect from Hostinger CDN"
+          : "redirect, NOT hcdn - likely a client-side proxy/AV/TLS inspector"
+        : viaHcdn
+        ? "blocked by Hostinger CDN"
+        : "blocked, NOT hcdn - likely a client-side proxy/AV/TLS inspector";
+    console.warn(
+      `[ws] handshake probe ${attempt}/${total}: status=${r.status}` +
+        (r.location ? ` location=${r.location}` : "") +
+        (r.server ? ` server=${r.server}` : "") +
+        (r.requestId ? ` requestId=${r.requestId}` : "") +
+        `  (${verdict})`
+    );
   }
 
   // Follow a redirect target only after seeing it twice in a row (a single
