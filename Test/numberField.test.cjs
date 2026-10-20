@@ -95,6 +95,12 @@ function eq(actual, expected, label) {
     eq(extractCarNumber("policy 26167659"), null, "all digits");
   });
 
+  check("a pure 8-letter word is not a car number", () => {
+    eq(extractCarNumber("attached document"), null, "all letters");
+    eq(extractCarNumber("ABCDEFGH"), null, "uppercase letters only");
+    eq(extractCarNumber("attached CB1234AB"), "CB1234AB", "skips 8-letter word");
+  });
+
   check("a short or long token is not a car number", () => {
     eq(extractCarNumber("54ZS584"), null, "7 chars");
     eq(extractCarNumber("AB12345"), null, "7 chars");

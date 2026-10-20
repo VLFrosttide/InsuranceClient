@@ -34,15 +34,17 @@ function extractPolicyNumber(filename) {
 }
 
 // Find the first standalone 8-character alphanumeric token that contains at
-// least one letter — the shape of a car (registration) number such as
-// "CB1234AB" or "59ADJ391". The letter requirement keeps a pure 8-digit value
-// (the policy number, "26167659") from being mistaken for a car number.
+// least one letter and at least one digit — the shape of a car (registration)
+// number such as "CB1234AB" or "59ADJ391". Requiring both a letter and a digit
+// keeps a pure 8-digit value (the policy number, "26167659") and a plain
+// 8-letter word (e.g. "attached") from being mistaken for a car number.
 //
 //   extractCarNumber("Car CB1234AB blanc 149988")  -> "CB1234AB"
 //   extractCarNumber("policy 26167659")             -> null (all digits)
+//   extractCarNumber("attached document")           -> null (all letters)
 function extractCarNumber(text) {
   const m = String(text || "").match(
-    /(?<![A-Za-z0-9])(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{8}(?![A-Za-z0-9])/
+    /(?<![A-Za-z0-9])(?=[A-Za-z0-9]{0,7}[A-Za-z])(?=[A-Za-z0-9]{0,7}[0-9])[A-Za-z0-9]{8}(?![A-Za-z0-9])/
   );
   return m ? m[0] : null;
 }
