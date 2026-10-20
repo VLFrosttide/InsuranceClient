@@ -183,6 +183,7 @@ const ATTACHMENT_TIMEOUT_MAX_MS = 5 * 60 * 1000; // hard cap for very large file
 const ATTACHMENT_SLOW_BYTES_PER_SEC = 32 * 1024; // floor for a genuinely slow link
 const ATTACHMENT_MAX_ATTEMPTS = 6; // requests per attachment per connection
 const ATTACHMENT_RETRY_BASE_MS = 1500; // first retry delay (doubles each time)
+const ATTACHMENT_CONCURRENCY = 2; // max concurrent attachment downloads over the socket
 
 // A request is only "done" once the bytes have actually arrived.
 function isAttachmentLoaded(entry) {
@@ -225,12 +226,13 @@ function scheduleAttachmentRetry(entry) {
   if (entry.gaveUp || isAttachmentLoaded(entry)) return;
   clearTimeout(entry.retryTimer);
   const delay = Math.min(
-    ATTACHMENT_RETRY_BASE_MS * Math.pow(2, entry.attempts - 1),
+    ATTACHMENT_RETRY_BASE_MS * Math.pow(2, Math.max(0, entry.attempts - 1)),
     30000
   );
   entry.retryTimer = setTimeout(() => {
     entry.retryTimer = null;
-    requestAttachment(entry);
+    entry.requested = true;
+    pumpAttachmentQueue();
   }, delay);
 }
 
@@ -238,6 +240,8 @@ function scheduleAttachmentRetry(entry) {
 function giveUpOnAttachment(entry) {
   if (entry.gaveUp) return;
   entry.gaveUp = true;
+  entry.inFlight = false;
+  entry.requested = false;
   clearAttachmentTimers(entry);
   if (entry.tile) {
     entry.tile.classList.remove("attachment-loading");
@@ -252,16 +256,19 @@ function giveUpOnAttachment(entry) {
   }
 }
 
-// Ask the server for one attachment's bytes, guarding against a lost request so
-// a picture is never left spinning forever on a bad connection.
-function requestAttachment(entry) {
-  if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
-  if (entry.requested || entry.gaveUp || isAttachmentLoaded(entry)) return;
+function sendAttachmentRequest(entry) {
+  if (!emailSocket || !emailSocket.isReady() || !PendingEmail || !PendingEmail.messageId) {
+    return false;
+  }
+  if (entry.inFlight || entry.gaveUp || isAttachmentLoaded(entry)) {
+    return false;
+  }
   if (entry.attempts >= ATTACHMENT_MAX_ATTEMPTS) {
     giveUpOnAttachment(entry);
-    return;
+    return false;
   }
   entry.requested = true;
+  entry.inFlight = true;
   entry.attempts += 1;
   try {
     emailSocket.send({
@@ -270,21 +277,73 @@ function requestAttachment(entry) {
       id: entry.att.id,
     });
   } catch (err) {
+    entry.inFlight = false;
     entry.requested = false;
     reportError("Failed to request email attachment", err, "emailSendFailed");
     scheduleAttachmentRetry(entry);
-    return;
+    return false;
   }
-  // If the reply never arrives (half-open socket: the send succeeded locally
-  // but never reached the server), ask again after the timeout.
+  // Start the transfer timeout only once the request is actually sent on the
+  // wire (not while waiting behind earlier attachments in the queue).
   clearTimeout(entry.timer);
   entry.timer = setTimeout(() => {
     entry.timer = null;
-    if (entry.requested && !isAttachmentLoaded(entry)) {
+    if (entry.inFlight && !isAttachmentLoaded(entry)) {
+      entry.inFlight = false;
       entry.requested = false;
       scheduleAttachmentRetry(entry);
+      pumpAttachmentQueue();
     }
   }, attachmentTimeoutMs(entry));
+  return true;
+}
+
+// Send up to ATTACHMENT_CONCURRENCY attachment requests at a time, smallest
+// files first, so small PDFs/thumbnails appear quickly and large photos do not
+// cause later attachments to time out while waiting in line on a slow link.
+function pumpAttachmentQueue() {
+  if (!emailSocket || !emailSocket.isReady() || !PendingEmail || !PendingEmail.messageId) {
+    return;
+  }
+  let inFlightCount = 0;
+  const candidates = [];
+  for (const entry of emailAttachmentEntries.values()) {
+    if (entry.inFlight) {
+      inFlightCount += 1;
+    } else if (
+      entry.requested &&
+      !entry.gaveUp &&
+      !entry.retryTimer &&
+      !isAttachmentLoaded(entry)
+    ) {
+      candidates.push(entry);
+    }
+  }
+  if (inFlightCount >= ATTACHMENT_CONCURRENCY || candidates.length === 0) {
+    return;
+  }
+  candidates.sort(
+    (a, b) => ((a.att && a.att.size) || 0) - ((b.att && b.att.size) || 0)
+  );
+  for (const entry of candidates) {
+    if (inFlightCount >= ATTACHMENT_CONCURRENCY) break;
+    if (sendAttachmentRequest(entry)) {
+      inFlightCount += 1;
+    }
+  }
+}
+
+// Ask the server for one attachment's bytes, guarding against a lost request so
+// a picture is never left spinning forever on a bad connection.
+function requestAttachment(entry) {
+  if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
+  if (entry.inFlight || entry.gaveUp || isAttachmentLoaded(entry)) return;
+  if (entry.attempts >= ATTACHMENT_MAX_ATTEMPTS) {
+    giveUpOnAttachment(entry);
+    return;
+  }
+  entry.requested = true;
+  pumpAttachmentQueue();
 }
 
 // Shared click behaviour for an <img> preview: open the picture in the viewer,
@@ -578,12 +637,13 @@ function requestEmailAttachments() {
 function retryPendingAttachments() {
   for (const entry of emailAttachmentEntries.values()) {
     if (isAttachmentLoaded(entry)) continue;
-    entry.requested = false;
+    entry.inFlight = false;
+    entry.requested = true;
     entry.gaveUp = false;
     entry.attempts = 0;
     clearAttachmentTimers(entry);
   }
-  requestEmailAttachments();
+  pumpAttachmentQueue();
 }
 
 // Set once the worker completes (saves) or cancels the email. From then on a
@@ -592,10 +652,20 @@ let leavingEmail = false;
 
 function setupEmailSocket() {
   if (!PendingEmail || !PendingEmail.messageId) {
-    // Walk-in form: no email of its own. Still connect while email policies
-    // wait in the outbox - their reservations live on this page's socket
-    // (the dashboard's connection closed on navigation) and they must be
-    // completed if the outbox delivers them while this form is open.
+    // Walk-in form: no email of its own. Connect a single shared socket for
+    // worker presence ("working" / "afk") and outbox email reservations.
+    if (getRole() === "2") {
+      emailSocket = new UnreadEmailSocket({
+        close: () => resetOutboxEmailClaims(),
+        auth_ok: () => {
+          sendPresence(presenceStatusFor("working", lastActivityAt));
+          syncOutboxEmails(emailSocket);
+        },
+      });
+      emailSocket.connect();
+      onOutboxState(() => syncOutboxEmails(emailSocket));
+      return;
+    }
     onOutboxState((state) => {
       if (emailSocket || outboxEmailIds(state).size === 0) return;
       emailSocket = new UnreadEmailSocket({
@@ -612,6 +682,9 @@ function setupEmailSocket() {
     // The server released this connection's claims: re-claim on reconnect.
     close: () => resetOutboxEmailClaims(),
     auth_ok: () => {
+      if (getRole() === "2") {
+        sendPresence(presenceStatusFor("working", lastActivityAt));
+      }
       // Emails of policies queued earlier stay reserved on this connection
       // too (the dashboard's connection, which held them, is gone), and get
       // completed here if the outbox delivers them while this form is open.
@@ -627,6 +700,7 @@ function setupEmailSocket() {
       // read once more. `restore` lets the server reload the email from Gmail
       // if it no longer holds it (e.g. it restarted while we were away).
       try {
+        clearDurableEmailWsAction(PendingEmail.messageId);
         emailSocket.send({
           type: "claim_email",
           messageId: PendingEmail.messageId,
@@ -660,6 +734,7 @@ function setupEmailSocket() {
       // A reply arrived, so cancel the "request was lost" timeout.
       clearTimeout(entry.timer);
       entry.timer = null;
+      entry.inFlight = false;
       entry.requested = false;
 
       if (entry.tile) {
@@ -675,9 +750,13 @@ function setupEmailSocket() {
         } else {
           onAttachmentFailed(entry);
         }
+        pumpAttachmentQueue();
         return;
       }
-      if (!entry.img) return;
+      if (!entry.img) {
+        pumpAttachmentQueue();
+        return;
+      }
       if (
         msg.ok &&
         msg.base64 &&
@@ -707,6 +786,7 @@ function setupEmailSocket() {
       } else {
         onAttachmentFailed(entry);
       }
+      pumpAttachmentQueue();
     },
   });
   emailSocket.connect();
@@ -722,21 +802,30 @@ function ownEmailId() {
 
 function releaseEmail() {
   leavingEmail = true;
-  if (emailSocket && PendingEmail && PendingEmail.messageId) {
-    try {
-      emailSocket.send({
-        type: "release_email",
-        messageId: PendingEmail.messageId,
-      });
-    } catch (err) {
-      reportError("Failed to release email", err, "emailSendFailed");
+  if (PendingEmail && PendingEmail.messageId) {
+    if (emailSocket && emailSocket.isReady()) {
+      try {
+        emailSocket.send({
+          type: "release_email",
+          messageId: PendingEmail.messageId,
+        });
+        clearDurableEmailWsAction(PendingEmail.messageId);
+        return;
+      } catch (err) {
+        reportError("Failed to release email", err, "emailSendFailed");
+      }
     }
+    queueDurableEmailWsAction({
+      type: "release_email",
+      messageId: PendingEmail.messageId,
+    });
   }
 }
 
 async function waitForSocketAuth(timeoutMs = 800) {
   if (!emailSocket) return;
   if (emailSocket.authed) return;
+  emailSocket.ensureConnected();
   const started = Date.now();
   while (!emailSocket.authed && Date.now() - started < timeoutMs) {
     await new Promise((r) => setTimeout(r, 50));
@@ -745,16 +834,25 @@ async function waitForSocketAuth(timeoutMs = 800) {
 
 function completeEmail() {
   leavingEmail = true;
-  if (emailSocket && PendingEmail && PendingEmail.messageId) {
-    try {
-      emailSocket.send({
-        type: "complete_email",
-        messageId: PendingEmail.messageId,
-      });
-    } catch (err) {
-      reportError("Failed to complete email", err, "emailSendFailed");
+  if (PendingEmail && PendingEmail.messageId) {
+    if (emailSocket && emailSocket.isReady()) {
+      try {
+        emailSocket.send({
+          type: "complete_email",
+          messageId: PendingEmail.messageId,
+        });
+        clearDurableEmailWsAction(PendingEmail.messageId);
+        return true;
+      } catch (err) {
+        reportError("Failed to complete email", err, "emailSendFailed");
+      }
     }
+    queueDurableEmailWsAction({
+      type: "complete_email",
+      messageId: PendingEmail.messageId,
+    });
   }
+  return false;
 }
 
 // Whether saving this form sends a return email to the broker: only for
@@ -1723,8 +1821,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
       leavingEmail = true;
       await waitForSocketAuth();
       if (!queued) {
-        completeEmail();
-        if (outcome.id && outboxAvailable()) {
+        const sentNow = completeEmail();
+        if (sentNow && outcome.id && outboxAvailable()) {
           window.bridge.OutboxAcknowledge(outcome.id).catch(() => {});
         }
       }
@@ -1845,10 +1943,16 @@ function markActivity() {
 
 function setupPresenceSocket() {
   if (getRole() !== "2") return;
-  presenceSocket = new UnreadEmailSocket({
-    auth_ok: () => sendPresence(presenceStatusFor("working", lastActivityAt)),
-  });
-  presenceSocket.connect();
+  if (emailSocket) {
+    // Reuse emailSocket so the form page maintains a single WebSocket
+    // connection for emails, attachments, outbox sync and presence.
+    presenceSocket = emailSocket;
+  } else {
+    presenceSocket = new UnreadEmailSocket({
+      auth_ok: () => sendPresence(presenceStatusFor("working", lastActivityAt)),
+    });
+    presenceSocket.connect();
+  }
 
   trackUserActivity(markActivity);
   if (InsuranceForm) {

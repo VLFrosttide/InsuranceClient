@@ -340,17 +340,22 @@ pre {
 }
 .email-card {
   position: relative;
+  overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   color: var(--text);
   font-size: 14px;
   word-break: break-word;
-  transition: border-color 150ms ease, background 150ms ease;
+  transition: border-color 150ms ease, background 150ms ease, opacity 150ms ease,
+    transform 150ms ease, box-shadow 150ms ease;
 }
 .email-card:hover {
   background: var(--bg-soft);
   border-color: var(--accent);
+}
+.email-card:active {
+  transform: scale(0.99);
 }
 .email-card-open {
   display: block;
@@ -466,17 +471,100 @@ pre {
     box-shadow: 0 0 0 1px var(--danger);
   }
 }
-/* Claim request in flight: red border on the card while waiting for the
-   server. The doubled class beats .email-card:hover's accent border. Only the
-   text is dimmed so the border stays fully visible. */
+/* Claim request in flight: highlight the clicked card with an animated
+   spinner + "Opening…" pill and a sliding progress bar along the bottom edge,
+   while dimming all other cards so the worker knows their click was registered
+   and does not need to click again. */
+.email-card-busy-indicator {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  width: fit-content;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(56, 139, 253, 0.22);
+  border: 1px solid rgba(88, 166, 255, 0.55);
+}
+.email-card-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+   flex: 0 0 auto;
+  animation: email-card-spin 0.7s linear infinite;
+}
 .email-card.email-card-busy,
 .email-card.email-card-busy:hover {
-  border-color: var(--danger);
-  box-shadow: 0 0 0 1px var(--danger);
-  animation: none;
+  border-color: var(--accent);
+  background: var(--bg-soft);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(56, 139, 253, 0.35);
+  animation: email-card-busy-pulse 1.4s ease-in-out infinite;
 }
-.email-card-busy .email-card-open {
-  opacity: 0.6;
+.email-card.email-card-busy::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 45%;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    #79c0ff,
+    transparent
+  );
+  animation: email-card-progress 1.15s ease-in-out infinite;
+}
+.email-card-busy .email-card-busy-indicator {
+  display: inline-flex;
+}
+.email-card-busy .email-card-title,
+.email-card-busy .email-card-time {
+  opacity: 0.75;
+}
+.email-card-busy .email-card-x {
+  opacity: 0;
+  pointer-events: none;
+}
+body.email-claim-pending .email-card:not(.email-card-busy) {
+  opacity: 0.45;
+  pointer-events: none;
+}
+@keyframes email-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes email-card-busy-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--accent), 0 0 10px rgba(56, 139, 253, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--accent), 0 0 18px rgba(56, 139, 253, 0.5);
+  }
+}
+@keyframes email-card-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .email-card-spinner,
+  .email-card.email-card-busy,
+  .email-card.email-card-busy::after {
+    animation: none;
+  }
 }
 /* Animated "busy" cursor (arrow + spinner on Windows) for the whole page
    while a claim is pending, so it shows even if the pointer leaves the card.

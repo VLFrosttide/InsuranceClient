@@ -68,6 +68,9 @@ function refreshEmailCardAges() {
     );
     entry.waitNode.textContent = emailWaitingLabel(entry.arrivalMs, now);
     entry.timeWrap.title = overdue ? t("email.overdue") : "";
+    if (entry.busyLabelNode) {
+      entry.busyLabelNode.textContent = t("email.opening");
+    }
   }
 }
 
@@ -112,6 +115,20 @@ function addEmailCard(email) {
   timeWrap.appendChild(waitNode);
   openBtn.appendChild(timeWrap);
 
+  // Busy indicator (spinner + "Opening…" label) revealed while a click on this
+  // card is waiting for the server's claim confirmation.
+  const busyNode = el("span", null, {
+    class: "email-card-busy-indicator",
+    "aria-hidden": "true",
+  });
+  const spinnerNode = el("span", null, { class: "email-card-spinner" });
+  const busyLabelNode = el("span", t("email.opening"), {
+    class: "email-card-busy-label",
+  });
+  busyNode.appendChild(spinnerNode);
+  busyNode.appendChild(busyLabelNode);
+  openBtn.appendChild(busyNode);
+
   openBtn.addEventListener("click", () => openEmailInNewForm(email));
 
   const xBtn = el("button", "✕", {
@@ -131,6 +148,10 @@ function addEmailCard(email) {
   emailCards.set(email.messageId, {
     email,
     node: card,
+    openBtn,
+    xBtn,
+    busyNode,
+    busyLabelNode,
     arrivalMs,
     timeWrap,
     timeNode,
@@ -166,7 +187,15 @@ function markEmailIrrelevant(email) {
   // never re-surfaces on a later poll or server restart.
   try {
     if (!emailSocket) throw new Error(t("emailConnUnavailable"));
-    emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+    if (!emailSocket.isReady()) {
+      queueDurableEmailWsAction({
+        type: "mark_irrelevant",
+        messageId: email.messageId,
+      });
+      emailSocket.ensureConnected();
+    } else {
+      emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+    }
   } catch (err) {
     // Keep the card: the server never received the dismissal.
     reportError("Failed to mark email as irrelevant", err, "emailSendFailed");
@@ -179,10 +208,11 @@ function markEmailIrrelevant(email) {
 // How long to wait for the server's claim_email answer before giving up. A
 // half-open socket (readyState OPEN, network path dead) silently swallows the
 // request, so without this the click would appear to do nothing at all.
-const CLAIM_TIMEOUT_MS = 3500;
+const CLAIM_TIMEOUT_MS = 8000;
 let claimTimer = null;
 // performance.now() timestamp of when the pending claim was sent.
 let claimSentAt = 0;
+let pendingClaimSent = false;
 
 // Claim round-trip times are kept in localStorage: a successful claim
 // navigates to AddInsurance, which would wipe any in-memory history.
@@ -225,15 +255,40 @@ function logClaimResponseTime(messageId, ok, ms) {
 
 function setCardBusy(messageId, busy) {
   const entry = emailCards.get(messageId);
-  if (entry) entry.node.classList.toggle("email-card-busy", busy);
+  if (entry) {
+    entry.node.classList.toggle("email-card-busy", busy);
+    entry.node.setAttribute("aria-busy", String(Boolean(busy)));
+    if (entry.openBtn) entry.openBtn.disabled = Boolean(busy);
+    if (entry.xBtn) entry.xBtn.disabled = Boolean(busy);
+    if (entry.busyNode) {
+      entry.busyNode.setAttribute("aria-hidden", String(!busy));
+    }
+  }
   document.body.classList.toggle("email-claim-pending", busy);
 }
 
 function clearPendingClaim() {
   clearTimeout(claimTimer);
   claimTimer = null;
+  pendingClaimSent = false;
   if (pendingClaimEmail) setCardBusy(pendingClaimEmail.messageId, false);
   pendingClaimEmail = null;
+}
+
+function sendPendingClaimNow() {
+  if (!pendingClaimEmail || pendingClaimSent) return;
+  if (!emailSocket || !emailSocket.isReady()) return;
+  try {
+    clearDurableEmailWsAction(pendingClaimEmail.messageId);
+    emailSocket.send({
+      type: "claim_email",
+      messageId: pendingClaimEmail.messageId,
+    });
+    pendingClaimSent = true;
+  } catch (err) {
+    clearPendingClaim();
+    reportError("Failed to claim email", err, "emailSendFailed");
+  }
 }
 
 function openEmailInNewForm(email) {
@@ -245,21 +300,10 @@ function openEmailInNewForm(email) {
   // A claim is already in flight; ignore repeated clicks until it resolves.
   if (pendingClaimEmail) return;
 
-  // The socket is down or still authenticating. Sending now would only queue
-  // the claim and the click would look dead, so tell the worker and kick off
-  // an immediate reconnect instead of waiting out the backoff delay.
-  if (!emailSocket.isReady()) {
-    console.warn(
-      `Cannot claim email "${email.messageId}": email WebSocket is not connected`
-    );
-    toast(t("emailConnUnavailable"), "error");
-    emailSocket.ensureConnected();
-    return;
-  }
-
   // Only navigate once the server confirms this client won the claim. If
   // another worker clicked the same card first, we show an error instead.
   pendingClaimEmail = email;
+  pendingClaimSent = false;
   setCardBusy(email.messageId, true);
   claimSentAt = performance.now();
 
@@ -271,12 +315,13 @@ function openEmailInNewForm(email) {
   } catch (err) {
     console.error("Failed to store the Desktop watch start time:", err);
   }
-  try {
-    emailSocket.send({ type: "claim_email", messageId: email.messageId });
-  } catch (err) {
-    clearPendingClaim();
-    reportError("Failed to claim email", err, "emailSendFailed");
-    return;
+
+  if (emailSocket.isReady()) {
+    sendPendingClaimNow();
+  } else {
+    // The socket is reconnecting or still authenticating: kick off an immediate
+    // connection attempt and let auth_ok send the claim as soon as it is ready.
+    emailSocket.ensureConnected();
   }
 
   claimTimer = setTimeout(() => {
@@ -343,20 +388,31 @@ function setupEmailSocket() {
       }
       // Keep emails of queued policies reserved; complete delivered ones.
       syncOutboxEmails(emailSocket);
+      // Share this connection for worker presence so the page only opens one
+      // WebSocket instead of two.
+      try {
+        sendPresence(presenceStatusFor("online", lastActivityAt));
+        emailSocket.send({ type: "list_presence" });
+      } catch (err) {
+        console.error("Failed to send presence request:", err);
+      }
+      // If the worker clicked an email card while the socket was reconnecting,
+      // send the pending claim now.
+      sendPendingClaimNow();
     },
-    // The connection dropped: the server never answers a claim sent on it, so
-    // fail it now instead of leaving the card stuck in its busy state.
+    // The connection dropped: allow a reconnect within CLAIM_TIMEOUT_MS to
+    // re-send any pending claim automatically.
     close: () => {
       // The server released this connection's claims: re-claim on reconnect.
       resetOutboxEmailClaims();
       if (!pendingClaimEmail) return;
-      console.error(
-        `Email WebSocket closed before claim_email "${pendingClaimEmail.messageId}" was answered`
-      );
-      clearPendingClaim();
-      toast(t("emailConnUnavailable"), "error");
+      pendingClaimSent = false;
     },
     list_emails: (msg) => reconcileEmailCards(msg.data),
+    presence_update: (msg) => {
+      presenceWorkers = Array.isArray(msg.data) ? msg.data : [];
+      renderPresence(presenceWorkers);
+    },
     claim_email: (msg) => {
       if (!pendingClaimEmail || pendingClaimEmail.messageId !== msg.messageId) {
         return;
@@ -403,7 +459,7 @@ function setupEmailSocket() {
 }
 
 function fetchUnreadEmails() {
-  if (userRole !== "2" || !emailSocket) return;
+  if (userRole !== "2" || !emailSocket || !emailSocket.isReady()) return;
   try {
     emailSocket.send({ type: "list_emails" });
   } catch (err) {
@@ -465,6 +521,17 @@ function markActivity() {
 
 function setupPresenceSocket() {
   if (userRole !== "1" && userRole !== "2") return;
+  if (userRole === "2" && emailSocket) {
+    // Reuse the worker's emailSocket so the dashboard maintains a single
+    // WebSocket connection for both emails and presence.
+    presenceSocket = emailSocket;
+    trackUserActivity(markActivity);
+    setInterval(() => {
+      const status = presenceStatusFor("online", lastActivityAt);
+      if (status !== presenceStatus) sendPresence(status);
+    }, 15 * 1000);
+    return;
+  }
   presenceSocket = new UnreadEmailSocket({
     auth_ok: () => {
       try {

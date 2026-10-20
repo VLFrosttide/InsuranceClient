@@ -376,6 +376,7 @@ function probeWsHandshake() {
       port: 443,
       method: "GET",
       path: WS_PROBE_PATH,
+      agent: false,
       headers: {
         Connection: "Upgrade",
         Upgrade: "websocket",

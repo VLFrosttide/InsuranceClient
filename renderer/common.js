@@ -374,6 +374,7 @@ const I18N = {
     "email.irrelevantConfirm":
       "Mark this email as irrelevant? It will be removed and will not appear again.",
     "email.irrelevantMarked": "Email marked as irrelevant",
+    "email.opening": "Opening…",
 
     pricing: "Pricing",
     viewPricing: "View/Edit Pricing",
@@ -863,6 +864,7 @@ const I18N = {
     "email.irrelevantConfirm":
       "Да се маркира ли този имейл като нерелевантен? Той ще бъде премахнат и няма да се показва отново.",
     "email.irrelevantMarked": "Имейлът е маркиран като нерелевантен",
+    "email.opening": "Отваряне…",
 
     pricing: "Цени",
     viewPricing: "Преглед/редактиране на цени",
@@ -1528,6 +1530,82 @@ async function submitWithOutbox(req, waitMs = 8000) {
 // an authenticated email socket (dashboard, email form) call this after
 // auth_ok and on every queue change.
 const outboxClaimedEmails = new Set();
+const outboxCompletingIds = new Set();
+
+// Durable queue of email WebSocket actions (`release_email` / `complete_email`)
+// that were issued right as a page was unloading while the socket was offline
+// or still authenticating. Flushed on the next authenticated connection.
+const PENDING_EMAIL_WS_ACTIONS_KEY = "pendingEmailWsActions";
+const PENDING_EMAIL_WS_ACTIONS_TTL_MS = 24 * 60 * 60 * 1000;
+
+function loadDurableEmailWsActions() {
+  try {
+    const raw = localStorage.getItem(PENDING_EMAIL_WS_ACTIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
+    return parsed.filter(
+      (a) =>
+        a &&
+        typeof a.type === "string" &&
+        typeof a.messageId === "string" &&
+        a.messageId &&
+        now - (Number(a.queuedAt) || 0) < PENDING_EMAIL_WS_ACTIONS_TTL_MS
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveDurableEmailWsActions(actions) {
+  try {
+    if (!actions || actions.length === 0) {
+      localStorage.removeItem(PENDING_EMAIL_WS_ACTIONS_KEY);
+    } else {
+      localStorage.setItem(PENDING_EMAIL_WS_ACTIONS_KEY, JSON.stringify(actions));
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function queueDurableEmailWsAction(action) {
+  if (!action || !action.type || !action.messageId) return;
+  const list = loadDurableEmailWsActions().filter(
+    (a) => a.messageId !== action.messageId
+  );
+  list.push({
+    type: action.type,
+    messageId: action.messageId,
+    queuedAt: Date.now(),
+  });
+  saveDurableEmailWsActions(list);
+}
+
+function clearDurableEmailWsAction(messageId) {
+  if (!messageId) return;
+  const list = loadDurableEmailWsActions();
+  const next = list.filter((a) => a.messageId !== messageId);
+  if (next.length !== list.length) saveDurableEmailWsActions(next);
+}
+
+function flushDurableEmailWsActions(socket) {
+  if (!socket || typeof socket.isReady !== "function" || !socket.isReady()) {
+    return;
+  }
+  const list = loadDurableEmailWsActions();
+  if (!list.length) return;
+  const remaining = [];
+  for (const action of list) {
+    try {
+      socket.send({ type: action.type, messageId: action.messageId });
+    } catch {
+      remaining.push(action);
+    }
+  }
+  saveDurableEmailWsActions(remaining);
+}
 
 // `ownMessageId`: the email the current page itself has open (the email form).
 // Its claim is managed by that page, so it is never claimed or released here -
@@ -1544,14 +1622,21 @@ function syncOutboxEmails(socket, ownMessageId = null) {
     if (item.messageId === ownMessageId && item.status !== "sent") continue;
     try {
       if (item.status === "sent") {
+        if (outboxCompletingIds.has(item.id)) continue;
+        outboxCompletingIds.add(item.id);
         // Delivered: mark the email handled everywhere, then forget the item.
         socket.send({ type: "complete_email", messageId: item.messageId });
+        clearDurableEmailWsAction(item.messageId);
         outboxClaimedEmails.delete(item.messageId);
-        window.bridge.OutboxAcknowledge(item.id).catch((err) =>
-          console.error("Failed to acknowledge outbox item:", err)
-        );
+        window.bridge
+          .OutboxAcknowledge(item.id)
+          .catch((err) => {
+            outboxCompletingIds.delete(item.id);
+            console.error("Failed to acknowledge outbox item:", err);
+          });
       } else if (!outboxClaimedEmails.has(item.messageId)) {
         // Still queued: keep the email reserved so nobody handles it twice.
+        clearDurableEmailWsAction(item.messageId);
         socket.send({
           type: "claim_email",
           messageId: item.messageId,
@@ -1578,6 +1663,7 @@ function syncOutboxEmails(socket, ownMessageId = null) {
 // A reconnect starts a new server-side session: claims must be re-sent.
 function resetOutboxEmailClaims() {
   outboxClaimedEmails.clear();
+  outboxCompletingIds.clear();
 }
 
 // --- Badge + panel ---------------------------------------------------------
@@ -1812,20 +1898,41 @@ const WS_OUTAGE_REPORT_AFTER = 3;
 const WS_PROBE_ATTEMPTS = 4;
 const WS_PROBE_RETRY_MS = 250;
 
+// Timeout bounds for connection setup and background liveness checks.
+const WS_HANDSHAKE_TIMEOUT_MS = 12000;
+const WS_AUTH_TIMEOUT_MS = 10000;
+const WS_PING_INTERVAL_MS = 20000;
+const WS_PONG_TIMEOUT_MS = 10000;
+const WS_RECONNECT_BASE_MS = 1000;
+const WS_RECONNECT_MAX_MS = 20000;
+
+function normalizeWsUrl(rawUrl, baseUrl) {
+  try {
+    const u = new URL(rawUrl, baseUrl);
+    if (u.protocol === "https:") u.protocol = "wss:";
+    else if (u.protocol === "http:") u.protocol = "ws:";
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
 class UnreadEmailSocket {
   constructor(handlers = {}) {
     this.handlers = handlers;
     this.ws = null;
     this.authed = false;
     this.pending = [];
-    this.reconnectDelay = 1000;
+    this.reconnectDelay = WS_RECONNECT_BASE_MS;
     this.reconnectTimer = null;
+    this.handshakeTimer = null;
+    this.authTimer = null;
+    this.pingTimer = null;
+    this.pongTimer = null;
+    this.lastReceivedAt = 0;
+    this.connectStartedAt = 0;
     this.manuallyClosed = false;
-    // Consecutive attempts that never reached the OPEN state. A WebSocket
-    // handshake never follows redirects, so when the hosting CDN answers the
-    // upgrade with a 3xx (or the origin is briefly unreachable) the only
-    // recovery is the retry loop. These counters decide when the failure is
-    // worth showing to the worker and when to run the reachability probe.
+    // Consecutive attempts that never reached the authenticated state.
     this.failedAttempts = 0;
     this.outageReported = false;
     this.probing = false;
@@ -1833,11 +1940,110 @@ class UnreadEmailSocket {
     this.diagnoseInFlight = false;
     this.redirectCandidate = null;
     this.redirectSeen = 0;
+
+    this._onOnline = () => {
+      if (this.manuallyClosed) return;
+      this.reconnectDelay = WS_RECONNECT_BASE_MS;
+      if (!this.ws) {
+        this.reconnectNow();
+      } else if (
+        this.ws.readyState === WebSocket.CONNECTING &&
+        Date.now() - this.connectStartedAt > 3000
+      ) {
+        this.reconnectNow();
+      } else if (this.authed && this.ws.readyState === WebSocket.OPEN) {
+        this.sendPing(this.ws, 5000);
+      }
+    };
+
+    this._onVisibilityChange = () => {
+      if (this.manuallyClosed) return;
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState !== "visible"
+      ) {
+        return;
+      }
+      if (!this.ws) {
+        this.ensureConnected();
+      } else if (
+        this.authed &&
+        this.ws.readyState === WebSocket.OPEN &&
+        Date.now() - this.lastReceivedAt >= WS_PING_INTERVAL_MS
+      ) {
+        this.sendPing(this.ws, 5000);
+      }
+    };
+
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("online", this._onOnline);
+    }
+    if (typeof document !== "undefined" && document.addEventListener) {
+      document.addEventListener("visibilitychange", this._onVisibilityChange);
+    }
+  }
+
+  clearSocketTimers() {
+    if (this.handshakeTimer) {
+      clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
+    if (this.authTimer) {
+      clearTimeout(this.authTimer);
+      this.authTimer = null;
+    }
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+  }
+
+  startHeartbeat(ws) {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+    this.pingTimer = setInterval(() => {
+      if (this.ws !== ws || !this.authed || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.sendPing(ws, WS_PONG_TIMEOUT_MS);
+    }, WS_PING_INTERVAL_MS);
+  }
+
+  sendPing(ws, timeoutMs = WS_PONG_TIMEOUT_MS) {
+    if (this.ws !== ws || !this.authed || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (this.pongTimer) return;
+    const pingSentAt = Date.now();
+    try {
+      ws.send(JSON.stringify({ type: "ping", ts: pingSentAt }));
+    } catch (err) {
+      console.warn("Email WebSocket ping send failed; reconnecting:", err);
+      this.reconnectNow();
+      return;
+    }
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null;
+      if (this.ws !== ws) return;
+      if (this.lastReceivedAt >= pingSentAt) return;
+      console.warn(
+        `Email WebSocket heartbeat timed out after ${timeoutMs} ms; reconnecting`
+      );
+      this.reconnectNow();
+    }, timeoutMs);
   }
 
   connect() {
     if (this.ws) return;
     this.manuallyClosed = false;
+    this.clearSocketTimers();
 
     let ws;
     try {
@@ -1849,18 +2055,42 @@ class UnreadEmailSocket {
       return;
     }
     this.ws = ws;
+    this.connectStartedAt = Date.now();
 
     // Distinguishes "the handshake never completed" from "an established
     // connection dropped later". Only the former means the upgrade itself was
     // refused (e.g. a 3xx from the reverse proxy instead of 101).
     let opened = false;
 
+    this.handshakeTimer = setTimeout(() => {
+      this.handshakeTimer = null;
+      if (this.ws !== ws || opened) return;
+      console.warn(
+        `Email WebSocket handshake timed out after ${WS_HANDSHAKE_TIMEOUT_MS} ms; aborting`
+      );
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }, WS_HANDSHAKE_TIMEOUT_MS);
+
     ws.addEventListener("open", () => {
+      if (this.ws !== ws) return;
       opened = true;
-      // Reset the backoff and the outage state now that a connection succeeded.
-      this.reconnectDelay = 1000;
-      this.failedAttempts = 0;
-      this.outageReported = false;
+      this.lastReceivedAt = Date.now();
+      if (this.handshakeTimer) {
+        clearTimeout(this.handshakeTimer);
+        this.handshakeTimer = null;
+      }
+      this.authTimer = setTimeout(() => {
+        this.authTimer = null;
+        if (this.ws !== ws || this.authed) return;
+        console.warn(
+          `Email WebSocket auth timed out after ${WS_AUTH_TIMEOUT_MS} ms; reconnecting`
+        );
+        this.reconnectNow();
+      }, WS_AUTH_TIMEOUT_MS);
       try {
         ws.send(
           JSON.stringify({
@@ -1877,6 +2107,11 @@ class UnreadEmailSocket {
     ws.addEventListener("message", (event) => {
       // Ignore late messages from a socket superseded by reconnectNow().
       if (this.ws !== ws) return;
+      this.lastReceivedAt = Date.now();
+      if (this.pongTimer) {
+        clearTimeout(this.pongTimer);
+        this.pongTimer = null;
+      }
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -1885,8 +2120,21 @@ class UnreadEmailSocket {
         return;
       }
 
+      if (msg.type === "pong") {
+        return;
+      }
+
       if (msg.type === "auth_ok") {
+        if (this.authTimer) {
+          clearTimeout(this.authTimer);
+          this.authTimer = null;
+        }
+        // Reset backoff and outage state only once end-to-end auth succeeds.
+        this.reconnectDelay = WS_RECONNECT_BASE_MS;
+        this.failedAttempts = 0;
+        this.outageReported = false;
         this.authed = true;
+        this.startHeartbeat(ws);
         this.flush();
         try {
           if (this.handlers.auth_ok) this.handlers.auth_ok(msg);
@@ -1897,6 +2145,10 @@ class UnreadEmailSocket {
       }
 
       if (msg.type === "auth_error") {
+        if (this.authTimer) {
+          clearTimeout(this.authTimer);
+          this.authTimer = null;
+        }
         try {
           if (this.handlers.auth_error) this.handlers.auth_error(msg);
           else redirectToLogin();
@@ -1918,6 +2170,7 @@ class UnreadEmailSocket {
     ws.addEventListener("close", () => {
       // A socket dropped by reconnectNow() must not clobber its replacement.
       if (this.ws !== ws) return;
+      this.clearSocketTimers();
       this.ws = null;
       this.authed = false;
       if (this.handlers.close) this.handlers.close();
@@ -1927,6 +2180,15 @@ class UnreadEmailSocket {
         // from here: the browser reports "Unexpected response code: 307" (or
         // any other non-101 status) and the socket never opens.
         this.failedAttempts += 1;
+        if (
+          this.wsUrl !== WS_URL &&
+          this.failedAttempts >= WS_OUTAGE_REPORT_AFTER
+        ) {
+          console.warn(
+            `[ws] redirect target ${this.wsUrl} failed ${this.failedAttempts} times; reverting to ${WS_URL}`
+          );
+          this.wsUrl = WS_URL;
+        }
         console.error(
           `Email WebSocket handshake failed for ${this.wsUrl} ` +
             `(attempt ${this.failedAttempts}, retrying in ${this.reconnectDelay} ms)`
@@ -1941,7 +2203,7 @@ class UnreadEmailSocket {
       // A close event follows and resets connection state. The event itself
       // carries no detail, so log the target URL alongside it: a refused
       // handshake and a dropped connection look identical otherwise.
-      console.error(`Email WebSocket error (${WS_URL}):`, event);
+      console.error(`Email WebSocket error (${this.wsUrl}):`, event);
     });
   }
 
@@ -2030,11 +2292,9 @@ class UnreadEmailSocket {
         // burst means the 307's Location header is captured even though a
         // single probe usually answers 101.
         if (r.status >= 300 && r.status < 400 && r.location) {
-          try {
-            this.registerRedirect(new URL(r.location, this.wsUrl).href);
-          } catch (err) {
-            console.error("[ws] bad redirect location:", err);
-          }
+          const normalized = normalizeWsUrl(r.location, this.wsUrl);
+          if (normalized) this.registerRedirect(normalized);
+          else console.error("[ws] bad redirect location:", r.location);
         }
 
         if (attempt < WS_PROBE_ATTEMPTS) {
@@ -2078,16 +2338,17 @@ class UnreadEmailSocket {
   // observation could be a one-off; two means the CDN is consistently pointing
   // somewhere else and we should stop fighting it).
   registerRedirect(target) {
-    if (!target || target === this.wsUrl) return;
-    if (this.redirectCandidate !== target) {
-      this.redirectCandidate = target;
+    const normalized = normalizeWsUrl(target, this.wsUrl);
+    if (!normalized || normalized === this.wsUrl) return;
+    if (this.redirectCandidate !== normalized) {
+      this.redirectCandidate = normalized;
       this.redirectSeen = 1;
       return;
     }
     this.redirectSeen += 1;
     if (this.redirectSeen >= 2) {
-      console.warn(`[ws] adopting stable redirect target: ${target}`);
-      this.wsUrl = target;
+      console.warn(`[ws] adopting stable redirect target: ${normalized}`);
+      this.wsUrl = normalized;
       this.redirectCandidate = null;
       this.redirectSeen = 0;
       this.reconnectNow();
@@ -2104,10 +2365,36 @@ class UnreadEmailSocket {
   }
 
   // Skip the remaining backoff delay when no connection attempt is in
-  // progress (the user is actively waiting on the socket).
+  // progress (the user is actively waiting on the socket). Also replaces a
+  // socket that has been stuck in CONNECTING for several seconds or probes an
+  // idle connection.
   ensureConnected() {
-    if (this.manuallyClosed || this.ws) return;
-    this.reconnectNow();
+    if (this.manuallyClosed) return;
+    if (!this.ws) {
+      this.reconnectNow();
+      return;
+    }
+    if (
+      this.ws.readyState === WebSocket.CLOSING ||
+      this.ws.readyState === WebSocket.CLOSED
+    ) {
+      this.reconnectNow();
+      return;
+    }
+    if (
+      this.ws.readyState === WebSocket.CONNECTING &&
+      Date.now() - this.connectStartedAt > 5000
+    ) {
+      this.reconnectNow();
+      return;
+    }
+    if (
+      this.authed &&
+      this.ws.readyState === WebSocket.OPEN &&
+      Date.now() - this.lastReceivedAt >= WS_PING_INTERVAL_MS
+    ) {
+      this.sendPing(this.ws, 4000);
+    }
   }
 
   // Drop the current connection - which may be half-open: readyState still
@@ -2119,6 +2406,7 @@ class UnreadEmailSocket {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearSocketTimers();
     const old = this.ws;
     this.ws = null;
     this.authed = false;
@@ -2129,17 +2417,23 @@ class UnreadEmailSocket {
         // ignore
       }
     }
-    this.reconnectDelay = 1000;
+    this.reconnectDelay = WS_RECONNECT_BASE_MS;
     this.connect();
   }
 
   scheduleReconnect() {
     if (this.manuallyClosed || this.reconnectTimer) return;
+    // Add +/-20% jitter so multiple clients / tabs do not reconnect in lockstep.
+    const jitter = 0.8 + Math.random() * 0.4;
+    const delay = Math.max(250, Math.round(this.reconnectDelay * jitter));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, this.reconnectDelay);
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15000);
+    }, delay);
+    this.reconnectDelay = Math.min(
+      this.reconnectDelay * 2,
+      WS_RECONNECT_MAX_MS
+    );
   }
 
   // Send (or queue until authenticated) an email WebSocket message. Errors are
@@ -2161,6 +2455,7 @@ class UnreadEmailSocket {
   // Queued messages are flushed from the socket's own message handler, where
   // there is no caller to re-throw to, so failures are reported directly.
   flush() {
+    flushDurableEmailWsActions(this);
     while (
       this.authed &&
       this.ws &&
@@ -2185,6 +2480,13 @@ class UnreadEmailSocket {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    this.clearSocketTimers();
+    if (typeof window !== "undefined" && window.removeEventListener) {
+      window.removeEventListener("online", this._onOnline);
+    }
+    if (typeof document !== "undefined" && document.removeEventListener) {
+      document.removeEventListener("visibilitychange", this._onVisibilityChange);
     }
     if (this.ws) {
       try {
