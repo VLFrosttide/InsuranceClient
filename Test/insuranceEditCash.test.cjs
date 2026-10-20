@@ -357,6 +357,7 @@ const BASE_ROW = {
 async function patch(body, opts = {}) {
   movements.length = 0;
   brokerDeltas.length = 0;
+  brokerRestores.length = 0;
   queries.length = 0;
   txCount = 0;
   failReduce = !!opts.failReduce;
@@ -391,6 +392,9 @@ async function patch(body, opts = {}) {
     body: res.body,
     movements: movements.map(describe),
     brokerDeltas: brokerDeltas.map((d) => `${d.delta} -> broker ${d.brokerId}`),
+    brokerRestores: brokerRestores.map(
+      (r) => `${r.amount} -> broker ${r.brokerId}`
+    ),
     updated: queries.filter((q) => q.sql.startsWith("UPDATE insurance SET")),
     tx: txCount,
     row: { ...row },
@@ -1262,7 +1266,7 @@ async function patch(body, opts = {}) {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   };
 
-  async function annul(body, rowOverrides = {}) {
+  async function annul(body, rowOverrides = {}, opts = {}) {
     movements.length = 0;
     brokerDeltas.length = 0;
     brokerRestores.length = 0;
@@ -1285,7 +1289,7 @@ async function patch(body, opts = {}) {
         params: { blancNumber: row.BlancNumber },
         query: {},
         body,
-        user: { role: 1, username: "admin1" },
+        user: { role: opts.role || 1, username: opts.username || "admin1" },
       },
       res
     );
@@ -1438,6 +1442,144 @@ async function patch(body, opts = {}) {
     );
     eq(r.status, 200, "status");
     eq(r.brokerRestores, ["100 -> broker 7"], "the full price returns to the broker");
+  });
+
+  // -------------------------------------------------------------------------
+  // Admin changing the fault of an already-annulled insurance.
+  // -------------------------------------------------------------------------
+  await check("an admin can change fault from broker to worker on an annulled broker policy", async () => {
+    const r = await patch(
+      { AnnulReason: "worker" },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "broker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "worker", "stored AnnulReason");
+    eq(r.row.AnnulFee, 9, "fee stays 9");
+    eq(r.movements, [], "channel movement unchanged (still 9 kept)");
+    eq(r.brokerRestores, ["9 -> broker 7"], "broker gets the kept 9 fee back");
+  });
+
+  await check("an admin can change fault from worker to broker on an annulled broker policy", async () => {
+    const r = await patch(
+      { AnnulReason: "broker" },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "broker", "stored AnnulReason");
+    eq(r.row.AnnulFee, 9, "fee stays 9");
+    eq(r.movements, [], "channel movement unchanged");
+    eq(r.brokerRestores, ["-9 -> broker 7"], "broker is now charged the 9 fee");
+  });
+
+  await check("an admin changing fault to none refunds the kept fee from the channel", async () => {
+    const r = await patch(
+      { AnnulReason: "none" },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "none", "stored AnnulReason");
+    eq(r.row.AnnulFee, 0, "fee becomes 0");
+    eq(
+      r.movements,
+      ["cash reduce 9 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the kept 9 is refunded out of the drawer"
+    );
+  });
+
+  await check("an admin changing fault from none to broker charges the fee back", async () => {
+    const r = await patch(
+      { AnnulReason: "broker" },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "none",
+          AnnulFee: 0,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "broker", "stored AnnulReason");
+    eq(r.row.AnnulFee, 9, "fee becomes 9");
+    eq(
+      r.movements,
+      ["total/Broker increase 9 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the 9 fee is put back into the Broker channel"
+    );
+    eq(r.brokerRestores, ["-9 -> broker 7"], "broker is charged the 9 fee");
+  });
+
+  await check("a worker cannot change the fault of an annulled insurance", async () => {
+    const rPatch = await patch(
+      { AnnulReason: "none" },
+      {
+        role: 2,
+        username: "worker1",
+        row: { Annulled: 1, AnnulReason: "worker", AnnulFee: 9 },
+      }
+    );
+    eq(rPatch.status, 403, "PATCH rejected for worker");
+    eq(rPatch.movements, [], "no movements");
+
+    const rAnnul = await annul(
+      { payer: "none" },
+      { Annulled: 1, AnnulReason: "worker", AnnulFee: 9 },
+      { role: 2, username: "worker1" }
+    );
+    eq(rAnnul.status, 400, "POST /annul rejected for worker on annulled row");
+    eq(rAnnul.body, { error: "Insurance already annulled" }, "error");
+    eq(rAnnul.movements, [], "no movements");
+  });
+
+  await check("an admin can also update fault via POST /insurances/:blancNumber/annul", async () => {
+    const r = await annul(
+      { payer: "none" },
+      {
+        Annulled: 1,
+        AnnulReason: "broker",
+        AnnulFee: 9,
+        StartDate: dayOffset(-1),
+        BrokerId: 7,
+        PaymentType: "Broker",
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.storedPayer, "none", "stored payer");
+    eq(r.storedFee, 0, "stored fee");
+    eq(
+      r.movements,
+      ["total/Broker reduce 9 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "channel movement"
+    );
+    eq(r.brokerRestores, ["9 -> broker 7"], "broker gets 9 back");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

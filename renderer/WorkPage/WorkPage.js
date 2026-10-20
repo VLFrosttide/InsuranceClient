@@ -1274,6 +1274,25 @@ function openInsuranceEditor(insurance, onDone) {
       value: editFlag(insurance.CardFee) && insurance.PaymentType === "Card",
     });
   }
+  // Admins can change who is at fault for an already-annulled insurance.
+  if (userRole === "1" && editFlag(insurance.Annulled)) {
+    const storedReason = String(insurance.AnnulReason || "")
+      .trim()
+      .toLowerCase();
+    spec.push({
+      key: "AnnulReason",
+      label: t("annulPayer"),
+      type: "select",
+      options: [
+        { label: t("annul.payer.broker"), value: "broker" },
+        { label: t("annul.payer.worker"), value: "worker" },
+        { label: t("annul.payer.none"), value: "none" },
+      ],
+      value: ["broker", "worker", "none"].includes(storedReason)
+        ? storedReason
+        : "broker",
+    });
+  }
 
   const form = buildForm(
     spec,
@@ -1356,13 +1375,16 @@ function openAnnulForm(insurance, onDone) {
     insurance.BrokerId !== undefined &&
     insurance.BrokerId !== "";
 
+  const storedPayer = String(insurance.AnnulReason || "")
+    .trim()
+    .toLowerCase();
   const payerSelect = select(
     [
       { label: t("annul.payer.broker"), value: "broker" },
       { label: t("annul.payer.worker"), value: "worker" },
       { label: t("annul.payer.none"), value: "none" },
     ],
-    "broker"
+    ["broker", "worker", "none"].includes(storedPayer) ? storedPayer : "broker"
   );
 
   const statusLine = el("p", "", { class: "muted" });
@@ -1425,6 +1447,7 @@ function openAnnulForm(insurance, onDone) {
           CreatedAt: localDateTimeNow(),
         }),
       });
+      if (data && data.insurance) Object.assign(insurance, data.insurance);
       toast(t("insuranceAnnulled"), "success");
       closeModal();
       if (onDone) onDone(data);
@@ -3325,7 +3348,12 @@ function insuranceStatusLabel(item) {
     const by = item.DeletedBy ? ` (${item.DeletedBy})` : "";
     return `${t("deleted")}${by}`;
   }
-  return item.Annulled ? t("annulled") : "";
+  if (!item.Annulled) return "";
+  const reason = String(item.AnnulReason || "").trim().toLowerCase();
+  const payer = ["broker", "worker", "none"].includes(reason)
+    ? ` (${t(`annul.payer.${reason}`)})`
+    : "";
+  return `${t("annulled")}${payer}`;
 }
 
 // ---------------------------------------------------------------------------

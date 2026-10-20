@@ -441,6 +441,9 @@ const I18N = {
     "err.cannotModifyDeleted": "A deleted insurance cannot be modified",
     "err.cannotAnnulDeleted": "A deleted insurance cannot be annulled",
     "err.alreadyAnnulled": "Insurance already annulled",
+    "err.notAnnulled": "Insurance is not annulled",
+    "err.onlyAdminAnnulFault":
+      "Only admins can change the fault of an annulled insurance",
     "err.emailBrokerOnly": "Email policies are paid from the broker balance only",
     "err.onlyEmailBroker": "Only email policies can be paid from a broker balance",
     "err.nonTurkWalkInOnly": "The non-Turk tax only applies to walk-in policies",
@@ -932,6 +935,9 @@ const I18N = {
     "err.cannotModifyDeleted": "Изтрита застраховка не може да се редактира",
     "err.cannotAnnulDeleted": "Изтрита застраховка не може да се анулира",
     "err.alreadyAnnulled": "Застраховката вече е анулирана",
+    "err.notAnnulled": "Застраховката не е анулирана",
+    "err.onlyAdminAnnulFault":
+      "Само администратор може да промени вината на анулирана застраховка",
     "err.emailBrokerOnly": "Имейл полиците се плащат само от баланса на брокера",
     "err.onlyEmailBroker": "Само имейл полици могат да се плащат от баланс на брокер",
     "err.nonTurkWalkInOnly": "Данъкът за чужденци важи само за полици на място",
@@ -1049,6 +1055,9 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Cannot modify a deleted insurance": "err.cannotModifyDeleted",
   "Cannot annul a deleted insurance": "err.cannotAnnulDeleted",
   "Insurance already annulled": "err.alreadyAnnulled",
+  "Insurance is not annulled": "err.notAnnulled",
+  "Only admins can change the fault of an annulled insurance":
+    "err.onlyAdminAnnulFault",
   "Email policies are paid from the broker balance only": "err.emailBrokerOnly",
   "Only email policies can be paid from a broker balance": "err.onlyEmailBroker",
   "The non-Turk tax only applies to walk-in policies": "err.nonTurkWalkInOnly",

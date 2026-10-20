@@ -330,6 +330,24 @@ function open(row, response, onDone) {
     eq(e.row.Price, "100.00", "the row is untouched");
   });
 
+  await check("an admin editing an annulled policy sees the fault dropdown", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(e.specValue("AnnulReason"), "worker", "pre-filled fault reason");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("AnnulReason"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see or change the fault", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+      eq(e.specValue("AnnulReason"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
