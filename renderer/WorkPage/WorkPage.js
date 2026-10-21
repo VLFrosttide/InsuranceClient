@@ -1556,8 +1556,7 @@ async function adminUsers() {
     const b = brokerById.get(Number(u.BrokerId));
     return b ? brokerNameOf(b.ParentBrokerId) : "";
   };
-  const roleOptions = [
-    { label: t("role.1"), value: 1 },
+  const promoteRoleOptions = [
     { label: t("role.2"), value: 2 },
     { label: t("role.3"), value: 3 },
   ];
@@ -1590,28 +1589,109 @@ async function adminUsers() {
         label: t("edit"),
         class: "",
         onClick: (u) => {
+          const currentBrokerId = u.BrokerId == null ? null : Number(u.BrokerId);
+          const currentBroker =
+            currentBrokerId == null
+              ? null
+              : brokerList.find((b) => Number(b.id) === currentBrokerId);
+
+          const brokerOptions = [
+            { label: "—", value: "" },
+            ...brokerList.map((b) => ({ label: b.Name, value: b.id })),
+          ];
+          const mainBrokerOptions = [
+            { label: "—", value: "" },
+            ...brokerList
+              .filter((b) => Number(b.id) !== currentBrokerId)
+              .map((b) => ({ label: b.Name, value: b.id })),
+          ];
+
+          const spec = [
+            {
+              key: "broker",
+              label: t("brokerName"),
+              type: "select",
+              options: brokerOptions,
+              value: currentBrokerId == null ? "" : currentBrokerId,
+            },
+          ];
+
+          // The main broker is a property of the broker the account is linked
+          // to, so it is only editable while a broker is linked.
+          if (currentBrokerId != null) {
+            spec.push({
+              key: "mainBroker",
+              label: t("mainBroker"),
+              type: "select",
+              options: mainBrokerOptions,
+              value:
+                currentBroker && currentBroker.ParentBrokerId != null
+                  ? currentBroker.ParentBrokerId
+                  : "",
+            });
+          }
+
+          // Admins cannot change their own (or another admin's) role.
+          if (String(u.Role) !== "1") {
+            spec.push({
+              key: "role",
+              label: t("role"),
+              type: "select",
+              options: promoteRoleOptions,
+              value: u.Role,
+            });
+          }
+
+          spec.push({
+            key: "balance",
+            label: t("balance"),
+            type: "number",
+            value: u.Balance,
+          });
+
           const form = buildForm(
-            [
-              {
-                key: "role",
-                label: t("role"),
-                type: "select",
-                options: roleOptions,
-                value: u.Role,
-              },
-              {
-                key: "balance",
-                label: t("balance"),
-                type: "number",
-                value: u.Balance,
-              },
-            ],
+            spec,
             async (payload) => {
+              const brokerId =
+                payload.broker === "" || payload.broker == null
+                  ? null
+                  : Number(payload.broker);
+
+              const userPatch = { BrokerId: brokerId };
+              if (payload.role !== undefined && payload.role !== "") {
+                userPatch.role = Number(payload.role);
+              }
+              if (payload.balance !== undefined) {
+                userPatch.balance = Number(payload.balance);
+              }
+
               await api(`/admin/users/${u.Username}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
+                body: JSON.stringify(userPatch),
               });
+
+              // Update the linked broker's main broker only when it changed;
+              // the endpoint also resets sub-broker tariffs when a parent is
+              // assigned, so a no-op save must not trigger it.
+              if (currentBrokerId != null) {
+                const parentId =
+                  payload.mainBroker === "" || payload.mainBroker == null
+                    ? null
+                    : Number(payload.mainBroker);
+                const currentParentId =
+                  currentBroker && currentBroker.ParentBrokerId != null
+                    ? Number(currentBroker.ParentBrokerId)
+                    : null;
+                if (parentId !== currentParentId) {
+                  await api(`/brokers/${currentBrokerId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ParentBrokerId: parentId }),
+                  });
+                }
+              }
+
               toast(t("userUpdated"), "success");
               closeModal();
               adminUsers();
@@ -1621,47 +1701,6 @@ async function adminUsers() {
           openModal(`${t("edit")} ${u.Username}`, form);
         },
       },
-      {
-        label: t("promote"),
-        class: "secondary",
-        onClick: (u) => {
-          const form = buildForm(
-            [
-              {
-                key: "role",
-                label: t("newRole"),
-                type: "select",
-                options: [
-                  { label: t("role.2"), value: 2 },
-                  { label: t("role.3"), value: 3 },
-                ],
-                value: 2,
-              },
-            ],
-            async (payload) => {
-              await api(`/admin/users/${u.Username}/promote`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-              });
-              toast(t("userRoleUpdated"), "success");
-              closeModal();
-              adminUsers();
-            },
-            t("promote")
-          );
-          openModal(`${t("promote")} ${u.Username}`, form);
-        },
-      },
-      ...(u.BrokerId != null
-        ? [
-            {
-              label: t("mainBroker"),
-              class: "secondary",
-              onClick: (u) => setMainBrokerForm(u),
-            },
-          ]
-        : []),
       {
         label: t("suspend"),
         class: "secondary",
@@ -1735,54 +1774,6 @@ function registerUserForm() {
     t("createUser")
   );
   openModal(t("newUser"), form);
-}
-
-// Mark a broker as a sub-broker of a main broker. `user` is a login account
-// linked to a broker via users.BrokerId; selecting a main broker sets that
-// broker's ParentBrokerId (positive id) or clears it (the "—" option). The
-// PATCH /brokers/:id endpoint already applies this and validates the parent.
-async function setMainBrokerForm(user) {
-  const brokerData = await api("/brokers");
-  const brokerList = (brokerData && brokerData.brokers) || [];
-  const currentBrokerId = Number(user.BrokerId);
-  const current = brokerList.find((b) => Number(b.id) === currentBrokerId);
-  const options = [
-    { label: "—", value: "" },
-    ...brokerList
-      .filter((b) => Number(b.id) !== currentBrokerId)
-      .map((b) => ({ label: b.Name, value: b.id })),
-  ];
-  const form = buildForm(
-    [
-      {
-        key: "ParentBrokerId",
-        label: t("mainBroker"),
-        type: "select",
-        options,
-        value:
-          current && current.ParentBrokerId != null ? current.ParentBrokerId : "",
-      },
-    ],
-    async (payload) => {
-      const parentId =
-        payload.ParentBrokerId === "" || payload.ParentBrokerId == null
-          ? null
-          : Number(payload.ParentBrokerId);
-      await api(`/brokers/${currentBrokerId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ParentBrokerId: parentId }),
-      });
-      toast(t("brokerUpdated"), "success");
-      closeModal();
-      adminUsers();
-    },
-    t("save")
-  );
-  openModal(
-    `${t("mainBroker")} — ${current ? current.Name : user.Username}`,
-    form
-  );
 }
 
 // Soft-delete an insurance from the admin panel. The row is kept in the
