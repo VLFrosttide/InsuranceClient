@@ -1382,21 +1382,29 @@ function round2(n) {
 function currentFees() {
   let fees = 0;
   if (NonTurkInput && NonTurkInput.checked) fees += NON_TURK_FEE;
-  if (CardFeeInput && CardFeeInput.checked) fees += CARD_FEE;
   return fees;
 }
 
-// The price that will be saved: tariff price + selected fees, or null when
-// there is no tariff price.
+// The price that will be saved: tariff price + saved fees (+5 non-Turk), or
+// null when there is no tariff price. The +2 card tax goes to the bank and is
+// visual-only while creating the insurance, so it is never included here.
 function currentTotalPrice() {
   if (basePrice === null) return null;
   return round2(basePrice + currentFees());
 }
 
+// The price shown on the creation form (includes the visual-only +2 card tax).
+function currentDisplayPrice() {
+  const total = currentTotalPrice();
+  if (total === null) return null;
+  const cardFee = CardFeeInput && CardFeeInput.checked ? CARD_FEE : 0;
+  return round2(total + cardFee);
+}
+
 // Shows the calculated total in the read-only price field.
 function renderTotalPrice() {
   if (!TotalPriceDisplay) return;
-  const total = currentTotalPrice();
+  const total = currentDisplayPrice();
   const unavailable = total === null;
   TotalPriceDisplay.classList.toggle("price-unavailable", unavailable);
   TotalPriceDisplay.textContent = unavailable
@@ -1724,13 +1732,11 @@ InsuranceForm.addEventListener("submit", async function (e) {
       : FormObject.CashInput === true
       ? "Cash"
       : "Card",
-    // Informational flags; their fees (+5 / +2) are already included in Price.
-    // The non-Turk tax only applies to walk-ins.
+    // Informational flag; the non-Turk fee (+5) is already included in Price.
+    // The non-Turk tax only applies to walk-ins. The card fee (+2) is a bank
+    // tax shown only visually during creation and never stored.
     NonTurk: !OpenedFromEmail && FormObject.NonTurkInput === true,
-    CardFee:
-      !OpenedFromEmail &&
-      FormObject.CardFeeInput === true &&
-      FormObject.CashInput !== true,
+    CardFee: false,
 
     // Broker is not typed on this form. When the form was opened from an unread
     // email, the sender's address is sent so the server can resolve the broker.

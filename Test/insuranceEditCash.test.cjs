@@ -802,22 +802,13 @@ async function patch(body, opts = {}) {
     eq(r.movements, [], "no movements expected");
   });
 
-  await check("ticking the card fee on a card policy moves the card balance", async () => {
+  await check("card fee is never stored on a card policy", async () => {
     const r = await patch(
-      { PaymentType: "Card", CardFee: true, Price: 102 },
+      { PaymentType: "Card", CardFee: true, Price: 100 },
       { row: { PaymentType: "Card" } }
     );
-    eq(r.row.CardFee, 1, "stored flag");
-    eq(
-      r.movements,
-      [
-        "card reduce 100 (Edit 1234567) by admin1",
-        "total/Card reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
-        "card increase 102 (1234567) by admin1",
-        "total/Card increase 102 EUR @ Офис Харманли (1234567) by admin1",
-      ],
-      "movements"
-    );
+    eq(r.row.CardFee, 0, "stored flag stays 0");
+    eq(r.movements, [], "no movements expected");
   });
 
   await check("a card fee is never stored for a cash payment", async () => {
@@ -1095,7 +1086,7 @@ async function patch(body, opts = {}) {
     const r = await create({ Cash: false, CardFee: true, EmailFrom: "" });
     eq(r.status, 201, "status");
     eq(r.storedPayment, "Card", "stored payment type");
-    eq(r.storedCardFee, 1, "the card fee is kept for card walk-ins");
+    eq(r.storedCardFee, 0, "the card fee is visual only and never stored");
     eq(
       r.movements,
       [

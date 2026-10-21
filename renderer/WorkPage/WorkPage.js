@@ -900,16 +900,15 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
 // recalculates its price from the same tariffs the add-insurance form uses:
 // the broker's tariffs for email (broker-linked) policies - falling back to the
 // branch walk-in tariffs when the broker has none, like /tariffs/policy-pricing
-// does - and the branch walk-in tariffs for walk-ins. The fees stored with the
-// policy are added on top, exactly like the add form: +5 for a non-Turk
-// client and +2 for the card fee (only while the payment is by card).
+// does - and the branch walk-in tariffs for walk-ins. The non-Turk fee (+5)
+// stored with the policy is added on top, like the add form (the +2 card tax is
+// visual-only during creation and never stored or calculated in the price).
 const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
 // Branch dropdown options for the edit form. Mirrors the login page's branch
 // dropdown and KNOWN_BRANCHES below, so the lists cannot drift apart.
 const EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
 const EDIT_NON_TURK_FEE = 5;
-const EDIT_CARD_FEE = 2;
 
 // Stored Otomobil value -> tariff key ("Auto" / "Motor" / "Bus" / "Trailer").
 // Accepts the values the add form stores as well as their Bulgarian labels.
@@ -995,7 +994,6 @@ function editedPolicyPrice(pricing, otomobil, duration, fees) {
   if (!Number.isFinite(base)) return null;
   let total = base;
   if (fees && fees.nonTurk) total += EDIT_NON_TURK_FEE;
-  if (fees && fees.cardFee) total += EDIT_CARD_FEE;
   return Math.round(total * 100) / 100;
 }
 
@@ -1030,32 +1028,16 @@ function wireEditPriceRecalc(form, insurance) {
   const vehicleInput = control("Otomobil");
   if (!priceInput || !durationInput || !vehicleInput) return;
   const branchInput = control("Branch");
-  const paymentInput = control("PaymentType");
-  // Fee checkboxes. Both only exist for walk-ins: email policies are
-  // broker-paid (no card fee) and the non-Turk tax only applies to walk-ins.
+  // Non-Turk fee checkbox (only exists for walk-ins: email policies are
+  // broker-paid and the non-Turk tax only applies to walk-ins).
   const nonTurkInput = control("NonTurk");
-  const cardFeeInput = control("CardFee");
 
   // Fees currently selected in the form. A missing box (email policy) means
-  // no fee; the card fee only counts while the payment is by card.
+  // no fee.
   function selectedFees() {
     return {
       nonTurk: !!nonTurkInput && !!nonTurkInput.checked,
-      cardFee:
-        !!cardFeeInput &&
-        !!cardFeeInput.checked &&
-        !!paymentInput &&
-        paymentInput.value === "Card",
     };
-  }
-
-  // Like the add form: the card fee is only allowed when the payment is NOT
-  // cash, so paying in cash clears and locks the box.
-  function syncCardFeeState() {
-    if (!cardFeeInput) return;
-    const byCard = !!paymentInput && paymentInput.value === "Card";
-    if (!byCard) cardFeeInput.checked = false;
-    cardFeeInput.disabled = !byCard;
   }
 
   // Adds `delta` to the price field (never below 0). An empty price is left
@@ -1069,22 +1051,17 @@ function wireEditPriceRecalc(form, insurance) {
     priceInput.value = next.toFixed(2);
   }
 
-  syncCardFeeState();
   // Fees already included in the price shown in the field.
   let appliedFees = selectedFees();
 
-  // A fee checkbox (or the payment type) changed: add/remove exactly that fee
-  // from the current price, so a hand-corrected price is kept as well. The
-  // server moves current cash / the card balance by the price difference.
+  // The fee checkbox changed: add/remove that fee from the current price, so a
+  // hand-corrected price is kept as well. The server moves current cash / the
+  // card balance by the price difference.
   function onFeesChanged() {
-    syncCardFeeState();
     const fees = selectedFees();
     let delta = 0;
     if (fees.nonTurk !== appliedFees.nonTurk) {
       delta += fees.nonTurk ? EDIT_NON_TURK_FEE : -EDIT_NON_TURK_FEE;
-    }
-    if (fees.cardFee !== appliedFees.cardFee) {
-      delta += fees.cardFee ? EDIT_CARD_FEE : -EDIT_CARD_FEE;
     }
     appliedFees = fees;
     if (delta) shiftPrice(delta);
@@ -1109,7 +1086,6 @@ function wireEditPriceRecalc(form, insurance) {
     // A newer change started while this one was loading; let it win.
     if (request !== latest) return;
 
-    syncCardFeeState();
     const fees = selectedFees();
     const price = editedPolicyPrice(
       pricing,
@@ -1130,8 +1106,6 @@ function wireEditPriceRecalc(form, insurance) {
   durationInput.addEventListener("change", recalc);
   vehicleInput.addEventListener("change", recalc);
   if (nonTurkInput) nonTurkInput.addEventListener("change", onFeesChanged);
-  if (cardFeeInput) cardFeeInput.addEventListener("change", onFeesChanged);
-  if (paymentInput) paymentInput.addEventListener("change", onFeesChanged);
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,23 +1229,18 @@ function openInsuranceEditor(insurance, onDone) {
       value: insurance.PaymentType === "Cash" ? "Cash" : "Card",
     });
   }
-  // The options chosen when the policy was created. Toggling one adds or
-  // removes its fee from the price (see wireEditPriceRecalc), and the server
-  // moves current cash / the card balance by the difference. Both only apply
-  // to walk-ins: email policies are broker-paid (no card fee) and the
-  // non-Turk tax is a walk-in charge.
+  // The non-Turk option chosen when the policy was created. Toggling it adds
+  // or removes its fee (+5) from the price (see wireEditPriceRecalc), and the
+  // server moves current cash / the card balance by the difference. Only
+  // applies to walk-ins: email policies are broker-paid and the non-Turk tax
+  // is a walk-in charge. The +2 card tax is visual-only during creation and
+  // is never stored or editable later on.
   if (!isEmailPolicy) {
     spec.push({
       key: "NonTurk",
       label: t("add.nonTurk"),
       type: "checkbox",
       value: editFlag(insurance.NonTurk),
-    });
-    spec.push({
-      key: "CardFee",
-      label: t("add.cardFee"),
-      type: "checkbox",
-      value: editFlag(insurance.CardFee) && insurance.PaymentType === "Card",
     });
   }
   // Admins can change who is at fault for an already-annulled insurance.

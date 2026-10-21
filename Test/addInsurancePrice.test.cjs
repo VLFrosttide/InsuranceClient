@@ -191,16 +191,22 @@ const PRICING = {
     eq(f.shown(), "45.00", "back to 45");
   });
 
-  await check("the card fee adds 2 and only applies when not paid in cash", async () => {
+  await check("the card fee adds 2 visually and only applies when not paid in cash, without changing the saved price", async () => {
     const f = await setup({ pricing: PRICING });
     eq(f.els.CardFeeInput.disabled, true, "locked while cash");
     await f.tick("CashInput", false);
     eq(f.els.CardFeeInput.disabled, false, "unlocked for card");
     await f.tick("CardFeeInput", true);
-    eq(f.shown(), "47.00", "45 + 2");
+    eq(f.shown(), "47.00", "45 + 2 visual");
+    eq(f.total(), 45, "saved price excludes card tax");
+    await f.tick("NonTurkInput", true);
+    eq(f.shown(), "52.00", "45 + 5 + 2 visual");
+    eq(f.total(), 50, "saved price includes non-Turk only");
+    await f.tick("NonTurkInput", false);
     await f.tick("CashInput", true);
     eq(f.els.CardFeeInput.checked, false, "cleared when back to cash");
     eq(f.shown(), "45.00", "fee removed");
+    eq(f.total(), 45, "saved price still 45");
   });
 
   await check("fees stay applied across a recalculation", async () => {

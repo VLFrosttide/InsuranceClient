@@ -243,10 +243,10 @@ function open(row) {
     eq(e.c.Price.value, "30.00", "25 + 5");
   });
 
-  await check("the card fee is added only while paid by card", async () => {
+  await check("the card fee is visual-only during creation and never added on edit", async () => {
     const e = open(walkIn({ PaymentType: "Card", CardFee: 1 }));
     await e.set("Duration", 15);
-    eq(e.c.Price.value, "27.00", "25 + 2");
+    eq(e.c.Price.value, "25.00", "25 without +2 card tax");
     e.c.PaymentType.value = "Cash";
     await e.set("Duration", 30);
     eq(e.c.Price.value, "45.00", "no card fee for cash");
@@ -277,27 +277,19 @@ function open(row) {
     eq(e.c.Price.value, "30.00", "other branch's price");
   });
 
-  await check("the chosen options are shown as checkboxes with their stored state", async () => {
+  await check("the non-Turk option is shown as a checkbox with its stored state, while card fee is not editable", async () => {
     open(walkIn({ PaymentType: "Card", NonTurk: 1, CardFee: 1 }));
     const n = lastSpec.find((s) => s.key === "NonTurk");
     const c = lastSpec.find((s) => s.key === "CardFee");
     eq(n && n.type, "checkbox", "non-Turk checkbox");
     eq(n.value, true, "non-Turk ticked");
-    eq(c && c.type, "checkbox", "card fee checkbox");
-    eq(c.value, true, "card fee ticked");
-    eq(lastForm.controls.CardFee.disabled, false, "card fee enabled for card");
+    eq(c, undefined, "no card fee checkbox in edit form");
   });
 
   await check("unticked options are shown unticked", async () => {
     open(walkIn());
     eq(lastSpec.find((s) => s.key === "NonTurk").value, false, "non-Turk");
-    eq(lastSpec.find((s) => s.key === "CardFee").value, false, "card fee");
-  });
-
-  await check("a cash policy has its card fee box locked", async () => {
-    const e = open(walkIn({ CardFee: 1 }));
-    eq(e.c.CardFee.checked, false, "unticked");
-    eq(e.c.CardFee.disabled, true, "disabled");
+    eq(lastSpec.find((s) => s.key === "CardFee"), undefined, "no card fee");
   });
 
   await check("email policies show neither the non-Turk nor the card fee option", async () => {
@@ -329,44 +321,17 @@ function open(row) {
     eq(e.c.Price.value, "45.00", "50 - 5");
   });
 
-  await check("ticking / unticking the card fee moves the price by 2", async () => {
-    const e = open(walkIn({ PaymentType: "Card" }));
-    e.c.CardFee.checked = true;
-    await e.c.CardFee.fire("change");
-    eq(e.c.Price.value, "47.00", "45 + 2");
-    e.c.CardFee.checked = false;
-    await e.c.CardFee.fire("change");
-    eq(e.c.Price.value, "45.00", "back to 45");
-  });
-
-  await check("switching a card policy with a card fee to cash drops the fee", async () => {
-    const e = open(walkIn({ PaymentType: "Card", CardFee: 1, Price: "47.00" }));
-    await e.set("PaymentType", "Cash");
-    eq(e.c.CardFee.checked, false, "card fee cleared");
-    eq(e.c.CardFee.disabled, true, "card fee locked");
-    eq(e.c.Price.value, "45.00", "47 - 2");
-  });
-
-  await check("switching cash to card unlocks the card fee without adding it", async () => {
-    const e = open(walkIn());
-    await e.set("PaymentType", "Card");
-    eq(e.c.CardFee.disabled, false, "unlocked");
-    eq(e.c.Price.value, "45.00", "unchanged");
-  });
-
   await check("a toggled option is used by the tariff recalculation", async () => {
     const e = open(walkIn({ PaymentType: "Card" }));
     e.c.NonTurk.checked = true;
     await e.c.NonTurk.fire("change");
-    e.c.CardFee.checked = true;
-    await e.c.CardFee.fire("change");
-    eq(e.c.Price.value, "52.00", "45 + 5 + 2");
+    eq(e.c.Price.value, "50.00", "45 + 5");
     await e.set("Duration", 15);
-    eq(e.c.Price.value, "32.00", "25 + 5 + 2");
+    eq(e.c.Price.value, "30.00", "25 + 5");
     // After a recalculation the fees are not applied twice.
     e.c.NonTurk.checked = false;
     await e.c.NonTurk.fire("change");
-    eq(e.c.Price.value, "27.00", "25 + 2");
+    eq(e.c.Price.value, "25.00", "25");
   });
 
   await check("an empty price is not turned into a bare fee", async () => {
