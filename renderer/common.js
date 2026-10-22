@@ -223,6 +223,10 @@ const I18N = {
     emailConnUnavailable: "Email connection unavailable",
     emailClaimTimeout: "The server did not respond. Please try again.",
     emailSendFailed: "Failed to send email",
+    emailReplyQueued: "Reply email is being re-tried automatically",
+    emailReplyQueuedTo: "Reply email to {email} is being re-tried automatically",
+    emailReplyFailed: "Reply email could not be sent",
+    emailReplyFailedTo: "Reply email to {email} could not be sent",
     name: "Name",
     rangeStart: "Range start",
     rangeEnd: "Range end",
@@ -726,6 +730,11 @@ const I18N = {
     emailConnUnavailable: "Връзката с имейл е недостъпна",
     emailClaimTimeout: "Сървърът не отговори. Опитайте отново.",
     emailSendFailed: "Неуспешно изпращане на имейл",
+    emailReplyQueued: "Имейлът с отговор се изпраща отново автоматично",
+    emailReplyQueuedTo:
+      "Имейлът с отговор до {email} се изпраща отново автоматично",
+    emailReplyFailed: "Имейлът с отговор не можа да бъде изпратен",
+    emailReplyFailedTo: "Имейлът с отговор до {email} не можа да бъде изпратен",
     name: "Име",
     rangeStart: "Начало на диапазон",
     rangeEnd: "Край на диапазон",
@@ -1452,6 +1461,23 @@ function reportError(context, err, fallbackKey = "serverError") {
   const message = err && err.message ? translateError(err.message) : "";
   const base = t(fallbackKey);
   toast(message && message !== base ? `${base}: ${message}` : base, "error");
+}
+
+// Handle the server's "email_send_failed" push: the reply to a broker's email
+// could not be sent immediately. Tell the worker whether it was queued for
+// automatic retry (so they know it is not lost) or failed for good.
+function handleEmailSendFailed(msg) {
+  const data = (msg && msg.data) || {};
+  const email = String(data.recipient || "").trim();
+  const queued = data.status === "queued";
+  const text = queued
+    ? email
+      ? fmt(t("emailReplyQueuedTo"), { email })
+      : t("emailReplyQueued")
+    : email
+      ? fmt(t("emailReplyFailedTo"), { email })
+      : t("emailReplyFailed");
+  toast(text, queued ? "info" : "error");
 }
 
 // Guard pages that require login.

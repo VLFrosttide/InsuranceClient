@@ -439,6 +439,9 @@ function setupEmailSocket() {
     email_irrelevant: (msg) => removeEmailCard(msg.messageId),
     // The original Gmail message was read outside the app: drop its card.
     email_read: (msg) => removeEmailCard(msg.messageId),
+    // The reply to the broker's email could not be sent immediately: show
+    // whether it is being re-tried automatically or failed for good.
+    email_send_failed: handleEmailSendFailed,
     email_released: (msg) => {
       const email = msg.data;
       if (email && email.messageId) {

@@ -788,6 +788,7 @@ function setupEmailSocket() {
       }
       pumpAttachmentQueue();
     },
+    email_send_failed: handleEmailSendFailed,
   });
   emailSocket.connect();
   onOutboxState(() => syncOutboxEmails(emailSocket, ownEmailId()));
