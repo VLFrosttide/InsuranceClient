@@ -903,9 +903,9 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
 // recalculates its price from the same tariffs the add-insurance form uses:
 // the broker's tariffs for email (broker-linked) policies - falling back to the
 // branch walk-in tariffs when the broker has none, like /tariffs/policy-pricing
-// does - and the branch walk-in tariffs for walk-ins. The non-Turk fee (+5)
-// stored with the policy is added on top, like the add form (the +2 card tax is
-// visual-only during creation and never stored or calculated in the price).
+// does - and the branch walk-in tariffs for walk-ins. The stored non-Turk fee
+// (+5) is added on top, like the add form (the +2 card fee is visual-only and
+// never added to the price or any balance).
 const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
 // Branch dropdown options for the edit form. Mirrors the login page's branch
@@ -1034,9 +1034,14 @@ function wireEditPriceRecalc(form, insurance) {
   // Non-Turk fee checkbox (only exists for walk-ins: email policies are
   // broker-paid and the non-Turk tax only applies to walk-ins).
   const nonTurkInput = control("NonTurk");
+  // Card fee checkbox (also walk-in only). It is purely visual - it never
+  // changes the price or any balance - and only applies while the policy is
+  // paid by card, so it is locked (and cleared) when Cash is selected.
+  const cardFeeInput = control("CardFee");
+  const paymentInput = control("PaymentType");
 
   // Fees currently selected in the form. A missing box (email policy) means
-  // no fee.
+  // no fee. The card fee is deliberately NOT part of this: it is visual-only.
   function selectedFees() {
     return {
       nonTurk: !!nonTurkInput && !!nonTurkInput.checked,
@@ -1068,6 +1073,18 @@ function wireEditPriceRecalc(form, insurance) {
     }
     appliedFees = fees;
     if (delta) shiftPrice(delta);
+  }
+
+  // The card fee only makes sense for card payments, so it is disabled (and
+  // unticked) while Cash is selected - the same rule as on the add form.
+  function applyCardFeeGating() {
+    if (!cardFeeInput || !paymentInput) return;
+    if (paymentInput.value === "Cash") {
+      cardFeeInput.checked = false;
+      cardFeeInput.disabled = true;
+    } else {
+      cardFeeInput.disabled = false;
+    }
   }
 
   const cache = {};
@@ -1109,6 +1126,12 @@ function wireEditPriceRecalc(form, insurance) {
   durationInput.addEventListener("change", recalc);
   vehicleInput.addEventListener("change", recalc);
   if (nonTurkInput) nonTurkInput.addEventListener("change", onFeesChanged);
+  if (paymentInput) {
+    paymentInput.addEventListener("change", applyCardFeeGating);
+  }
+
+  // Start with the card fee locked while the policy is paid in cash.
+  applyCardFeeGating();
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,8 +1259,7 @@ function openInsuranceEditor(insurance, onDone) {
   // or removes its fee (+5) from the price (see wireEditPriceRecalc), and the
   // server moves current cash / the card balance by the difference. Only
   // applies to walk-ins: email policies are broker-paid and the non-Turk tax
-  // is a walk-in charge. The +2 card tax is visual-only during creation and
-  // is never stored or editable later on.
+  // is a walk-in charge.
   if (!isEmailPolicy) {
     spec.push({
       key: "NonTurk",
@@ -1245,8 +1267,18 @@ function openInsuranceEditor(insurance, onDone) {
       type: "checkbox",
       value: editFlag(insurance.NonTurk),
     });
+    // The card payment fee (+2) is purely visual: it can be ticked or unticked
+    // while the policy is paid by card (wireEditPriceRecalc locks it for cash),
+    // but it never changes the price or any balance.
+    spec.push({
+      key: "CardFee",
+      label: t("add.cardFee"),
+      type: "checkbox",
+      value: editFlag(insurance.CardFee),
+    });
   }
-  // Admins can change who is at fault for an already-annulled insurance.
+  // Admins can change who is at fault and the fee for an already-annulled
+  // insurance.
   if (userRole === "1" && editFlag(insurance.Annulled)) {
     const storedReason = String(insurance.AnnulReason || "")
       .trim()
@@ -1264,6 +1296,20 @@ function openInsuranceEditor(insurance, onDone) {
         ? storedReason
         : "broker",
     });
+    // A text input (not "number") so an empty field stays empty in the payload
+    // instead of becoming 0: leaving it blank means "keep the stored fee", while
+    // typing a value overrides it. Pre-filled with the stored fee when present.
+    spec.push({
+      key: "AnnulFee",
+      label: t("annulFee"),
+      value:
+        insurance.AnnulFee !== undefined &&
+        insurance.AnnulFee !== null &&
+        insurance.AnnulFee !== ""
+          ? insurance.AnnulFee
+          : "",
+      placeholder: "0.00",
+    });
   }
 
   const form = buildForm(
@@ -1278,6 +1324,30 @@ function openInsuranceEditor(insurance, onDone) {
       if ("CarNumber" in payload) {
         payload.CarNumber = String(payload.CarNumber ?? "").trim();
         if (!payload.CarNumber) throw new Error(t("add.carNumberRequired"));
+      }
+      // Only send the annulment fee when the admin actually changed it: an empty
+      // field means "keep the stored fee" (or let the server compute it for rows
+      // that predate the fee), and an unchanged value keeps the server's own
+      // fault/fee logic (e.g. re-deciding it after a start-date correction).
+      if ("AnnulFee" in payload) {
+        const raw = String(payload.AnnulFee ?? "").trim();
+        if (raw === "") {
+          delete payload.AnnulFee;
+        } else {
+          const entered = Number(raw.replace(",", "."));
+          if (!Number.isFinite(entered) || entered < 0) {
+            throw new Error(t("annulFeeInvalid"));
+          }
+          const hadFee =
+            insurance.AnnulFee !== undefined &&
+            insurance.AnnulFee !== null &&
+            insurance.AnnulFee !== "";
+          if (hadFee && entered === Number(insurance.AnnulFee)) {
+            delete payload.AnnulFee;
+          } else {
+            payload.AnnulFee = entered;
+          }
+        }
       }
       // The URL always names the policy by its CURRENT (stored) blank number;
       // a new one travels in the body and is adopted below once saved.
@@ -1311,8 +1381,8 @@ function openInsuranceEditor(insurance, onDone) {
 // The fee is decided by whether the policy is already in effect when it is
 // annulled (now has reached its start date): 9 if it is, 1 if it has not
 // started yet. Who pays it (broker or worker) is chosen in the form; "no
-// fault" charges no fee at all. The
-// server computes the same fee on its own; this is only the preview.
+// fault" charges no fee at all. Admins can override the fee by hand; otherwise
+// the server computes the same fee on its own.
 const ANNUL_FEE_NOT_IN_EFFECT = 1;
 const ANNUL_FEE_IN_EFFECT = 9;
 
@@ -1347,6 +1417,19 @@ function openAnnulForm(insurance, onDone) {
     insurance.BrokerId !== undefined &&
     insurance.BrokerId !== "";
 
+  const isAdmin = userRole === "1";
+
+  // The automatic fee (1 before the start date, 9 once in effect). Admins can
+  // override it by typing their own value; workers always get this fee.
+  const autoFee = () =>
+    isPolicyInEffect(insurance) ? ANNUL_FEE_IN_EFFECT : ANNUL_FEE_NOT_IN_EFFECT;
+
+  const feeInput = isAdmin ? input("number", "0", "0") : null;
+  if (feeInput) {
+    feeInput.min = "0";
+    feeInput.step = "0.01";
+  }
+
   const storedPayer = String(insurance.AnnulReason || "")
     .trim()
     .toLowerCase();
@@ -1363,15 +1446,47 @@ function openAnnulForm(insurance, onDone) {
   const feeLine = el("p", "", { class: "muted" });
   const refundLine = el("p", "", { class: "big" });
 
+  // Keep the fee field in step with the automatic suggestion: pre-filled with
+  // the computed fee, cleared and locked for a "no fault" annulment (which is
+  // always free).
+  function syncFeeInput() {
+    if (!feeInput) return;
+    if (payerSelect.value === "none") {
+      feeInput.disabled = true;
+      feeInput.value = "";
+    } else {
+      feeInput.disabled = false;
+      feeInput.value = String(autoFee());
+    }
+  }
+
+  // The fee shown in the preview: the admin's typed value when it is valid,
+  // otherwise the automatic one (and always 0 for no fault).
+  function previewFee() {
+    if (payerSelect.value === "none") return 0;
+    if (!feeInput) return autoFee();
+    const raw = String(feeInput.value ?? "").trim().replace(",", ".");
+    if (raw === "") return autoFee();
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : autoFee();
+  }
+
+  // The fee an admin explicitly typed (null when nothing valid was entered, so
+  // the server keeps computing it). Workers never send one.
+  function manualFee() {
+    if (!isAdmin || !feeInput || payerSelect.value === "none") return null;
+    const raw = String(feeInput.value ?? "").trim().replace(",", ".");
+    if (raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+
   function updatePreview() {
     const inEffect = isPolicyInEffect(insurance);
-    // No fault is always free; otherwise the start date decides.
+    // No fault is always free; otherwise the start date decides (or the admin's
+    // typed fee).
     const noFault = payerSelect.value === "none";
-    const fee = noFault
-      ? 0
-      : inEffect
-      ? ANNUL_FEE_IN_EFFECT
-      : ANNUL_FEE_NOT_IN_EFFECT;
+    const fee = previewFee();
     // The broker is refunded the full price unless the broker itself is at
     // fault, in which case only the price minus the fee comes back. Everyone
     // else (cash/card) always gets price - fee.
@@ -1393,11 +1508,20 @@ function openAnnulForm(insurance, onDone) {
       refund
     )} ${currency}`;
   }
-  payerSelect.addEventListener("change", updatePreview);
+  payerSelect.addEventListener("change", () => {
+    syncFeeInput();
+    updatePreview();
+  });
+  if (feeInput) feeInput.addEventListener("input", updatePreview);
+  syncFeeInput();
   updatePreview();
 
   const form = el("form");
   form.appendChild(field(t("annulPayer"), payerSelect));
+  if (feeInput) {
+    form.appendChild(field(t("annulFee"), feeInput));
+    form.appendChild(el("p", t("annulFeeAdminNote"), { class: "muted" }));
+  }
   form.appendChild(el("p", t("annulFeeNote"), { class: "muted" }));
   form.appendChild(statusLine);
   form.appendChild(feeLine);
@@ -1411,13 +1535,16 @@ function openAnnulForm(insurance, onDone) {
     e.preventDefault();
     submit.disabled = true;
     try {
+      const body = {
+        payer: payerSelect.value,
+        CreatedAt: localDateTimeNow(),
+      };
+      const fee = manualFee();
+      if (fee !== null) body.fee = fee;
       const data = await api(`/insurances/${insurance.BlancNumber}/annul`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          payer: payerSelect.value,
-          CreatedAt: localDateTimeNow(),
-        }),
+        body: JSON.stringify(body),
       });
       if (data && data.insurance) Object.assign(insurance, data.insurance);
       toast(t("insuranceAnnulled"), "success");
@@ -3319,6 +3446,18 @@ function insuranceStatusLabel(item) {
   return `${t("annulled")}${payer}`;
 }
 
+// Row tint for a policy in a table. Annulled rows are tinted by who was at
+// fault (worker / broker / no fault); unknown/legacy reasons fall back to a
+// plain annulled tint.
+function annulledRowClass(item) {
+  if (!item || !item.Annulled) return "";
+  const reason = String(item.AnnulReason || "").trim().toLowerCase();
+  if (["broker", "worker", "none"].includes(reason)) {
+    return `row-annulled-${reason}`;
+  }
+  return "row-annulled";
+}
+
 // ---------------------------------------------------------------------------
 // Broker name matching (script-insensitive)
 // ---------------------------------------------------------------------------
@@ -3556,8 +3695,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
               ]
             : []),
         ],
-        (i) =>
-          i.Deleted ? "row-deleted" : i.Annulled ? "row-annulled" : ""
+        (i) => (i.Deleted ? "row-deleted" : annulledRowClass(i))
       )
     );
   }
@@ -4152,7 +4290,7 @@ async function clientInsurances() {
       },
     ],
     null,
-    (i) => (i.Annulled ? "row-annulled" : "")
+    (i) => annulledRowClass(i)
   );
   Content.replaceChildren(el("h2", t("myInsurances")), table);
 }

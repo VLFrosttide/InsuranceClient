@@ -283,6 +283,8 @@ const I18N = {
     annulRefund: "Refund",
     annulFeeNote:
       "The fee is 1 if the policy has not started yet, or 9 if it is already in effect (by its start date). No fault: no fee.",
+    annulFeeAdminNote: "Admins can type a different fee.",
+    annulFeeInvalid: "Fee must be a non-negative number.",
     annulConfirmTitle: "Annul insurance",
     annulSubmit: "Annul insurance",
     insuranceAnnulled: "Insurance annulled",
@@ -791,6 +793,8 @@ const I18N = {
     annulRefund: "Възстановена сума",
     annulFeeNote:
       "Таксата е 1, ако полицата още не е започнала, или 9, ако вече е в сила (според началната дата). Без вина: без такса.",
+    annulFeeAdminNote: "Администраторите могат да въведат друга такса.",
+    annulFeeInvalid: "Таксата трябва да е неотрицателно число.",
     annulConfirmTitle: "Анулиране на застраховка",
     annulSubmit: "Анулирай застраховката",
     insuranceAnnulled: "Застраховката е анулирана",

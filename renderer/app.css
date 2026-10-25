@@ -140,9 +140,21 @@ tr:last-child td {
   border-bottom: none;
 }
 
-tr.row-annulled td {
+/* Annulled policies are tinted by who was at fault, so worker / broker / no
+   fault are tellable apart at a glance. The plain class remains for legacy rows
+   whose fault is unknown. */
+tr.row-annulled td,
+tr.row-annulled-worker td {
   background: rgba(229, 83, 75, 0.18);
   color: #ffb4af;
+}
+tr.row-annulled-broker td {
+  background: rgba(240, 173, 78, 0.18);
+  color: #ffd9a8;
+}
+tr.row-annulled-none td {
+  background: rgba(92, 184, 92, 0.18);
+  color: #c9f2c9;
 }
 
 /* Soft-deleted policy (admin search with "Include deleted"): greyed out and

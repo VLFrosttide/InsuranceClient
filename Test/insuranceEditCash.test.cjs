@@ -1347,12 +1347,44 @@ async function patch(body, opts = {}) {
     eq(a.body.fee, b.body.fee, "same fee");
   });
 
-  await check("a client cannot dictate the fee", async () => {
+  await check("a worker cannot dictate the fee", async () => {
     const r = await annul(
       { payer: "worker", fee: 0, AnnulFee: 0 },
-      { StartDate: dayOffset(-1) }
+      { StartDate: dayOffset(-1) },
+      { role: 2, username: "worker1" }
     );
     eq(r.body.fee, 9, "fee comes from the start date only");
+  });
+
+  await check("an admin can dictate the fee", async () => {
+    const r = await annul(
+      { payer: "worker", fee: 5 },
+      { StartDate: dayOffset(-1) }
+    );
+    eq(r.status, 200, "status");
+    eq(r.body.fee, 5, "the admin's fee is used");
+    eq(r.body.refund, 95, "refund = price - manual fee");
+    eq(r.storedFee, 5, "stored fee");
+  });
+
+  await check("an admin's fee is ignored for a no-fault annulment", async () => {
+    const r = await annul(
+      { payer: "none", fee: 5 },
+      { StartDate: dayOffset(-1) }
+    );
+    eq(r.body.fee, 0, "no fault is always free");
+    eq(r.body.refund, 100, "full refund");
+    eq(r.storedFee, 0, "stored fee");
+  });
+
+  await check("a negative fee is rejected", async () => {
+    const r = await annul(
+      { payer: "worker", fee: -2 },
+      { StartDate: dayOffset(-1) }
+    );
+    eq(r.status, 400, "status");
+    eq(r.body, { error: "fee must be a non-negative number" }, "error");
+    eq(r.movements, [], "no money moves");
   });
 
   await check("no fault charges no fee, even when already in effect", async () => {
@@ -1548,6 +1580,52 @@ async function patch(body, opts = {}) {
     eq(rAnnul.status, 400, "POST /annul rejected for worker on annulled row");
     eq(rAnnul.body, { error: "Insurance already annulled" }, "error");
     eq(rAnnul.movements, [], "no movements");
+  });
+
+  await check("an admin can change the fee of an annulled insurance", async () => {
+    const r = await patch(
+      { AnnulFee: 5 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "worker", "payer unchanged");
+    eq(r.row.AnnulFee, 5, "stored fee");
+    eq(
+      r.movements,
+      ["cash reduce 4 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the 4 difference is refunded out of the drawer"
+    );
+  });
+
+  await check("a worker cannot change the fee of an annulled insurance", async () => {
+    const r = await patch(
+      { AnnulFee: 5 },
+      {
+        role: 2,
+        username: "worker1",
+        row: { Annulled: 1, AnnulReason: "worker", AnnulFee: 9 },
+      }
+    );
+    eq(r.status, 403, "PATCH rejected for worker");
+    eq(r.movements, [], "no movements");
+  });
+
+  await check("a negative fee is rejected on PATCH", async () => {
+    const r = await patch(
+      { AnnulFee: -1 },
+      { row: { Annulled: 1, AnnulReason: "worker", AnnulFee: 9 } }
+    );
+    eq(r.status, 400, "status");
+    eq(r.body, { error: "fee must be a non-negative number" }, "error");
+    eq(r.movements, [], "no money moves");
   });
 
   await check("an admin can also update fault via POST /insurances/:blancNumber/annul", async () => {

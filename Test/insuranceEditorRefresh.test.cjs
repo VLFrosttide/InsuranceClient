@@ -348,6 +348,47 @@ function open(row, response, onDone) {
     }
   });
 
+  await check("an admin editing an annulled policy sees the fee field", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+    eq(e.specValue("AnnulFee"), 7, "pre-filled stored fee");
+    const missing = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(missing.specValue("AnnulFee"), "", "empty when no fee is stored");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("AnnulFee"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see or change the fee", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+      eq(e.specValue("AnnulFee"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("an unchanged fee is not sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ AnnulFee: "9" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("AnnulFee" in body), "unchanged fee is omitted");
+  });
+
+  await check("a changed fee is sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ AnnulFee: "5" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.AnnulFee, 5, "changed fee is sent as a number");
+  });
+
+  await check("an empty fee is omitted so the server keeps its own logic", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    await e.save({ AnnulFee: "" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("AnnulFee" in body), "empty fee is omitted");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
