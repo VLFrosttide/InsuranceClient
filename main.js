@@ -444,11 +444,11 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 // source files, and queue a paper-copy print in the background (see the print
 // queue below).
 //
-// The policy PDF itself ("BG_02_ FI<policy>.pdf") is handled manually: it is
-// neither auto-attached nor auto-printed, so it is left on the Desktop for the
-// worker. Only the remaining PDF is collected automatically, so the watcher
-// stops itself after one file.
-let DesktopPdfWatch = null; // { sinceMs, timer, emitted, sizes, found }
+// Both PDFs are auto-attached to the form. The policy PDF itself
+// ("BG_02_ FI<policy>.pdf") is uploaded but never auto-printed; only the
+// remaining PDF gets a paper copy. The watcher stops itself once it has
+// collected both files.
+let DesktopPdfWatch = null; // { sinceMs, timer, emitted, sizes, foundPolicy, foundOther }
 
 function DesktopPdfDirectory() {
   try {
@@ -511,13 +511,10 @@ async function ScanDesktopPdfsOnce() {
     const filePath = path.join(dir, entry.name);
     if (DesktopPdfWatch.emitted.has(filePath)) continue;
 
-    // The policy PDF ("BG_02_ FI<policy>.pdf") is no longer auto-uploaded or
-    // auto-printed: leave it on the Desktop for the worker to handle manually
-    // and mark it seen so the watcher does not re-scan it every poll.
-    if (/^BG_02_\s*FI/i.test(entry.name)) {
-      DesktopPdfWatch.emitted.add(filePath);
-      continue;
-    }
+    // The policy PDF ("BG_02_ FI<policy>.pdf") is auto-attached like every
+    // other PDF, but it is never auto-printed: only the remaining PDF gets a
+    // paper copy.
+    const isPolicyPdf = /^BG_02_\s*FI/i.test(entry.name);
 
     let stat;
     try {
@@ -556,7 +553,11 @@ async function ScanDesktopPdfsOnce() {
     // queue (its bytes are already safe in the queue, so deleting the source
     // file here cannot lose the policy).
     DesktopPdfWatch.emitted.add(filePath);
-    DesktopPdfWatch.found += 1;
+    if (isPolicyPdf) {
+      DesktopPdfWatch.foundPolicy = true;
+    } else {
+      DesktopPdfWatch.foundOther = true;
+    }
 
     if (win && !win.isDestroyed()) {
       win.webContents.send("DesktopPdfFound", {
@@ -573,9 +574,12 @@ async function ScanDesktopPdfsOnce() {
       console.error(`[DesktopPdfWatch] Failed to delete "${entry.name}":`, err);
     }
 
-    enqueueDesktopPrint(base64, entry.name);
+    // Only the non-policy PDF is printed automatically.
+    if (!isPolicyPdf) {
+      enqueueDesktopPrint(base64, entry.name);
+    }
 
-    if (DesktopPdfWatch.found >= 1) {
+    if (DesktopPdfWatch.foundPolicy && DesktopPdfWatch.foundOther) {
       StopDesktopPdfWatch();
       break;
     }
@@ -804,7 +808,8 @@ ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs) => {
     timer: setInterval(ScanDesktopPdfs, 1000),
     emitted: new Set(),
     sizes: new Map(),
-    found: 0,
+    foundPolicy: false,
+    foundOther: false,
   };
   return { ok: true };
 });
