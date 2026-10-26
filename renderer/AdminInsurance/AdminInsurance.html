@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="bg">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Add Insurance (Admin)</title>
+    <link rel="stylesheet" href="../app.css" />
+    <link rel="stylesheet" href="../AddInsurance/AddInsurance.css" />
+    <link rel="stylesheet" href="AdminInsurance.css" />
+  </head>
+  <body>
+    <header id="PageHeader">
+      <div class="row">
+        <button
+          id="BackButton"
+          class="secondary"
+          type="button"
+          data-i18n="add.back"
+        >
+          ← Dashboard
+        </button>
+        <h1 data-i18n="addAdmin.title">Add Insurance (admin)</h1>
+        <div class="spacer"></div>
+        <button id="LangButton" class="secondary" type="button">BG</button>
+      </div>
+    </header>
+
+    <div id="AddInsuranceLayout">
+      <form id="InsuranceForm" autocomplete="off">
+        <div class="form-grid">
+          <div class="field">
+            <label for="CarNumberInput" data-i18n="add.carNumber"
+              >Номер автомобил</label
+            >
+            <input
+              id="CarNumberInput"
+              class="FormInput ClearForm"
+              type="text"
+              required
+            />
+          </div>
+          <div class="field">
+            <label for="PolicyNumberInput" data-i18n="add.policyNumber"
+              >Полица номер</label
+            >
+            <input
+              id="PolicyNumberInput"
+              class="NumInput FormInput ClearForm"
+              type="text"
+              required
+            />
+          </div>
+          <div class="field">
+            <label for="BlancNumberInput" data-i18n="add.blancNumber"
+              >Бланка номер</label
+            >
+            <input
+              id="BlancNumberInput"
+              class="NumInput FormInput ClearForm"
+              type="number"
+              required
+            />
+          </div>
+
+          <div class="field">
+            <label for="DurationInput" data-i18n="add.duration">Срок</label>
+            <select id="DurationInput" class="FormInput">
+              <option value="15 дена">15 дена</option>
+              <option value="1 месец" selected>1 месец</option>
+              <option value="3 месеца">3 месеца</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="AutoTypeInput" data-i18n="add.vehicleType"
+              >Вид превозно средство</label
+            >
+            <select id="AutoTypeInput" class="FormInput">
+              <option value="Automobile">Автомобил</option>
+              <option value="Motor">Мотор</option>
+              <option value="Bus">Бус</option>
+              <option value="Trailer">Ремарке</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="StartDateInput" data-i18n="add.startDate"
+              >Начална дата</label
+            >
+            <input id="StartDateInput" class="FormInput" type="date" />
+          </div>
+          <div class="field">
+            <label for="CreationDateInput" data-i18n="addAdmin.creationDate"
+              >Дата на създаване</label
+            >
+            <input id="CreationDateInput" class="FormInput" type="datetime-local" />
+          </div>
+          <div class="field">
+            <span class="field-label" data-i18n="add.price">Цена</span>
+            <output
+              id="TotalPriceDisplay"
+              class="price-display"
+              aria-live="polite"
+              >…</output
+            >
+          </div>
+          <div class="field">
+            <label for="CurrencyInput" data-i18n="add.currency">Валута</label>
+            <select id="CurrencyInput" class="FormInput">
+              <option value="EUR">EUR</option>
+              <option value="TRY">TRY</option>
+            </select>
+          </div>
+
+          <div class="field full">
+            <label for="BrokerSelect" data-i18n="addAdmin.broker">Брокер</label>
+            <select id="BrokerSelect" class="FormInput">
+              <option value="" data-i18n="addAdmin.brokerNone"
+                >— Без брокер (на място) —</option
+              >
+            </select>
+            <div id="BrokerNote" class="field-note muted hidden"></div>
+          </div>
+
+          <div class="field checkbox-field" id="CashField">
+            <label>
+              <input id="CashInput" class="FormInput" checked type="checkbox" />
+              <span data-i18n="add.cash">В брой</span>
+            </label>
+          </div>
+          <div class="field checkbox-field" id="NonTurkField">
+            <label>
+              <input id="NonTurkInput" class="FormInput" type="checkbox" />
+              <span data-i18n="add.nonTurk">Не-турчин (+5 €)</span>
+            </label>
+          </div>
+          <div class="field checkbox-field" id="CardFeeField">
+            <label>
+              <input
+                id="CardFeeInput"
+                class="FormInput"
+                type="checkbox"
+                disabled
+              />
+              <span data-i18n="add.cardFee">Такса плащане с карта (+2 €)</span>
+            </label>
+          </div>
+        </div>
+
+        <div id="DisplayMsg"></div>
+        <div class="row actions-row">
+          <button id="SubmitFormButton" type="submit" data-i18n="add.submit">
+            Запиши
+          </button>
+          <button
+            id="ClearButton"
+            class="secondary"
+            type="button"
+            data-i18n="add.clear"
+          >
+            Изчисти
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <script src="../common.js" defer></script>
+    <script src="AdminInsurance.js" defer></script>
+  </body>
+</html>

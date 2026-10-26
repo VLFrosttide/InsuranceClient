@@ -1415,13 +1415,16 @@ function renderTotalPrice() {
     : total.toFixed(2);
 }
 
-// The card fee is only allowed when the payment is NOT cash.
+// The card fee is only allowed when the payment is NOT cash. Switching to card
+// auto-applies the +2 bank tax so the worker immediately sees the total to
+// charge; they can still untick it afterwards to waive the fee.
 function syncCardFeeState() {
   if (!CardFeeInput || !CashInput) return;
   if (CashInput.checked) {
     CardFeeInput.checked = false;
     CardFeeInput.disabled = true;
   } else {
+    if (CardFeeInput.disabled) CardFeeInput.checked = true;
     CardFeeInput.disabled = false;
   }
 }

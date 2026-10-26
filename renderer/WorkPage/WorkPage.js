@@ -581,6 +581,23 @@ function money(value) {
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 }
 
+// The amount a worker should charge the client for a policy. It is the stored
+// Price plus the +2 card fee for walk-in (broker-less) policies paid by card.
+// The +2 is a bank tax, so it is visible here and on the add form but is never
+// stored in the database (the server keeps CardFee at 0 and Price excludes it).
+const CARD_FEE = 2;
+
+function chargePrice(item) {
+  const raw = Number(item && item.Price);
+  if (!Number.isFinite(raw)) return raw;
+  const isWalkIn =
+    item.BrokerId === null ||
+    item.BrokerId === undefined ||
+    item.BrokerId === "";
+  const isCard = String(item.PaymentType || "") === "Card";
+  return isWalkIn && isCard ? Math.round((raw + CARD_FEE) * 100) / 100 : raw;
+}
+
 // Display label for a stored payment type (Cash / Card / Broker). Unknown
 // values are shown as they are.
 function paymentLabel(value) {
@@ -3623,8 +3640,10 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
             key: "Price",
             label: t("price"),
             // Admins always see the price. Workers see walk-in (broker-less)
-            // prices but never a broker (email) price.
-            format: (v, item) => (canSeePrice(item) ? money(v) : ""),
+            // prices but never a broker (email) price. For a walk-in card
+            // payment the +2 bank fee is shown on top so the worker knows the
+            // total to charge (it is never stored).
+            format: (_v, item) => (canSeePrice(item) ? money(chargePrice(item)) : ""),
             ...sortHeader("Price"),
           },
           { key: "CurrencyType", label: t("currency") },
@@ -3837,7 +3856,7 @@ function insuranceExportSheet(rows, canSeePrice) {
   ];
   const text = (v) => (v === undefined || v === null ? "" : String(v));
   const body = (rows || []).map((r, idx) => {
-    const price = Number(r.Price);
+    const price = chargePrice(r);
     const showPrice = !canSeePrice || canSeePrice(r);
     // Same parsing as the display/sort (local wall-clock time).
     const ms = insuranceSortValue(r, "CreationDate");
@@ -4343,13 +4362,18 @@ function renderHeader() {
     Nav.appendChild(btn);
   });
 
-  if (userRole === "2") {
+  if (userRole === "1" || userRole === "2") {
     const addBtn = el("button", t("addInsurance"));
     addBtn.addEventListener("click", () => {
-      // This is a walk-in insurance, not a broker-requested one: make sure no
-      // leftover "pendingEmail" makes it look like an email-sourced insurance.
+      // This is a walk-in (or admin back-fill) insurance, not a
+      // broker-requested one: make sure no leftover "pendingEmail" makes it
+      // look like an email-sourced insurance.
       localStorage.removeItem("pendingEmail");
-      window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
+      const page =
+        userRole === "1"
+          ? "renderer/AdminInsurance/AdminInsurance.html"
+          : "renderer/AddInsurance/AddInsurance.html";
+      window.bridge.LoadNewPage(page);
     });
     Nav.appendChild(addBtn);
   }

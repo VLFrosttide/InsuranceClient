@@ -209,6 +209,17 @@ const PRICING = {
     eq(f.total(), 45, "saved price still 45");
   });
 
+  await check("switching to card auto-applies the +2 so the total is visible immediately", async () => {
+    const f = await setup({ pricing: PRICING });
+    eq(f.shown(), "45.00", "cash total");
+    await f.tick("CashInput", false);
+    eq(f.els.CardFeeInput.checked, true, "auto-ticked for card");
+    eq(f.shown(), "47.00", "45 + 2 shown automatically");
+    await f.tick("CardFeeInput", false);
+    eq(f.shown(), "45.00", "worker can still waive the fee");
+  });
+
+
   await check("fees stay applied across a recalculation", async () => {
     const f = await setup({ pricing: PRICING });
     await f.tick("NonTurkInput", true);

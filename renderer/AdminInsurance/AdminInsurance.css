@@ -1,0 +1,24 @@
+/* Admin insurance creation form: reuses app.css + AddInsurance.css, with a
+   couple of small additions for the broker picker and its note. */
+
+#BrokerSelect {
+  width: 100%;
+}
+
+.field-note {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#BrokerNote.hidden {
+  display: none;
+}
+
+/* The broker selector replaces the walk-in cash/card checkboxes. AddInsurance.css
+   only defines `.hidden` for its own email/drop-area selectors, so define it for
+   the payment checkbox fields here too. */
+.field.hidden {
+  display: none;
+}
+

@@ -442,8 +442,12 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 // the email card is clicked; we then poll the Desktop every second for PDFs
 // created after that moment, push their bytes to the form at once, delete the
 // source files, and queue a paper-copy print in the background (see the print
-// queue below). Exactly two files are expected, so the watcher stops itself
-// once both are collected.
+// queue below).
+//
+// The policy PDF itself ("BG_02_ FI<policy>.pdf") is handled manually: it is
+// neither auto-attached nor auto-printed, so it is left on the Desktop for the
+// worker. Only the remaining PDF is collected automatically, so the watcher
+// stops itself after one file.
 let DesktopPdfWatch = null; // { sinceMs, timer, emitted, sizes, found }
 
 function DesktopPdfDirectory() {
@@ -507,6 +511,14 @@ async function ScanDesktopPdfsOnce() {
     const filePath = path.join(dir, entry.name);
     if (DesktopPdfWatch.emitted.has(filePath)) continue;
 
+    // The policy PDF ("BG_02_ FI<policy>.pdf") is no longer auto-uploaded or
+    // auto-printed: leave it on the Desktop for the worker to handle manually
+    // and mark it seen so the watcher does not re-scan it every poll.
+    if (/^BG_02_\s*FI/i.test(entry.name)) {
+      DesktopPdfWatch.emitted.add(filePath);
+      continue;
+    }
+
     let stat;
     try {
       stat = fs.statSync(filePath);
@@ -563,7 +575,7 @@ async function ScanDesktopPdfsOnce() {
 
     enqueueDesktopPrint(base64, entry.name);
 
-    if (DesktopPdfWatch.found >= 2) {
+    if (DesktopPdfWatch.found >= 1) {
       StopDesktopPdfWatch();
       break;
     }
