@@ -1295,8 +1295,16 @@ function openInsuranceEditor(insurance, onDone) {
     });
   }
   // Admins can change who is at fault and the fee for an already-annulled
-  // insurance.
+  // insurance, and can un-annul (restore) it so it stands as a normal policy
+  // again. The checkbox is ticked because the policy is annulled; unticking it
+  // and saving sends Annulled: false and removes the annulment.
   if (userRole === "1" && editFlag(insurance.Annulled)) {
+    spec.push({
+      key: "Annulled",
+      label: t("annulled"),
+      type: "checkbox",
+      value: true,
+    });
     const storedReason = String(insurance.AnnulReason || "")
       .trim()
       .toLowerCase();
@@ -1341,6 +1349,12 @@ function openInsuranceEditor(insurance, onDone) {
       if ("CarNumber" in payload) {
         payload.CarNumber = String(payload.CarNumber ?? "").trim();
         if (!payload.CarNumber) throw new Error(t("add.carNumberRequired"));
+      }
+      // The "Annulled" checkbox is only shown for annulled policies, so leaving
+      // it ticked (true) means "keep it annulled" - a no-op that is not sent.
+      // Unticking it (false) is the restore action and is sent to the server.
+      if ("Annulled" in payload) {
+        if (payload.Annulled) delete payload.Annulled;
       }
       // Only send the annulment fee when the admin actually changed it: an empty
       // field means "keep the stored fee" (or let the server compute it for rows

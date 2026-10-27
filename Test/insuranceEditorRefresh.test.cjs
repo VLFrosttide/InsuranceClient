@@ -389,6 +389,38 @@ function open(row, response, onDone) {
     ok(!("AnnulFee" in body), "empty fee is omitted");
   });
 
+  await check("an admin editing an annulled policy sees the annulled checkbox", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(e.specValue("Annulled"), true, "annulled checkbox is ticked");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("Annulled"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see the restore checkbox", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+      eq(e.specValue("Annulled"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("a ticked annulled checkbox is not sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ Annulled: true });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("Annulled" in body), "unchanged Annulled is omitted");
+  });
+
+  await check("unticking the annulled checkbox sends Annulled: false", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ Annulled: false });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.Annulled, false, "restore request is sent");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

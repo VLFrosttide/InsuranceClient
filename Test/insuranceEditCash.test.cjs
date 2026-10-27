@@ -1651,6 +1651,124 @@ async function patch(body, opts = {}) {
     eq(r.brokerRestores, ["9 -> broker 7"], "broker gets 9 back");
   });
 
+  // -------------------------------------------------------------------------
+  // Admin un-annulling (restoring) an already-annulled insurance.
+  // -------------------------------------------------------------------------
+  await check("un-annulling a cash policy puts the refund back in the drawer", async () => {
+    const r = await patch(
+      { Annulled: false },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.Annulled, 0, "annulled flag cleared");
+    eq(r.row.AnnulReason, null, "annul reason cleared");
+    eq(r.row.AnnulFee, null, "annul fee cleared");
+    eq(
+      r.movements,
+      ["cash increase 91 EUR @ Офис Харманли (Restore 1234567) by admin1"],
+      "the 91 refund goes back into the drawer"
+    );
+  });
+
+  await check("un-annulling a broker policy recharges the broker and the Broker channel", async () => {
+    const r = await patch(
+      { Annulled: false },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.Annulled, 0, "annulled flag cleared");
+    eq(
+      r.movements,
+      ["total/Broker increase 91 EUR @ Офис Харманли (Restore 1234567) by admin1"],
+      "the refund returns to the Broker channel"
+    );
+    eq(r.brokerDeltas, ["100 -> broker 7"], "the broker is recharged the full price");
+  });
+
+  await check("un-annulling a broker-at-fault policy recharges only the partial refund", async () => {
+    const r = await patch(
+      { Annulled: false },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "broker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(
+      r.brokerDeltas,
+      ["91 -> broker 7"],
+      "the broker is recharged the partial refund it received"
+    );
+  });
+
+  await check("un-annulling a card policy re-adds the card and total/Card balances", async () => {
+    const r = await patch(
+      { Annulled: false },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          StartDate: dayOffset(-1),
+          PaymentType: "Card",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(
+      r.movements,
+      [
+        "card increase 91 (Restore 1234567) by admin1",
+        "total/Card increase 91 EUR @ Офис Харманли (Restore 1234567) by admin1",
+      ],
+      "card and total/Card movements"
+    );
+  });
+
+  await check("a worker cannot un-annul an insurance", async () => {
+    const r = await patch(
+      { Annulled: false },
+      {
+        role: 2,
+        username: "worker1",
+        row: { Annulled: 1, AnnulReason: "worker", AnnulFee: 9 },
+      }
+    );
+    eq(r.status, 403, "status");
+    eq(r.body, { error: "Only admins can restore an annulled insurance" }, "error");
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("un-annulling a policy that is not annulled is rejected", async () => {
+    const r = await patch({ Annulled: false }, { row: { Annulled: 0 } });
+    eq(r.status, 400, "status");
+    eq(r.body, { error: "Insurance is not annulled" }, "error");
+    eq(r.movements, [], "no money moves");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();
