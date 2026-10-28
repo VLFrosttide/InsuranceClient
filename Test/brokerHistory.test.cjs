@@ -87,7 +87,7 @@ async function query(sql, params = []) {
   if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_balance_movements")) {
     return [{}];
   }
-  if (s.startsWith("SELECT id, Name, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
+  if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
     return [db.brokers.filter((b) => b.id === Number(p[0]))];
   }
   if (

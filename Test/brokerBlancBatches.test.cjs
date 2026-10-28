@@ -67,13 +67,13 @@ async function query(sql, params = []) {
   if (s.startsWith("SELECT id FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id }))];
   }
-  if (s.startsWith("SELECT id, Name, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
+  if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT id, CashBalance FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id, CashBalance: b.CashBalance }))];
   }
-  if (s.startsWith("SELECT id, Name, CashBalance, ParentBrokerId, CutOff FROM brokers ORDER BY id")) {
+  if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers ORDER BY id")) {
     return [db.brokers.map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT Email FROM broker_emails WHERE BrokerId = ?")) {
@@ -158,6 +158,11 @@ async function query(sql, params = []) {
   }
   if (/^UPDATE brokers SET CashBalance = CashBalance [-+] \? WHERE id = \?$/.test(s)) {
     return [{ affectedRows: 1 }];
+  }
+  if (s.startsWith("UPDATE brokers SET Code = ? WHERE id = ?")) {
+    const broker = db.brokers.find((x) => x.id === Number(p[1]));
+    if (broker) broker.Code = p[0];
+    return [{ affectedRows: broker ? 1 : 0 }];
   }
   if (s.startsWith("SELECT value FROM app_settings WHERE name = ?")) {
     const v = db.app_settings[p[0]];
@@ -512,6 +517,24 @@ const brokerOf = async (id) =>
       body: { InactivePolicies: 500 },
     });
     eq(r.status, 400, "nothing to update");
+  });
+
+  await check("admins can set and clear a broker's code (ID)", async () => {
+    const set = await call("patch", "/brokers/:id", {
+      params: { id: "1" },
+      body: { Code: "4.2" },
+    });
+    eq(set.status, 200, "set status");
+    eq(set.body.broker.Code, "4.2", "code returned");
+    eq(db.brokers[0].Code, "4.2", "code persisted");
+
+    const clear = await call("patch", "/brokers/:id", {
+      params: { id: "1" },
+      body: { Code: "" },
+    });
+    eq(clear.status, 200, "clear status");
+    eq(clear.body.broker.Code, null, "cleared code is null");
+    eq(db.brokers[0].Code, null, "cleared code persisted as null");
   });
 
   await check("insurance create / annul / delete only move the balance", async () => {

@@ -598,6 +598,18 @@ function chargePrice(item) {
   return isWalkIn && isCard ? Math.round((raw + CARD_FEE) * 100) / 100 : raw;
 }
 
+// The amount an exported policy contributes to the price column. A normal
+// policy contributes its charge price (stored price, plus the visual-only
+// +2 card fee for walk-in card payments). An annulled policy has already been
+// refunded (price - fee), so it only contributes its annulment fee.
+function insuranceExportPrice(item) {
+  if (item && item.Annulled) {
+    const fee = Number(item.AnnulFee);
+    return Number.isFinite(fee) ? fee : 0;
+  }
+  return chargePrice(item);
+}
+
 // Display label for a stored payment type (Cash / Card / Broker). Unknown
 // values are shown as they are.
 function paymentLabel(value) {
@@ -2598,6 +2610,10 @@ async function brokersView() {
           onClick: isAdmin ? (b) => brokerPricingEditor(b) : undefined,
         },
         {
+          key: "Code",
+          label: t("brokerId"),
+        },
+        {
           key: "CashBalance",
           label: t("balance"),
           format: (v) => money(v),
@@ -3001,6 +3017,7 @@ function brokerCreateForm() {
   const form = buildForm(
     [
       { key: "Name", label: t("name"), value: "" },
+      { key: "Code", label: t("brokerId"), value: "" },
       { key: "CashBalance", label: t("balance"), type: "number", value: 0 },
       // Inactive blancs are not entered: they are calculated from the batches.
       {
@@ -3076,6 +3093,7 @@ async function brokerEditForm(broker) {
   const form = buildForm(
     [
       { key: "Name", label: t("name"), value: broker.Name },
+      { key: "Code", label: t("brokerId"), value: broker.Code || "" },
       {
         key: "CashBalance",
         label: t("balance"),
@@ -3668,6 +3686,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
             ...sortHeader("PaymentType"),
           },
           { key: "Broker", label: t("broker"), ...sortHeader("Broker") },
+          { key: "BrokerCode", label: t("brokerId") },
           { key: "Author", label: t("author"), ...sortHeader("Author") },
           {
             key: "CreationDate",
@@ -3843,6 +3862,20 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   Content.replaceChildren(el("h2", t(titleKey)), form, result);
 }
 
+// Shorthand for a stored duration (in days) used in the Excel export:
+// 15 -> "15D", 30 -> "1M", 90 -> "3M". Any other value (e.g. a legacy 365)
+// is exported as-is so no information is dropped; empty becomes a blank cell.
+function insuranceDurationLabel(duration) {
+  if (duration === undefined || duration === null || duration === "") return "";
+  const days = Number(duration);
+  if (Number.isFinite(days)) {
+    if (days === 15) return "15D";
+    if (days === 30) return "1M";
+    if (days === 90) return "3M";
+  }
+  return String(duration);
+}
+
 // ---------------------------------------------------------------------------
 // Insurance lookup -> Excel export
 //
@@ -3860,17 +3893,19 @@ function insuranceExportSheet(rows, canSeePrice) {
     { label: t("blankNo"), width: 14 },
     { label: t("policyNumber"), width: 18 },
     { label: t("carNumber"), width: 14 },
+    { label: t("add.duration"), width: 9 },
     { label: t("price"), width: 10 },
     { label: t("currency"), width: 9 },
     { label: t("payment"), width: 14 },
     { label: t("broker"), width: 20 },
+    { label: t("brokerId"), width: 8 },
     { label: t("author"), width: 14 },
     { label: t("created"), width: 17 },
     { label: t("status"), width: 12 },
   ];
   const text = (v) => (v === undefined || v === null ? "" : String(v));
   const body = (rows || []).map((r, idx) => {
-    const price = chargePrice(r);
+    const price = insuranceExportPrice(r);
     const showPrice = !canSeePrice || canSeePrice(r);
     // Same parsing as the display/sort (local wall-clock time).
     const ms = insuranceSortValue(r, "CreationDate");
@@ -3880,12 +3915,14 @@ function insuranceExportSheet(rows, canSeePrice) {
       text(r.BlancNumber),
       text(r.PolicyNumber),
       text(r.CarNumber),
+      insuranceDurationLabel(r.Duration),
       showPrice && Number.isFinite(price)
         ? { value: price, style: "money" }
         : "",
       text(r.CurrencyType),
       paymentLabel(r.PaymentType),
       text(r.Broker),
+      text(r.BrokerCode),
       text(r.Author),
       serial !== null
         ? { value: serial, style: "date" }
