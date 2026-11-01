@@ -82,7 +82,7 @@ function userLocation() {
 const LOGIN_TIMEOUT_MS = 15000;
 const LOGIN_MAX_ATTEMPTS = 3;
 
-async function loginFetch(username, password) {
+async function loginFetch(username, password, branch) {
   let lastNetworkError = null;
   for (let attempt = 0; attempt < LOGIN_MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -96,7 +96,7 @@ async function loginFetch(username, password) {
       const res = await fetch(`${API_BASE}/logme`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, branch: branch || "" }),
         signal: controller.signal,
       });
       clearTimeout(timer);
@@ -138,7 +138,11 @@ async function doLogin() {
   }
 
   try {
-    const { res, data } = await loginFetch(UserName.value, Pass.value);
+    const { res, data } = await loginFetch(
+      UserName.value,
+      Pass.value,
+      BranchInput ? BranchInput.value : ""
+    );
 
     if (!res.ok) {
       setMessage(translateError(data.error) || t("accessDenied"), true);
@@ -169,10 +173,47 @@ async function doLogin() {
   }
 }
 
+// Populate the branch dropdown from the server so newly created branches appear
+// and disabled branches are excluded. The hardcoded <option> list in index.html
+// stays as an offline fallback; when the server answers, it is replaced here.
+async function loadBranches() {
+  try {
+    const res = await fetch(`${API_BASE}/branches`, {
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await res.json().catch(() => ({}));
+    const branches = Array.isArray(data.branches) ? data.branches : [];
+    if (branches.length === 0 || !BranchInput) return;
+
+    const current = BranchInput.value;
+    BranchInput.innerHTML = "";
+    for (const b of branches) {
+      const opt = document.createElement("option");
+      opt.value = b.Name;
+      opt.textContent = b.Name;
+      BranchInput.appendChild(opt);
+    }
+
+    // Restore the previously selected branch when it is still available.
+    const preferred = current || localStorage.getItem("branch") || "";
+    if (
+      preferred &&
+      [...BranchInput.options].some((o) => o.value === preferred)
+    ) {
+      BranchInput.value = preferred;
+    }
+  } catch (err) {
+    // Network/parse errors: keep the static fallback list.
+    console.error("Failed to load branches:", err);
+  }
+}
+
 LoginForm.addEventListener("submit", (e) => {
   e.preventDefault();
   doLogin();
 });
+
+loadBranches();
 
 // Start the reachability monitor so the worker can see, before logging in,
 // whether the server is up (green) or unreachable (red) — and whether it is

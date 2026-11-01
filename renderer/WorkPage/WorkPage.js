@@ -939,7 +939,7 @@ const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
 // Branch dropdown options for the edit form. Mirrors the login page's branch
 // dropdown and KNOWN_BRANCHES below, so the lists cannot drift apart.
-const EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
+let EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
 const EDIT_NON_TURK_FEE = 5;
 
 // Stored Otomobil value -> tariff key ("Auto" / "Motor" / "Bus" / "Trailer").
@@ -1607,26 +1607,54 @@ function openAnnulForm(insurance, onDone) {
 // Admin views
 // ---------------------------------------------------------------------------
 
-// The fixed set of real branches (mirrors the login page's branch dropdown).
-// Used so the Overview always shows a card for every known branch — even
-// when it has no current-cash record yet (shown as 0) — while never
-// displaying a blank/unknown "branch" that legacy or malformed records may
-// carry.
-const KNOWN_BRANCHES = [
+// The set of known branches (mirrors the login page's branch dropdown). Used so
+// the Overview always shows a card for every known branch — even when it has no
+// current-cash record yet (shown as 0) — while never displaying a blank/unknown
+// "branch" that legacy or malformed records may carry. Populated from the server
+// (see loadEnabledBranches and adminDashboard), with these names as an offline
+// fallback.
+let KNOWN_BRANCHES = [
   "ГКПП Капитан Андреево",
   "ГКПП Лесово",
   "Офис Харманли",
 ];
 
+// Fetch the currently enabled branches so the edit form's branch dropdown and
+// the admin overview always reflect newly created / disabled branches.
+async function loadEnabledBranches() {
+  try {
+    const data = await api("/branches");
+    const names = (data && data.branches ? data.branches : [])
+      .map((b) => b.Name)
+      .filter(Boolean);
+    if (names.length > 0) {
+      EDIT_BRANCHES = names;
+      KNOWN_BRANCHES = names;
+    }
+  } catch (err) {
+    console.warn("Failed to load branches:", err);
+  }
+}
+
 async function adminDashboard() {
   // Fetch all insurances and branch cash data
-  const [insuranceData, branchesData] = await Promise.all([
+  const [insuranceData, branchesData, allBranchesData] = await Promise.all([
     api("/admin/insurances"),
     api("/currentcash/branches"),
+    api("/admin/branches"),
   ]);
 
   const insurances = insuranceData.insurances || [];
   const branches = branchesData.branches || {};
+
+  // Keep the Overview's known-branch list in sync with the branch registry,
+  // including branches that have been disabled (so they still appear with 0).
+  const managedBranches = (
+    allBranchesData && allBranchesData.branches ? allBranchesData.branches : []
+  )
+    .map((b) => b.Name)
+    .filter(Boolean);
+  if (managedBranches.length > 0) KNOWN_BRANCHES = managedBranches;
 
   // Today's date as a LOCAL "YYYY-MM-DD". toISOString() would give the UTC day,
   // which differs from the local day around midnight.
@@ -4468,6 +4496,7 @@ async function init() {
   setupPresenceSocket();
   fetchUnreadEmails();
   initializeBrokerPricing();
+  loadEnabledBranches();
 
   const defs = NAV_DEFS[userRole] || [];
   if (defs.length) {
