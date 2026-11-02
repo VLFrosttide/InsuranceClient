@@ -1977,6 +1977,112 @@ function registerUserForm() {
   openModal(t("newUser"), form);
 }
 
+// ---------------------------------------------------------------------------
+// Branch management (admin only)
+// ---------------------------------------------------------------------------
+
+// List every branch (enabled and disabled) and let the admin create a new
+// branch, rename one, or toggle it on/off. A disabled branch disappears from
+// the login dropdown and blocks new insurances through it (enforced server-
+// side). The server owns the branch registry; the client only drives it.
+async function adminBranches() {
+  const data = await api("/admin/branches");
+  const branches = (data && data.branches ? data.branches : []).slice();
+  branches.sort((a, b) => String(a.Name).localeCompare(String(b.Name)));
+
+  const toolbar = el("div", null, { class: "row" });
+  const addBtn = el("button", t("newBranch"));
+  addBtn.addEventListener("click", () => branchForm());
+  toolbar.appendChild(addBtn);
+
+  const table = renderTable(
+    branches,
+    [
+      { key: "Name", label: t("branchName") },
+      {
+        key: "Enabled",
+        label: t("status"),
+        format: (enabled) =>
+          enabled ? t("branchEnabled") : t("branchDisabled"),
+        cellClass: (b) => (b.Enabled ? "" : "muted"),
+      },
+      {
+        key: "CreatedAt",
+        label: t("created"),
+        format: (v) => (v ? String(v).replace("T", " ").slice(0, 19) : ""),
+      },
+    ],
+    (branch) => [
+      {
+        label: t("edit"),
+        class: "secondary",
+        onClick: (b) => branchForm(b),
+      },
+      {
+        label: branch.Enabled ? t("disable") : t("enable"),
+        class: branch.Enabled ? "danger" : "secondary",
+        onClick: async (b) => {
+          try {
+            await api(`/admin/branches/${b.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled: !b.Enabled }),
+            });
+            toast(t("branchUpdated"), "success");
+            adminBranches();
+            loadEnabledBranches();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        },
+      },
+    ]
+  );
+
+  Content.replaceChildren(el("h2", t("branches")), toolbar, table);
+}
+
+// Create (no argument) or rename (branch argument) a branch. Branches cannot be
+// deleted — only disabled — so renaming is the only way to change a name.
+function branchForm(branch) {
+  const isEdit = !!branch;
+  const form = buildForm(
+    [
+      {
+        key: "name",
+        label: t("branchName"),
+        value: branch ? branch.Name : "",
+      },
+    ],
+    async (payload) => {
+      const name = String(payload.name ?? "").trim();
+      if (!name) throw new Error(t("err.branchNameRequired"));
+
+      if (isEdit) {
+        await api(`/admin/branches/${branch.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        toast(t("branchUpdated"), "success");
+      } else {
+        await api("/admin/branches", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        toast(t("branchCreated"), "success");
+      }
+      closeModal();
+      adminBranches();
+      loadEnabledBranches();
+    },
+    isEdit ? t("saveChanges") : t("createBranch")
+  );
+  openModal(isEdit ? t("editBranch") : t("newBranch"), form);
+}
+
+
 // Soft-delete an insurance from the admin panel. The row is kept in the
 // database (tagged with Deleted/DeletedAt/DeletedBy by the server) so it is
 // never lost, but it is removed from `data.insurances` here so it disappears
@@ -4400,6 +4506,7 @@ const NAV_DEFS = {
   1: [
     { key: "nav.dashboard", load: adminDashboard },
     { key: "nav.users", load: adminUsers },
+    { key: "nav.branches", load: adminBranches },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
     { key: "nav.currentCash", load: currentCashView },
     { key: "nav.card", load: cardView },
