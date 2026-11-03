@@ -103,7 +103,8 @@ const STUBS = {
       type,
       amount,
       reason,
-      currency
+      currency,
+      createdAt
     ) => {
       const decimal = checkPositive(amount, reason);
       if (type !== "increase" && type !== "reduce") {
@@ -120,6 +121,7 @@ const STUBS = {
         branch: String(branch || ""),
         username,
         reason: reason.trim(),
+        createdAt: createdAt || null,
       });
       return decimal;
     },
@@ -223,6 +225,7 @@ const STUBS = {
     getBrokerAllowNegativeBalance: async () => allowNegativeBalance,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
+  "../db/branches.js": { isBranchEnabled: async () => true },
   "../Mail/SendReply.js": { sendReply: async () => {} },
 };
 
@@ -1313,6 +1316,19 @@ async function patch(body, opts = {}) {
       ["cash reduce 99 EUR @ Офис Харманли (Annul 1234567) by admin1"],
       "refund leaves the drawer"
     );
+  });
+
+  await check("annulling a cash policy refunds on its creation date", async () => {
+    const created = "2026-11-01 19:22:00";
+    const r = await annul(
+      { payer: "worker" },
+      { StartDate: dayOffset(3), CreationDate: created }
+    );
+    eq(r.status, 200, "status");
+    eq(movements.length, 1, "one cash movement");
+    eq(movements[0].where, "cash", "cash movement");
+    eq(movements[0].type, "reduce", "refund direction");
+    eq(movements[0].createdAt, created, "refund stamped with the creation date");
   });
 
   await check("a policy already in effect costs 9 to annul", async () => {
