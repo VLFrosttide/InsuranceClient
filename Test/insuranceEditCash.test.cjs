@@ -125,6 +125,35 @@ const STUBS = {
       });
       return decimal;
     },
+    // Ledger-only cash movement: a back-dated correction that must NOT touch the
+    // running drawer, only the cash_transactions ledger (each day has its own
+    // drawer, so a cross-day annulment reduces the creation day's drawer).
+    recordCashLedgerOnly: async (
+      conn,
+      branch,
+      username,
+      type,
+      amount,
+      reason,
+      currency,
+      createdAt
+    ) => {
+      const decimal = checkPositive(amount, reason);
+      if (type !== "increase" && type !== "reduce") {
+        throw new Error("type must be 'increase' or 'reduce'");
+      }
+      movements.push({
+        where: "cash-ledger",
+        type,
+        amount: decimal,
+        currency: currency || "EUR",
+        branch: String(branch || ""),
+        username,
+        reason: reason.trim(),
+        createdAt: createdAt || null,
+      });
+      return decimal;
+    },
     // Total cash channel movements (Card / Broker). These never touch the cash
     // drawer - they only move the matching part of Total cash - so the test
     // records them separately from `where: "cash"`.
@@ -331,14 +360,24 @@ function ok(cond, msg) {
 const describe = (m) =>
   m.where === "cash"
     ? `cash ${m.type} ${m.amount} ${m.currency} @ ${m.branch} (${m.reason}) by ${m.username}`
+    : m.where === "cash-ledger"
+    ? `cash-ledger ${m.type} ${m.amount} ${m.currency} @ ${m.branch} (${m.reason}) by ${m.username}`
     : m.where === "total"
     ? `total/${m.source} ${m.type} ${m.amount} ${m.currency} @ ${m.branch} (${m.reason}) by ${m.username}`
     : m.where === "transfer"
     ? `transfer ${m.payment} ${m.amount} ${m.currency} @ ${m.from} -> ${m.to} (${m.reason})`
     : `card ${m.type} ${m.amount} (${m.reason}) by ${m.username}`;
 
+// BASE_ROW's creation date is "today" (UTC, matching the annul handler's
+// clientLocalDateTime fallback), so the default annul tests exercise the
+// same-day path. Cross-day tests override it with a past date.
+const _now = new Date();
+const _p2 = (n) => String(n).padStart(2, "0");
+const TODAY_DATETIME = `${_now.getUTCFullYear()}-${_p2(_now.getUTCMonth() + 1)}-${_p2(_now.getUTCDate())} 12:00:00`;
+
 const BASE_ROW = {
   BlancNumber: "1234567",
+  CreationDate: TODAY_DATETIME,
   PolicyNumber: "P-001",
   Price: "100.00",
   CurrencyType: "EUR",
@@ -1319,14 +1358,27 @@ async function patch(body, opts = {}) {
   });
 
   await check("annulling a cash policy refunds on its creation date", async () => {
-    const created = "2026-11-01 19:22:00";
+    const created = "2020-01-01 10:00:00";
     const r = await annul(
       { payer: "worker" },
       { StartDate: dayOffset(3), CreationDate: created }
     );
     eq(r.status, 200, "status");
     eq(movements.length, 1, "one cash movement");
-    eq(movements[0].where, "cash", "cash movement");
+    eq(movements[0].where, "cash-ledger", "back-dated refund never touches the drawer");
+    eq(movements[0].type, "reduce", "refund direction");
+    eq(movements[0].createdAt, created, "refund stamped with the creation date");
+  });
+
+  await check("a same-day cash annulment still moves the drawer", async () => {
+    const created = "2020-01-01 10:00:00";
+    const r = await annul(
+      { payer: "worker", CreatedAt: "2020-01-01 11:00:00" },
+      { StartDate: dayOffset(3), CreationDate: created }
+    );
+    eq(r.status, 200, "status");
+    eq(movements.length, 1, "one cash movement");
+    eq(movements[0].where, "cash", "same-day refund touches the drawer");
     eq(movements[0].type, "reduce", "refund direction");
     eq(movements[0].createdAt, created, "refund stamped with the creation date");
   });
