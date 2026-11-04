@@ -89,6 +89,7 @@ trimOnPaste(document.getElementById("BlancNumberInput"));
 // Pricing (broker vs walk-in)
 // ---------------------------------------------------------------------------
 const NON_TURK_FEE = 5;
+const NON_TURK_FEE_TRY = 200;
 const CARD_FEE = 2;
 
 let branchPricing = {}; // walk-in EUR
@@ -107,7 +108,11 @@ function isBrokerMode() {
 
 function currentFees() {
   if (isBrokerMode()) return 0;
-  if (NonTurkInput && NonTurkInput.checked) return NON_TURK_FEE;
+  if (NonTurkInput && NonTurkInput.checked) {
+    return CurrencyInput && CurrencyInput.value === "TRY"
+      ? NON_TURK_FEE_TRY
+      : NON_TURK_FEE;
+  }
   return 0;
 }
 
@@ -415,26 +420,52 @@ InsuranceForm.addEventListener("submit", async function (e) {
     TzOffset: -new Date().getTimezoneOffset(),
   };
 
-  SubmitFormButton.disabled = true;
-  try {
-    await api("/admin/insurances", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const flash = { text: t("add.saved"), type: "success" };
+  // A broker-linked insurance whose blanc number is outside the broker's blanc
+  // batches is rejected once; the admin is asked whether to create it anyway.
+  let forceOutsideBlancBatch = false;
+  while (true) {
+    const outbound = forceOutsideBlancBatch
+      ? { ...payload, ForceOutsideBlancBatch: true }
+      : payload;
+
+    SubmitFormButton.disabled = true;
     try {
-      localStorage.setItem("flashToast", JSON.stringify(flash));
+      await api("/admin/insurances", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(outbound),
+      });
+      const flash = { text: t("add.saved"), type: "success" };
+      try {
+        localStorage.setItem("flashToast", JSON.stringify(flash));
+      } catch (err) {
+        console.error("Failed to store flash toast:", err);
+      }
+      goBack();
+      return;
     } catch (err) {
-      console.error("Failed to store flash toast:", err);
+      const message = err && err.message ? err.message : t("serverError");
+
+      if (
+        !forceOutsideBlancBatch &&
+        err &&
+        err.code === BLANC_OUTSIDE_BROKER_BATCHES_CODE
+      ) {
+        setMessage(message, true);
+        toast(message, "error");
+        if (!confirm(t("add.blancOutsideBatchesConfirm"))) {
+          return;
+        }
+        forceOutsideBlancBatch = true;
+        continue;
+      }
+
+      setMessage(message, true);
+      toast(message, "error");
+      return;
+    } finally {
+      SubmitFormButton.disabled = false;
     }
-    goBack();
-  } catch (err) {
-    const message = err && err.message ? err.message : t("serverError");
-    setMessage(message, true);
-    toast(message, "error");
-  } finally {
-    SubmitFormButton.disabled = false;
   }
 });
 

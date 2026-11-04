@@ -350,6 +350,8 @@ const I18N = {
     "add.clear": "Clear",
     "add.clearConfirm": "Clear the form? All entered data and attached files will be lost.",
     "add.saved": "Insurance saved",
+    "add.blancOutsideBatchesConfirm":
+      "This blank number is not in any of the broker's blank batches. Create the insurance anyway?",
     "add.dropArea": "Drop files here",
     "add.dropAreaHint": "or click to choose files",
     "add.attachedFiles": "Attached files",
@@ -469,6 +471,8 @@ const I18N = {
     "err.accessDeniedRole": "Access denied: unknown role",
     "err.usernameExists": "Username already exists",
     "err.blancExists": "An insurance with this blank number already exists",
+    "err.blancOutsideBrokerBatches":
+      "This blank number is not in any of the broker's blank batches",
     "err.insuranceNotFound": "Insurance not found",
     "err.cannotModifyDeleted": "A deleted insurance cannot be modified",
     "err.cannotAnnulDeleted": "A deleted insurance cannot be annulled",
@@ -877,6 +881,8 @@ const I18N = {
     "add.clear": "Изчисти",
     "add.clearConfirm": "Да се изчисти ли формата? Всички въведени данни и прикачени файлове ще бъдат загубени.",
     "add.saved": "Застраховката е запазена",
+    "add.blancOutsideBatchesConfirm":
+      "Този номер на бланка не е в никоя от партидите на брокера. Да се създаде ли застраховката въпреки това?",
     "add.dropArea": "Пуснете файлове тук",
     "add.dropAreaHint": "или щракнете, за да изберете файлове",
     "add.attachedFiles": "Прикачени файлове",
@@ -998,6 +1004,8 @@ const I18N = {
     "err.accessDeniedRole": "Отказан достъп: непозната роля",
     "err.usernameExists": "Потребителското име вече съществува",
     "err.blancExists": "Вече съществува застраховка с този номер на бланка",
+    "err.blancOutsideBrokerBatches":
+      "Този номер на бланка не е в никоя от партидите на брокера",
     "err.insuranceNotFound": "Застраховката не е намерена",
     "err.cannotModifyDeleted": "Изтрита застраховка не може да се редактира",
     "err.cannotAnnulDeleted": "Изтрита застраховка не може да се анулира",
@@ -1103,6 +1111,11 @@ function t(key, fallback) {
 // Maps the server's English error messages to translation keys, so errors shown
 // to the worker follow the selected language as well. Messages that are not
 // listed here (or that carry dynamic data) are returned unchanged.
+
+// Machine-readable code the server returns when a broker-linked policy's blanc
+// number is not covered by the broker's blanc batches.
+const BLANC_OUTSIDE_BROKER_BATCHES_CODE = "BLANC_OUTSIDE_BROKER_BATCHES";
+
 const SERVER_ERROR_TRANSLATIONS = {
   // Authentication / accounts.
   "Invalid username or password": "err.invalidCredentials",
@@ -1127,6 +1140,8 @@ const SERVER_ERROR_TRANSLATIONS = {
 
   // Insurances.
   "Insurance with this BlancNumber already exists": "err.blancExists",
+  "This blanc number is not in any of the broker's blanc batches":
+    "err.blancOutsideBrokerBatches",
   "Insurance not found": "err.insuranceNotFound",
   "Cannot modify a deleted insurance": "err.cannotModifyDeleted",
   "Cannot annul a deleted insurance": "err.cannotAnnulDeleted",
@@ -1475,6 +1490,7 @@ async function api(path, options = {}) {
       }
       const error = new Error(message);
       error.status = res.status;
+      error.code = data.code || null;
       throw error;
     }
     return data;

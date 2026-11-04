@@ -356,6 +356,8 @@ function createServerWsHarness({ dbQuery } = {}) {
       ProcessEmail: async () => null,
       getAttachment: async () => null,
     },
+    "../db/branches.js": { isBranchEnabled: async () => true },
+    "../Mail/brokerSenders.js": { isCutOffBrokerSender: async () => false },
   };
 
   const ctx = {

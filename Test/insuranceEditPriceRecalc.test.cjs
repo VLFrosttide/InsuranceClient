@@ -322,6 +322,16 @@ function open(row) {
     eq(e.c.Price.value, "45.00", "50 - 5");
   });
 
+  await check("the non-Turk fee is 200 when the policy currency is TRY", async () => {
+    const e = open(walkIn({ CurrencyType: "TRY", Price: "45.00" }));
+    e.c.NonTurk.checked = true;
+    await e.c.NonTurk.fire("change");
+    eq(e.c.Price.value, "245.00", "45 + 200");
+    e.c.NonTurk.checked = false;
+    await e.c.NonTurk.fire("change");
+    eq(e.c.Price.value, "45.00", "back to 45");
+  });
+
   await check("ticking the card fee does not change the price", async () => {
     const e = open(walkIn({ PaymentType: "Card", Price: "47.30" }));
     e.c.CardFee.checked = true;

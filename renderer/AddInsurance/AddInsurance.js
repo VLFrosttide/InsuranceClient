@@ -1357,8 +1357,10 @@ window.addEventListener("blur", () => {
 // ---------------------------------------------------------------------------
 // Auto-fill price based on insurance type and duration
 // ---------------------------------------------------------------------------
-// Extra fees added on top of the base price.
+// Extra fees added on top of the base price. The non-Turk fee is
+// currency-specific: EUR 5, Turkish lira 200.
 const NON_TURK_FEE = 5;
+const NON_TURK_FEE_TRY = 200;
 const CARD_FEE = 2;
 
 const NonTurkInput = document.getElementById("NonTurkInput");
@@ -1380,15 +1382,23 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+// Currency selected on the creation form (EUR unless TRY is picked).
+function selectedCurrency() {
+  const input = document.getElementById("CurrencyInput");
+  return input && input.value === "TRY" ? "TRY" : "EUR";
+}
+
 function currentFees() {
   let fees = 0;
-  if (NonTurkInput && NonTurkInput.checked) fees += NON_TURK_FEE;
+  if (NonTurkInput && NonTurkInput.checked) {
+    fees += selectedCurrency() === "TRY" ? NON_TURK_FEE_TRY : NON_TURK_FEE;
+  }
   return fees;
 }
 
-// The price that will be saved: tariff price + saved fees (+5 non-Turk), or
-// null when there is no tariff price. The +2 card tax goes to the bank and is
-// visual-only while creating the insurance, so it is never included here.
+// The price that will be saved: tariff price + saved fees (+5/+200 non-Turk),
+// or null when there is no tariff price. The +2 card tax goes to the bank and
+// is visual-only while creating the insurance, so it is never included here.
 function currentTotalPrice() {
   if (basePrice === null) return null;
   return round2(basePrice + currentFees());
@@ -1736,9 +1746,10 @@ InsuranceForm.addEventListener("submit", async function (e) {
       : FormObject.CashInput === true
       ? "Cash"
       : "Card",
-    // Informational flag; the non-Turk fee (+5) is already included in Price.
-    // The non-Turk tax only applies to walk-ins. The card fee (+2) is a bank
-    // tax shown only visually during creation and never stored.
+    // Informational flag; the non-Turk fee (+5 EUR / +200 TRY) is already
+    // included in Price. The non-Turk tax only applies to walk-ins. The card
+    // fee (+2) is a bank tax shown only visually during creation and never
+    // stored.
     NonTurk: !OpenedFromEmail && FormObject.NonTurkInput === true,
     CardFee: false,
 
@@ -1765,107 +1776,141 @@ InsuranceForm.addEventListener("submit", async function (e) {
     })),
   };
 
-  SubmitFormButton.disabled = true;
-  try {
-    // Sent through the durable outbox: with a working connection this waits
-    // for the server like a normal request; when the server cannot be reached
-    // the policy (with its files) is stored on disk and retried every 5 s in
-    // the background, and the worker moves on to the next policy.
-    const outcome = await submitWithOutbox(
-      {
-        path: "/worker/insurances",
-        body: JSON.stringify(payload),
-        kind: "insurance",
-        label: [payload.BlancNumber, carNumber].filter(Boolean).join(" · "),
-        messageId: returnEmailEnabled() ? PendingEmail.messageId : null,
-        // After an attempt that got no answer, the outbox checks whether this
-        // policy already exists before re-sending it (no duplicates).
-        verify: {
-          path: `/insurances?blancNumber=${encodeURIComponent(
-            payload.BlancNumber
-          )}&author=${encodeURIComponent(getUsername())}`,
-          listKey: "insurances",
-          match: { BlancNumber: payload.BlancNumber, Author: getUsername() },
-        },
-      },
-      OUTBOX_WAIT_MS
-    );
+  // A broker-linked insurance whose blanc number falls outside the broker's
+  // blanc batches is rejected once with a distinct error; the worker is then
+  // asked whether to create the policy anyway before it is re-sent with a
+  // force flag.
+  let forceOutsideBlancBatch = false;
 
-    if (outcome.status === "failed") {
-      // The server answered and rejected it (validation, duplicate, ...):
-      // keep the form so the worker can fix it.
-      const error = new Error(outcome.error || t("serverError"));
-      error.status = outcome.httpStatus;
-      throw error;
-    }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const outbound = forceOutsideBlancBatch
+      ? { ...payload, ForceOutsideBlancBatch: true }
+      : payload;
 
-    const queued = outcome.status !== "sent";
-    const result = outcome.result || {};
-
-    // The insurance is saved even when the return email fails (the server
-    // sends it after committing), so report that failure separately.
-    const replyError = !queued && result && result.replyError;
-    let flash;
-    if (queued) {
-      console.warn(
-        "Insurance queued in the outbox (server unreachable):",
-        outcome.error || outcome.status
-      );
-      flash = { text: t("outbox.queuedToast"), type: "info" };
-    } else if (replyError) {
-      console.error("Return email failed after saving insurance:", replyError);
-      flash = { text: t("add.replyFailed").replace("{e}", replyError), type: "error" };
-    } else {
-      flash = { text: t("add.saved"), type: "success" };
-    }
-    toast(flash.text, flash.type);
-
-    // The form is complete (email policy or walk-in): return the worker to the
-    // dashboard with the unread email cards. The toast is handed over through
-    // localStorage because it would otherwise be lost on navigation; WorkPage
-    // shows it once loaded.
-    if (OpenedFromEmail) {
-      // Delivered: mark the email handled, removing its card everywhere.
-      // Queued: keep it reserved; the dashboard keeps the claim alive and
-      // completes the email once the outbox delivers the policy.
-      leavingEmail = true;
-      await waitForSocketAuth();
-      if (!queued) {
-        const sentNow = completeEmail();
-        if (sentNow && outcome.id && outboxAvailable()) {
-          window.bridge.OutboxAcknowledge(outcome.id).catch(() => {});
-        }
-      }
-      // Give the socket a moment to flush the "complete_email" frame before
-      // the page is unloaded (same approach as goBack()).
-      await new Promise((r) => setTimeout(r, 120));
-    }
-    clearPendingEmail();
+    SubmitFormButton.disabled = true;
     try {
-      localStorage.setItem("flashToast", JSON.stringify(flash));
-    } catch (err) {
-      console.error("Failed to store flash toast:", err);
-    }
-    // Keep Save disabled while the page unloads so it can't be submitted twice.
-    stopDesktopPdfWatch();
-    redirecting = true;
-    if (outcome.status === "auth") {
-      // Session expired (401). The policy is safe in the outbox and is sent
-      // with the new token right after the worker logs in again.
-      toast(t("outbox.authToast"), "error");
-      redirectToLogin();
+      // Sent through the durable outbox: with a working connection this waits
+      // for the server like a normal request; when the server cannot be reached
+      // the policy (with its files) is stored on disk and retried every 5 s in
+      // the background, and the worker moves on to the next policy.
+      const outcome = await submitWithOutbox(
+        {
+          path: "/worker/insurances",
+          body: JSON.stringify(outbound),
+          kind: "insurance",
+          label: [outbound.BlancNumber, outbound.CarNumber]
+            .filter(Boolean)
+            .join(" · "),
+          messageId: returnEmailEnabled() ? PendingEmail.messageId : null,
+          // After an attempt that got no answer, the outbox checks whether this
+          // policy already exists before re-sending it (no duplicates).
+          verify: {
+            path: `/insurances?blancNumber=${encodeURIComponent(
+              outbound.BlancNumber
+            )}&author=${encodeURIComponent(getUsername())}`,
+            listKey: "insurances",
+            match: { BlancNumber: outbound.BlancNumber, Author: getUsername() },
+          },
+        },
+        OUTBOX_WAIT_MS
+      );
+
+      if (outcome.status === "failed") {
+        // The server answered and rejected it (validation, duplicate, ...):
+        // keep the form so the worker can fix it.
+        const error = new Error(outcome.error || t("serverError"));
+        error.status = outcome.httpStatus;
+        error.code = outcome.errorCode || null;
+        throw error;
+      }
+
+      const queued = outcome.status !== "sent";
+      const result = outcome.result || {};
+
+      // The insurance is saved even when the return email fails (the server
+      // sends it after committing), so report that failure separately.
+      const replyError = !queued && result && result.replyError;
+      let flash;
+      if (queued) {
+        console.warn(
+          "Insurance queued in the outbox (server unreachable):",
+          outcome.error || outcome.status
+        );
+        flash = { text: t("outbox.queuedToast"), type: "info" };
+      } else if (replyError) {
+        console.error("Return email failed after saving insurance:", replyError);
+        flash = { text: t("add.replyFailed").replace("{e}", replyError), type: "error" };
+      } else {
+        flash = { text: t("add.saved"), type: "success" };
+      }
+      toast(flash.text, flash.type);
+
+      // The form is complete (email policy or walk-in): return the worker to the
+      // dashboard with the unread email cards. The toast is handed over through
+      // localStorage because it would otherwise be lost on navigation; WorkPage
+      // shows it once loaded.
+      if (OpenedFromEmail) {
+        // Delivered: mark the email handled, removing its card everywhere.
+        // Queued: keep it reserved; the dashboard keeps the claim alive and
+        // completes the email once the outbox delivers the policy.
+        leavingEmail = true;
+        await waitForSocketAuth();
+        if (!queued) {
+          const sentNow = completeEmail();
+          if (sentNow && outcome.id && outboxAvailable()) {
+            window.bridge.OutboxAcknowledge(outcome.id).catch(() => {});
+          }
+        }
+        // Give the socket a moment to flush the "complete_email" frame before
+        // the page is unloaded (same approach as goBack()).
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      clearPendingEmail();
+      try {
+        localStorage.setItem("flashToast", JSON.stringify(flash));
+      } catch (err) {
+        console.error("Failed to store flash toast:", err);
+      }
+      // Keep Save disabled while the page unloads so it can't be submitted twice.
+      stopDesktopPdfWatch();
+      redirecting = true;
+      if (outcome.status === "auth") {
+        // Session expired (401). The policy is safe in the outbox and is sent
+        // with the new token right after the worker logs in again.
+        toast(t("outbox.authToast"), "error");
+        redirectToLogin();
+        return;
+      }
+      window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
       return;
+    } catch (error) {
+      console.error("Error saving insurance:", error);
+      const message =
+        translateError(error && error.message ? error.message : "") ||
+        t("serverError");
+
+      // The blanc number is outside the broker's blanc batches: show the
+      // error and ask whether to create the policy anyway.
+      if (
+        !forceOutsideBlancBatch &&
+        error &&
+        error.code === BLANC_OUTSIDE_BROKER_BATCHES_CODE
+      ) {
+        setMessage(message, true);
+        toast(message, "error");
+        if (!confirm(t("add.blancOutsideBatchesConfirm"))) {
+          return;
+        }
+        forceOutsideBlancBatch = true;
+        continue;
+      }
+
+      setMessage(message, true);
+      toast(message, "error");
+      return;
+    } finally {
+      if (!redirecting) SubmitFormButton.disabled = false;
     }
-    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
-  } catch (error) {
-    console.error("Error saving insurance:", error);
-    const message =
-      translateError(error && error.message ? error.message : "") ||
-      t("serverError");
-    setMessage(message, true);
-    toast(message, "error");
-  } finally {
-    if (!redirecting) SubmitFormButton.disabled = false;
   }
 });
 

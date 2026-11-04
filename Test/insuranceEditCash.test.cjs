@@ -239,6 +239,7 @@ const STUBS = {
       const address = (m ? m[1] : raw).trim().toLowerCase();
       return address === "broker@example.com" ? { id: 7, name: "Euroins" } : null;
     },
+    blancInBrokerBatches: async () => true,
     decreaseBrokerForInsurance: async (conn, brokerId, price) => {
       brokerDeltas.push({ brokerId, delta: Number(price) });
       return Number(price);
@@ -557,15 +558,20 @@ async function patch(body, opts = {}) {
   });
 
   await check("a new currency moves the money between the currency balances", async () => {
-    const r = await patch({ CurrencyType: "USD" });
+    const r = await patch(
+      { CurrencyType: "TRY" },
+      { row: { Branch: "ГКПП Лесово", Otomobil: "Otomobil" } }
+    );
+    eq(r.status, 200, "status");
     eq(
       r.movements,
       [
-        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
-        "cash increase 100 USD @ Офис Харманли (1234567) by admin1",
+        "cash reduce 100 EUR @ ГКПП Лесово (Edit 1234567) by admin1",
+        "cash increase 100 TRY @ ГКПП Лесово (1234567) by admin1",
       ],
       "movements"
     );
+    eq(r.row.CurrencyType, "TRY", "stored currency");
   });
 
   await check("an annulled policy no longer contributes, so nothing moves", async () => {

@@ -42,8 +42,11 @@ const STUBS = {
 const fakeDb = {
   query: async (sql, params) => {
     const s = String(sql);
-    if (s.startsWith("SELECT CashBalance FROM brokers WHERE id = ?")) {
-      return [[{ CashBalance: balances[params[0]] ?? 0 }]];
+    if (s.startsWith("SELECT CashBalance, CutOff FROM brokers WHERE id = ?")) {
+      return [[{ CashBalance: balances[params[0]] ?? 0, CutOff: 0 }]];
+    }
+    if (s.startsWith("SELECT CutOff FROM brokers WHERE id = ?")) {
+      return [[{ CutOff: 0 }]];
     }
     throw new Error("unexpected SQL in test: " + s);
   },

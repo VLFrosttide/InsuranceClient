@@ -63,7 +63,7 @@ function fakeEl(props = {}) {
 
 // Builds a fresh form + context and runs the block in it. `pricing` is what
 // GET /tariffs/policy-pricing returns (or an Error to make it fail).
-async function setup({ pricing, cache = null } = {}) {
+async function setup({ pricing, tryPricing, cache = null, branch = "Офис Харманли" } = {}) {
   const els = {
     NonTurkInput: fakeEl(),
     CardFeeInput: fakeEl({ disabled: true }),
@@ -71,13 +71,17 @@ async function setup({ pricing, cache = null } = {}) {
     TotalPriceDisplay: fakeEl({ textContent: "" }),
     AutoTypeInput: fakeEl({ value: "Automobile" }),
     DurationInput: fakeEl({ value: "1 месец" }),
+    CurrencyInput: fakeEl({
+      value: "EUR",
+      options: [{ value: "EUR" }, { value: "TRY" }],
+    }),
   };
   const pending = [];
   const CTX = {
     console: { warn: () => {}, log: console.log, error: console.error },
     URLSearchParams,
     document: { getElementById: (id) => els[id] || null },
-    localStorage: { getItem: (k) => (k === "branch" ? "Офис Харманли" : null) },
+    localStorage: { getItem: (k) => (k === "branch" ? branch : null) },
     PendingEmail: null,
     DurationInput: els.DurationInput,
     getPricingCache: () => cache,
@@ -85,7 +89,9 @@ async function setup({ pricing, cache = null } = {}) {
     api: () =>
       new Promise((resolve, reject) => {
         pending.push(() =>
-          pricing instanceof Error ? reject(pricing) : resolve({ pricing })
+          pricing instanceof Error
+            ? reject(pricing)
+            : resolve({ pricing, tryPricing })
         );
       }),
   };
@@ -189,6 +195,21 @@ const PRICING = {
     eq(f.total(), 50, "saved price");
     await f.tick("NonTurkInput", false);
     eq(f.shown(), "45.00", "back to 45");
+  });
+
+  await check("the non-Turk fee is 200 when Turkish lira is selected", async () => {
+    const f = await setup({
+      pricing: PRICING,
+      tryPricing: PRICING,
+      branch: "ГКПП Капитан Андреево",
+    });
+    await f.select("CurrencyInput", "TRY");
+    eq(f.shown(), "45.00", "TRY tariff price");
+    await f.tick("NonTurkInput", true);
+    eq(f.shown(), "245.00", "45 + 200");
+    eq(f.total(), 245, "saved TRY price");
+    await f.tick("NonTurkInput", false);
+    eq(f.shown(), "45.00", "fee removed");
   });
 
   await check("the card fee adds 2 visually and only applies when not paid in cash, without changing the saved price", async () => {

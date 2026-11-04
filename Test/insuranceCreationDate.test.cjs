@@ -95,6 +95,7 @@ const STUBS = {
     getBrokerAllowNegativeBalance: async () => true,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
+  "../db/branches.js": { isBranchEnabled: async () => true },
   "../Mail/SendReply.js": { sendReply: async () => {} },
 };
 

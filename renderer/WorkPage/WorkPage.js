@@ -933,14 +933,22 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
 // the broker's tariffs for email (broker-linked) policies - falling back to the
 // branch walk-in tariffs when the broker has none, like /tariffs/policy-pricing
 // does - and the branch walk-in tariffs for walk-ins. The stored non-Turk fee
-// (+5) is added on top, like the add form (the +2 card fee is visual-only and
-// never added to the price or any balance).
+// (+5 EUR / +200 TRY) is added on top, like the add form (the +2 card fee is
+// visual-only and never added to the price or any balance).
 const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
 // Branch dropdown options for the edit form. Mirrors the login page's branch
 // dropdown and KNOWN_BRANCHES below, so the lists cannot drift apart.
 let EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
 const EDIT_NON_TURK_FEE = 5;
+const EDIT_NON_TURK_FEE_TRY = 200;
+
+// The non-Turk fee is currency-specific: EUR 5, Turkish lira 200.
+function editNonTurkFee(currency) {
+  return String(currency).toUpperCase() === "TRY"
+    ? EDIT_NON_TURK_FEE_TRY
+    : EDIT_NON_TURK_FEE;
+}
 
 // Stored Otomobil value -> tariff key ("Auto" / "Motor" / "Bus" / "Trailer").
 // Accepts the values the add form stores as well as their Bulgarian labels.
@@ -1015,7 +1023,7 @@ function editBranchOptions(current) {
 
 // Price for the given vehicle type + duration including the policy's fees, or
 // null when the tariffs have no price for that combination.
-function editedPolicyPrice(pricing, otomobil, duration, fees) {
+function editedPolicyPrice(pricing, otomobil, duration, fees, currency) {
   const type = pricingVehicleKey(otomobil);
   const days = Number(duration);
   if (!type || !Number.isFinite(days) || days <= 0) return null;
@@ -1025,7 +1033,7 @@ function editedPolicyPrice(pricing, otomobil, duration, fees) {
   const base = Number(raw);
   if (!Number.isFinite(base)) return null;
   let total = base;
-  if (fees && fees.nonTurk) total += EDIT_NON_TURK_FEE;
+  if (fees && fees.nonTurk) total += editNonTurkFee(currency);
   return Math.round(total * 100) / 100;
 }
 
@@ -1068,6 +1076,12 @@ function wireEditPriceRecalc(form, insurance) {
   // paid by card, so it is locked (and cleared) when Cash is selected.
   const cardFeeInput = control("CardFee");
   const paymentInput = control("PaymentType");
+  const currencyInput = control("CurrencyType");
+  // Currency that decides the non-Turk fee: what is selected now, or stored.
+  const currencyValue = () =>
+    currencyInput && currencyInput.value
+      ? currencyInput.value
+      : insurance.CurrencyType || "EUR";
 
   // Fees currently selected in the form. A missing box (email policy) means
   // no fee. The card fee is deliberately NOT part of this: it is visual-only.
@@ -1098,7 +1112,8 @@ function wireEditPriceRecalc(form, insurance) {
     const fees = selectedFees();
     let delta = 0;
     if (fees.nonTurk !== appliedFees.nonTurk) {
-      delta += fees.nonTurk ? EDIT_NON_TURK_FEE : -EDIT_NON_TURK_FEE;
+      const fee = editNonTurkFee(currencyValue());
+      delta += fees.nonTurk ? fee : -fee;
     }
     appliedFees = fees;
     if (delta) shiftPrice(delta);
@@ -1140,7 +1155,8 @@ function wireEditPriceRecalc(form, insurance) {
       pricing,
       vehicleInput.value,
       durationInput.value,
-      fees
+      fees,
+      currencyValue()
     );
     if (price === null) {
       // Keep the current price; the worker can still correct it by hand.
@@ -1285,7 +1301,8 @@ function openInsuranceEditor(insurance, onDone) {
     });
   }
   // The non-Turk option chosen when the policy was created. Toggling it adds
-  // or removes its fee (+5) from the price (see wireEditPriceRecalc), and the
+  // or removes its fee (+5 EUR / +200 TRY) from the price (see
+  // wireEditPriceRecalc), and the
   // server moves current cash / the card balance by the difference. Only
   // applies to walk-ins: email policies are broker-paid and the non-Turk tax
   // is a walk-in charge.

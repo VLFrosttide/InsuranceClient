@@ -28,7 +28,7 @@ const path = require("path");
 const vm = require("vm");
 
 const { serverFile } = require("./serverPath.cjs");
-const CURRENCIES = ["EUR", "USD", "TRY"];
+const CURRENCIES = ["EUR", "TRY"];
 
 const round = (n) => Math.round(Number(n) * 100) / 100;
 const ck = (branch, currency) => `${String(branch || "")}|${currency}`;
@@ -397,12 +397,12 @@ const ledger = () =>
     resetTables();
     eq(
       await CC.getCurrentCash(fakeDb, BRANCH),
-      { EUR: 0, USD: 0, TRY: 0 },
+      { EUR: 0, TRY: 0 },
       "current cash"
     );
     eq(
       await CC.getTotalCash(fakeDb, BRANCH),
-      { EUR: 0, USD: 0, TRY: 0 },
+      { EUR: 0, TRY: 0 },
       "total cash"
     );
     await assertSuperset("fresh branch");
@@ -513,12 +513,12 @@ const ledger = () =>
       "increase",
       20,
       "B",
-      "USD",
+      "TRY",
       "Broker"
     );
     eq(
       await CC.getTotalCash(fakeDb, BRANCH),
-      { EUR: 10, USD: 20, TRY: 0 },
+      { EUR: 10, TRY: 20 },
       "total cash per currency"
     );
     await assertSuperset("multi-currency");
@@ -833,7 +833,6 @@ const ledger = () =>
         if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
           return [[
             { Currency: "EUR", CurrentCash: 40 },
-            { Currency: "USD", CurrentCash: 0 },
             { Currency: "TRY", CurrentCash: 10 },
           ]];
         }
@@ -848,7 +847,7 @@ const ledger = () =>
     };
     eq(
       await CC.getCurrentCashAsOf(db, BRANCH, "2026-10-14"),
-      { EUR: 15, USD: 0, TRY: 10 },
+      { EUR: 15, TRY: 10 },
       "historical available cash"
     );
   });
@@ -977,7 +976,7 @@ const ledger = () =>
         totalInsurances: 5,
         brokerInsurances: 2,
         walkInInsurances: 3,
-        totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
+        totalDailyCash: { EUR: 50, TRY: -5 },
         countryWideInsurances: 3,
         cardPayments: [],
         brokerBalance: [],
@@ -1028,7 +1027,6 @@ const ledger = () =>
         if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
           return [[
             { Currency: "EUR", CurrentCash: 40 },
-            { Currency: "USD", CurrentCash: 0 },
             { Currency: "TRY", CurrentCash: 10 },
           ]];
         }
@@ -1063,11 +1061,11 @@ const ledger = () =>
         totalInsurances: 5,
         brokerInsurances: 2,
         walkInInsurances: 3,
-        totalDailyCash: { EUR: 50, USD: 0, TRY: -5 },
+        totalDailyCash: { EUR: 50, TRY: -5 },
         countryWideInsurances: 3,
         cardPayments: [],
         brokerBalance: [],
-        availableCash: { EUR: 15, USD: 0, TRY: 10 },
+        availableCash: { EUR: 15, TRY: 10 },
       },
       "the report carries the branch's walked-back available cash"
     );
@@ -1135,12 +1133,12 @@ const ledger = () =>
       eq(res.code, 200, "status");
       eq(
         res.body.cardPayments,
-        [{ Branch: BRANCH, EUR: 80, USD: 0, TRY: 0 }],
+        [{ Branch: BRANCH, EUR: 80, TRY: 0 }],
         "card payments restricted to the branch"
       );
       eq(
         res.body.brokerBalance,
-        [{ Branch: BRANCH, EUR: 25, USD: 0, TRY: 0 }],
+        [{ Branch: BRANCH, EUR: 25, TRY: 0 }],
         "broker balance restricted to the branch"
       );
 

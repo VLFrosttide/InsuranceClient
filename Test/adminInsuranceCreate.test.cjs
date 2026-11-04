@@ -27,6 +27,7 @@ const routes = [];
 const queries = [];
 const brokerCharges = [];
 const movements = [];
+let blancInBrokerBatchesResult = true;
 
 const recorder = (method) => (routePath, ...handlers) => {
   routes.push({ method, path: routePath, handlers });
@@ -95,6 +96,7 @@ const STUBS = {
   },
   "./Brokers.js": {
     resolveBrokerByEmail: async () => null,
+    blancInBrokerBatches: async () => blancInBrokerBatchesResult,
     decreaseBrokerForInsurance: async (conn, brokerId, price, meta) => {
       brokerCharges.push({ brokerId, price, meta });
     },
@@ -108,6 +110,7 @@ const STUBS = {
     computePolicyTariffPrice: () => null,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
+  "../db/branches.js": { isBranchEnabled: async () => true },
   "../Mail/SendReply.js": { sendReply: async () => {} },
 };
 
@@ -274,6 +277,32 @@ async function create(body) {
   await check("a non-Turk fee on a broker policy is rejected", async () => {
     const r = await create({ BrokerId: 5, NonTurk: true });
     eq(r.status, 400, "status");
+  });
+
+  await check("a broker policy with a blanc outside the broker's batches is rejected unless forced", async () => {
+    blancInBrokerBatchesResult = false;
+
+    const rejected = await create({ BrokerId: 5 });
+    eq(rejected.status, 422, "rejected status");
+    eq(
+      rejected.body && rejected.body.code,
+      "BLANC_OUTSIDE_BROKER_BATCHES",
+      "error code"
+    );
+    eq(
+      rejected.body && rejected.body.error,
+      "This blanc number is not in any of the broker's blanc batches",
+      "error message"
+    );
+
+    const forced = await create({
+      BrokerId: 5,
+      ForceOutsideBlancBatch: true,
+    });
+    eq(forced.status, 201, "forced status");
+    ok(forced.insert, "forced insert issued");
+
+    blancInBrokerBatchesResult = true;
   });
 
   if (failed) {

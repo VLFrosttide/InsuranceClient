@@ -82,9 +82,10 @@ async function writeAtomic(file, data) {
 }
 
 class PermanentError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code) {
     super(message);
     this.status = status || null;
+    this.code = code || null;
   }
 }
 
@@ -368,6 +369,7 @@ export class Outbox {
         queued: false,
         error: meta.lastError,
         httpStatus: meta.httpStatus || null,
+        errorCode: meta.errorCode || null,
       };
     }
     if (meta.status === "auth") {
@@ -520,6 +522,7 @@ export class Outbox {
   rejectAnswer(answer, mutating) {
     const { status, isJson, data } = answer;
     const apiError = isJson && typeof data.error === "string" ? data.error : "";
+    const apiCode = isJson && typeof data.code === "string" ? data.code : "";
     if (status === 413) {
       throw new PermanentError(
         "The request is too large for the server (attachments too big)",
@@ -545,7 +548,11 @@ export class Outbox {
       e.maybeDelivered = mutating && (status >= 500 || status === 408);
       throw e;
     }
-    throw new PermanentError(apiError || `Request failed (HTTP ${status})`, status);
+    throw new PermanentError(
+      apiError || `Request failed (HTTP ${status})`,
+      status,
+      apiCode
+    );
   }
 
   async send(meta) {
@@ -761,6 +768,7 @@ export class Outbox {
           status: "failed",
           lastError: err.message,
           httpStatus: err.status,
+          errorCode: err.code || null,
         });
         await this.drop(meta);
         this.notifyWaiters(meta);
@@ -770,6 +778,7 @@ export class Outbox {
         status: "failed",
         lastError: err.message,
         httpStatus: err.status,
+        errorCode: err.code || null,
       });
       return "failed";
     }
