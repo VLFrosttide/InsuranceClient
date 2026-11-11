@@ -62,5 +62,23 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.on("OutboxDelivered", listener);
     return () => ipcRenderer.removeListener("OutboxDelivered", listener);
   },
+
+  // Bulins border-insurance web form (WebContentsView). Opening an email or a
+  // walk-in insurance shows this form instead of the in-app form; the main
+  // process scrapes every page the worker visits.
+  BulinsOpen: (context) => ipcRenderer.invoke("BulinsOpen", context),
+  BulinsClose: () => ipcRenderer.invoke("BulinsClose"),
+  BulinsGetState: () => ipcRenderer.invoke("BulinsGetState"),
+  BulinsListScrapes: (limit) => ipcRenderer.invoke("BulinsListScrapes", limit),
+  OnBulinsScraped: (callback) => {
+    const listener = (event, entry) => callback(entry);
+    ipcRenderer.on("BulinsScraped", listener);
+    return () => ipcRenderer.removeListener("BulinsScraped", listener);
+  },
+  OnBulinsClosed: (callback) => {
+    const listener = (event, context) => callback(context);
+    ipcRenderer.on("BulinsClosed", listener);
+    return () => ipcRenderer.removeListener("BulinsClosed", listener);
+  },
 });
 // GetIconPath: (callback) => ipcRenderer.on("GetIconPath", callback),
