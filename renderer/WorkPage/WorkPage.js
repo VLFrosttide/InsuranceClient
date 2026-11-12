@@ -341,15 +341,91 @@ function openEmailInNewForm(email) {
 }
 
 function openClaimedEmail(email) {
-  // Pass the email to the new page (AddInsurance) so it can show the full
-  // body and attached pictures beside the form. AddInsurance will either
-  // complete (submit) or release (cancel/back) the claim.
+  // Instead of navigating to the in-app insurance form, open the Bulins web
+  // form in a WebContentsView layered over the dashboard. The claim stays
+  // alive because the dashboard is never unloaded; closing the view releases
+  // the email again (see setupBulinsHandlers).
   try {
     localStorage.setItem("pendingEmail", JSON.stringify(email || null));
   } catch (err) {
     console.error("Failed to store pending email:", err);
   }
+
+  if (window.bridge && typeof window.bridge.BulinsOpen === "function") {
+    window.bridge
+      .BulinsOpen({ mode: "email", email: email || null })
+      .catch((err) => {
+        console.error("Failed to open the Bulins web form:", err);
+        const message =
+          translateError(err && err.message ? err.message : "") ||
+          t("serverError");
+        toast(`${t("errorPrefix")}: ${message}`, "error");
+        releaseClaimedEmail(email && email.messageId);
+      });
+    return;
+  }
+
+  // Fallback when the Bulins bridge is unavailable (e.g. an older preload).
   window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
+}
+
+function releaseClaimedEmail(messageId) {
+  if (!messageId) return;
+  try {
+    if (emailSocket && emailSocket.isReady()) {
+      emailSocket.send({ type: "release_email", messageId });
+      return;
+    }
+  } catch (err) {
+    // Fall through to the durable queue: the release must still reach the
+    // server once the socket is back.
+  }
+  queueDurableEmailWsAction({ type: "release_email", messageId });
+  if (emailSocket) emailSocket.ensureConnected();
+}
+
+// Subscribe to Bulins web-form events. When the worker closes the Bulins view
+// (the floating "← Insurance" button), release the claimed email back into the
+// pool so its card reappears, and remember the latest scraped data.
+function setupBulinsHandlers() {
+  if (!window.bridge || typeof window.bridge.OnBulinsClosed !== "function") {
+    return;
+  }
+
+  window.bridge.OnBulinsClosed((context = {}) => {
+    console.log("[Bulins] web form closed:", context.mode || "walkin");
+    if (context.mode === "email" && context.email && context.email.messageId) {
+      releaseClaimedEmail(context.email.messageId);
+    }
+    try {
+      localStorage.removeItem("pendingEmail");
+    } catch (err) {
+      /* ignore */
+    }
+    try {
+      localStorage.removeItem("desktopPdfWatchSinceMs");
+    } catch (err) {
+      /* ignore */
+    }
+  });
+
+  if (typeof window.bridge.OnBulinsScraped === "function") {
+    window.bridge.OnBulinsScraped((entry) => {
+      console.log("[Bulins] scraped data captured:", entry && entry.url);
+      try {
+        localStorage.setItem(
+          "lastBulinsScrape",
+          JSON.stringify({
+            capturedAt: entry && entry.capturedAt,
+            url: entry && entry.url,
+            record: entry && entry.record,
+          })
+        );
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
 }
 
 function reconcileEmailCards(serverEmails) {
@@ -4665,11 +4741,28 @@ function renderHeader() {
       // broker-requested one: make sure no leftover "pendingEmail" makes it
       // look like an email-sourced insurance.
       localStorage.removeItem("pendingEmail");
-      const page =
-        userRole === "1"
-          ? "renderer/AdminInsurance/AdminInsurance.html"
-          : "renderer/AddInsurance/AddInsurance.html";
-      window.bridge.LoadNewPage(page);
+
+      // Admins keep the in-app back-fill form. Walk-in insurances now open
+      // the Bulins web form in a WebContentsView instead.
+      if (userRole === "1") {
+        window.bridge.LoadNewPage("renderer/AdminInsurance/AdminInsurance.html");
+        return;
+      }
+
+      if (window.bridge && typeof window.bridge.BulinsOpen === "function") {
+        window.bridge
+          .BulinsOpen({ mode: "walkin", email: null })
+          .catch((err) => {
+            console.error("Failed to open the Bulins web form:", err);
+            const message =
+              translateError(err && err.message ? err.message : "") ||
+              t("serverError");
+            toast(`${t("errorPrefix")}: ${message}`, "error");
+          });
+        return;
+      }
+
+      window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
     });
     Nav.appendChild(addBtn);
   }
@@ -4710,6 +4803,7 @@ async function init() {
   renderHeader();
   showFlashToast();
   setupEmailSocket();
+  setupBulinsHandlers();
   setupPresenceSocket();
   fetchUnreadEmails();
   initializeBrokerPricing();
