@@ -44,6 +44,10 @@ const tables = {
   cash_resets: [],
   card_resets: [],
   branch_card_balance: new Map(), // branch -> number
+  // Cash from brokers: the broker balance ledger and its resets (see
+  // "Cash from brokers, per branch" in Requests/CurrentCash.js).
+  broker_movements: [],
+  broker_cash_resets: [],
 };
 const cardOf = (branch) => tables.branch_card_balance.get(String(branch || "")) || 0;
 
@@ -234,6 +238,123 @@ async function query(sql, params = []) {
     return [{ insertId: tables.card_resets.length }];
   }
 
+  // --- day listings for the Current cash tab --------------------------------
+  if (s.startsWith("SELECT * FROM cash_transactions WHERE Branch = ? AND CreatedAt >= ?")) {
+    return [tables.cash_transactions.filter(
+      (r) => r.Branch === p[0] && r.CreatedAt >= p[1] && r.CreatedAt < p[2]
+    )];
+  }
+  if (s.startsWith("SELECT * FROM cash_resets WHERE Branch = ? AND CreatedAt >= ?")) {
+    return [tables.cash_resets.filter(
+      (r) => r.Branch === p[0] && r.CreatedAt >= p[1] && r.CreatedAt < p[2]
+    )];
+  }
+  if (s.startsWith("SELECT * FROM card_resets WHERE Branch = ? AND CreatedAt >= ?")) {
+    return [tables.card_resets.filter(
+      (r) => r.Branch === p[0] && r.CreatedAt >= p[1] && r.CreatedAt < p[2]
+    )];
+  }
+  if (s.startsWith("SELECT * FROM broker_cash_resets WHERE Branch = ? AND CreatedAt >= ?")) {
+    return [tables.broker_cash_resets.filter(
+      (r) => r.Branch === p[0] && r.CreatedAt >= p[1] && r.CreatedAt < p[2]
+    )];
+  }
+
+  // --- broker balance ledger + cash from brokers ------------------------------
+  // A top-up, as Brokers.js's recordBrokerMovement writes it: an "increase"
+  // carrying the branch that took the money and its currency.
+  if (s.startsWith("INSERT INTO broker_balance_movements")) {
+    tables.broker_movements.push({
+      id: tables.broker_movements.length + 1,
+      BrokerId: p[0],
+      Amount: p[1],
+      Type: p[2],
+      Reason: p[3],
+      Author: p[4],
+      BlancNumber: p[5],
+      CreatedAt: p[6],
+      Branch: p[7] === undefined ? null : p[7],
+      Currency: p[8] === undefined ? "EUR" : p[8],
+      Deleted: 0,
+    });
+    return [{ insertId: tables.broker_movements.length }];
+  }
+  if (
+    s.startsWith(
+      "SELECT COALESCE(MAX(LastMovementId), 0) AS Marker FROM broker_cash_resets"
+    )
+  ) {
+    const rows = tables.broker_cash_resets.filter((r) => r.Branch === p[0]);
+    return [[{ Marker: rows.reduce((m, r) => Math.max(m, r.LastMovementId), 0) }]];
+  }
+  if (s.startsWith("SELECT COALESCE(MAX(id), 0) AS LastId")) {
+    const last = tables.broker_movements.reduce((m, r) => Math.max(m, r.id), 0);
+    return [[{ LastId: last }]];
+  }
+  if (s.startsWith("SELECT m.Currency, ROUND(SUM(m.Amount), 2) AS Total")) {
+    const totals = {};
+    const isTopUp = (m) =>
+      m.Type === "increase" && m.Deleted === 0 && Number(m.Amount) > 0;
+    // The daily report windows by CreatedAt (and optionally by branch).
+    if (s.includes("m.CreatedAt >= ? AND m.CreatedAt < ?")) {
+      const [from, to, only] = p;
+      for (const m of tables.broker_movements) {
+        if (!isTopUp(m) || m.Branch === null) continue;
+        if (m.CreatedAt < from || m.CreatedAt >= to) continue;
+        if (only !== undefined && m.Branch !== only) continue;
+        totals[m.Currency] = round((totals[m.Currency] || 0) + Number(m.Amount));
+      }
+      return [Object.entries(totals).map(([Currency, Total]) => ({ Currency, Total }))];
+    }
+    // The branch's live balance windows by movement id (reset marker).
+    const bounded = s.includes("AND m.id <= ?");
+    const after = Number(p[1]);
+    const through = bounded ? Number(p[2]) : Infinity;
+    for (const m of tables.broker_movements) {
+      if (!isTopUp(m) || m.Branch !== p[0]) continue;
+      if (m.id <= after || m.id > through) continue;
+      if (bounded && p[3] !== undefined && m.Currency !== p[3]) continue;
+      totals[m.Currency] = round((totals[m.Currency] || 0) + Number(m.Amount));
+    }
+    return [Object.entries(totals).map(([Currency, Total]) => ({ Currency, Total }))];
+  }
+  if (s.startsWith("SELECT m.id, m.BrokerId, b.Name AS BrokerName")) {
+    // The day's top-ups of one branch, newest first.
+    const rows = tables.broker_movements
+      .filter(
+        (m) =>
+          m.Type === "increase" &&
+          m.Deleted === 0 &&
+          Number(m.Amount) > 0 &&
+          m.Branch === p[0] &&
+          m.CreatedAt >= p[1] &&
+          m.CreatedAt < p[2]
+      )
+      .sort((a, b) => b.id - a.id)
+      .map((m) => ({
+        id: m.id,
+        BrokerId: m.BrokerId,
+        BrokerName: m.BrokerName || `Broker ${m.BrokerId}`,
+        Amount: m.Amount,
+        Currency: m.Currency,
+        Username: m.Author,
+        Reason: m.Reason,
+        CreatedAt: m.CreatedAt,
+      }));
+    return [rows];
+  }
+  if (s.startsWith("INSERT INTO broker_cash_resets")) {
+    tables.broker_cash_resets.push({
+      Branch: p[0],
+      Username: p[1],
+      Currency: p[2],
+      KeptAmount: p[3],
+      LastMovementId: p[4],
+      CreatedAt: p[5],
+    });
+    return [{ insertId: tables.broker_cash_resets.length }];
+  }
+
   // --- re-branching (movePolicyBranch) ----------------------------------------
   // p = [to, from, reason, "Edit reason", "Annul reason", "Delete reason", "Restore reason"]
   if (s.startsWith("UPDATE cash_transactions SET Branch")) {
@@ -249,6 +370,41 @@ async function query(sql, params = []) {
       if (row.Branch === from && reasons.includes(row.Reason)) row.Branch = to;
     }
     return [{ affectedRows: 1 }];
+  }
+
+  // --- daily report aggregates ------------------------------------------------
+  if (s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount ELSE -Amount END), 2) AS Net")) {
+    // With `Branch = ?` this is getCurrentCashAsOf's window after the requested
+    // day; without it, the country-wide Total daily cash of that day.
+    const scoped = s.includes("Branch = ?");
+    const from = scoped ? p[1] : p[0];
+    const to = scoped ? p[2] : p[1];
+    const totals = {};
+    for (const r of tables.cash_transactions) {
+      if (scoped && r.Branch !== p[0]) continue;
+      if (r.CreatedAt < from || r.CreatedAt >= to) continue;
+      const signed = r.Type === "increase" ? Number(r.Amount) : -Number(r.Amount);
+      totals[r.Currency] = round((totals[r.Currency] || 0) + signed);
+    }
+    return [Object.entries(totals).map(([Currency, Net]) => ({ Currency, Net }))];
+  }
+  if (s.startsWith("SELECT Currency, ROUND(SUM(KeptAmount), 2) AS Kept")) {
+    const totals = {};
+    for (const r of tables.cash_resets) {
+      if (r.Branch !== p[0] || r.CreatedAt < p[1]) continue;
+      totals[r.Currency] = round((totals[r.Currency] || 0) + Number(r.KeptAmount));
+    }
+    return [Object.entries(totals).map(([Currency, Kept]) => ({ Currency, Kept }))];
+  }
+  if (s.includes("COUNT(*) AS total")) {
+    return [[{ total: 0, broker: 0, walkIn: 0 }]];
+  }
+  if (s.includes("MIN(CAST(PolicyNumber AS UNSIGNED))")) {
+    return [[{ firstPolicy: null, lastPolicy: null }]];
+  }
+  if (s.includes("FROM insurance")) {
+    // Card/broker funding per branch: no policies in these tests.
+    return [[]];
   }
 
   throw new Error("fake DB: unhandled SQL -> " + s);
@@ -352,7 +508,28 @@ function resetTables() {
   tables.cash_resets.length = 0;
   tables.card_resets.length = 0;
   tables.branch_card_balance.clear();
+  tables.broker_movements.length = 0;
+  tables.broker_cash_resets.length = 0;
   sqlLog.length = 0;
+}
+
+// A broker top-up as Brokers.js records it: an "increase" of the broker's
+// balance carrying the branch that took the money. `extra` overrides the type,
+// the deletion flag, the branch or the amount.
+function brokerTopUp(branch, amount, currency = "EUR", extra = {}) {
+  tables.broker_movements.push({
+    id: tables.broker_movements.length + 1,
+    BrokerId: 1,
+    Amount: amount,
+    Type: extra.Type || "increase",
+    Reason: extra.Reason || "top-up",
+    Author: extra.Author || USER,
+    BlancNumber: null,
+    CreatedAt: extra.CreatedAt || "2026-10-20 10:00:00",
+    Branch: extra.Branch === undefined ? branch : extra.Branch,
+    Currency: currency,
+    Deleted: extra.Deleted ? 1 : 0,
+  });
 }
 
 const BRANCH = "ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸";
@@ -903,10 +1080,25 @@ const ledger = () =>
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
-    eq(seen.length, 3, "transactions + cash resets + card resets queried");
-    for (const q of seen) {
-      ok(/CreatedAt >= \? AND CreatedAt < \?/.test(q.s), "filtered by day: " + q.s);
-      eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds");
+    eq(seen.length, 7, "transactions + resets + cash from brokers queried");
+    // The day's history: cash movements, cash resets, card resets and the
+    // Cash from Brokers resets.
+    const dayScoped = seen.filter((q) =>
+      q.s.includes("CreatedAt >= ? AND CreatedAt < ?")
+    );
+    eq(dayScoped.length, 4, "one day-scoped query per history table");
+    for (const q of dayScoped) {
+      eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds: " + q.s);
+    }
+    // The branch's live Cash from Brokers: the reset marker and the top-up sum.
+    const branchScoped = seen.filter(
+      (q) =>
+        /broker_cash_resets|broker_balance_movements/.test(q.s) &&
+        !q.s.includes("CreatedAt >= ?")
+    );
+    eq(branchScoped.length, 2, "cash from brokers balance + reset marker");
+    for (const q of branchScoped) {
+      eq(q.params[0], BRANCH, "branch: " + q.s);
     }
 
     seen.length = 0;
@@ -980,11 +1172,16 @@ const ledger = () =>
         countryWideInsurances: 3,
         cardPayments: [],
         brokerBalance: [],
+        cashFromBrokers: { EUR: 0, TRY: 0 },
       },
       "defaults to today and computes the report"
     );
     const dayQueries = seen.filter((q) => q.params && q.params.length);
-    eq(dayQueries.length, 5, "counts + span + cash + card + broker queries");
+    eq(
+      dayQueries.length,
+      6,
+      "counts + span + cash + card + broker + cash from brokers queries"
+    );
     for (const q of dayQueries) {
       eq(q.params, [today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
@@ -1065,6 +1262,7 @@ const ledger = () =>
         countryWideInsurances: 3,
         cardPayments: [],
         brokerBalance: [],
+        cashFromBrokers: { EUR: 0, TRY: 0 },
         availableCash: { EUR: 15, TRY: 10 },
       },
       "the report carries the branch's walked-back available cash"
@@ -1307,6 +1505,168 @@ const ledger = () =>
       "2026-10-20 18:30:00",
       "card reset"
     );
+  });
+
+
+  // ---------------------------------------------------------------------------
+  console.log("\nCash from brokers - money handed over by brokers");
+  // ---------------------------------------------------------------------------
+
+  // Loads the CurrentCash router against the fake DB and returns a caller for one
+  // of its GET routes, e.g. `await call("/currentcash/daily", query)`.
+  function routeCaller(path) {
+    const routes = [];
+    const router = Object.assign({}, fakeRouter, {
+      get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+    });
+    const RouterCC = loadModule("CurrentCash.js", {
+      express: { Router: () => router },
+    });
+    RouterCC.createCurrentCashRouter(fakeDb);
+    const route = routes.find((r) => r.path === path);
+    ok(route, "route registered: " + path);
+    return async (query) => {
+      const res = {
+        code: 200,
+        status(c) {
+          this.code = c;
+          return this;
+        },
+        json(b) {
+          this.body = b;
+          return this;
+        },
+      };
+      await route.handler({ query, user: { username: USER } }, res);
+      return res;
+    };
+  }
+
+  await check("a broker top-up raises Cash from Brokers, not current cash", async () => {
+    resetTables();
+    await CC.recordCashMovement(
+      fakeDb, BRANCH, USER, "increase", 20, "walk-in", "EUR"
+    );
+    const cashBefore = await CC.getCurrentCash(fakeDb, BRANCH);
+    const totalBefore = await CC.getTotalCash(fakeDb, BRANCH);
+
+    brokerTopUp(BRANCH, 100, "EUR");
+
+    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 100, TRY: 0 },
+      "the branch's cash from brokers");
+    eq(await CC.getCurrentCash(fakeDb, BRANCH), cashBefore,
+      "available cash does not move");
+    eq(await CC.getTotalCash(fakeDb, BRANCH), totalBefore,
+      "total cash does not move either");
+    eq(await CC.getBrokerCash(fakeDb, OTHER), { EUR: 0, TRY: 0 },
+      "another branch is not credited");
+  });
+
+  await check("only manual top-ups of that day and branch are listed", async () => {
+    resetTables();
+    brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-20 10:00:00" });
+    brokerTopUp(BRANCH, 50, "TRY", { CreatedAt: "2026-10-20 11:00:00" });
+    // Refunds of an annulled / deleted insurance raise the broker's balance but
+    // are not money handed over, so they stay out of this list.
+    brokerTopUp(BRANCH, 30, "EUR", { Type: "annulment", CreatedAt: "2026-10-20 12:00:00" });
+    brokerTopUp(BRANCH, 40, "EUR", { Type: "deletion", CreatedAt: "2026-10-20 12:30:00" });
+    brokerTopUp(BRANCH, 25, "EUR", { CreatedAt: "2026-10-20 13:00:00", Deleted: true });
+    brokerTopUp(BRANCH, 60, "EUR", { CreatedAt: "2026-10-21 09:00:00" });
+    brokerTopUp(OTHER, 70, "EUR", { CreatedAt: "2026-10-20 14:00:00" });
+
+    const rows = await CC.getBrokerCashTransactions(
+      fakeDb, BRANCH, "2026-10-20", "2026-10-21"
+    );
+    eq(
+      rows.map((r) => [r.Amount, r.Currency, r.Reason]),
+      [[50, "TRY", "top-up"], [100, "EUR", "top-up"]],
+      "newest first, only the branch's manual top-ups of that day"
+    );
+  });
+
+  await check("resetting clears Cash from Brokers and records what was kept", async () => {
+    resetTables();
+    brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-20 10:00:00" });
+    brokerTopUp(BRANCH, 40, "TRY", { CreatedAt: "2026-10-20 11:00:00" });
+    brokerTopUp(OTHER, 90, "EUR", { CreatedAt: "2026-10-20 12:00:00" });
+
+    const kept = await CC.resetBrokerCash(
+      fakeDb, BRANCH, USER, "2026-10-20 18:00:00"
+    );
+    eq(kept, { EUR: 100, TRY: 40 }, "kept amounts");
+    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 }, "balance cleared");
+    eq(
+      tables.broker_cash_resets.map((r) => [
+        r.Branch, r.Currency, r.KeptAmount, r.CreatedAt,
+      ]),
+      [[BRANCH, "EUR", 100, "2026-10-20 18:00:00"],
+       [BRANCH, "TRY", 40, "2026-10-20 18:00:00"]],
+      "resets recorded per currency"
+    );
+    eq(await CC.getBrokerCash(fakeDb, OTHER), { EUR: 90, TRY: 0 },
+      "another branch keeps its money");
+
+    brokerTopUp(BRANCH, 10, "EUR", { CreatedAt: "2026-10-21 09:00:00" });
+    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 10, TRY: 0 },
+      "a later top-up starts a new period");
+  });
+
+
+  await check("Reset to 0 clears the drawer, the card balance and the broker money", async () => {
+    resetTables();
+    await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 20, "walk-in", "EUR");
+    await payByCard(BRANCH, 30, "card payment");
+    brokerTopUp(BRANCH, 50, "EUR");
+
+    const result = await CC.resetBranch(fakeDb, BRANCH, USER, "2026-10-20 18:00:00");
+    eq(result.cash, { EUR: 20, TRY: 0 }, "kept cash");
+    eq(result.card, 30, "kept card balance");
+    eq(result.brokerCash, { EUR: 50, TRY: 0 }, "kept cash from brokers");
+    eq(await CC.getCurrentCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 }, "drawer cleared");
+    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 },
+      "cash from brokers cleared");
+  });
+
+  await check("the Current cash tab lists the branch's top-ups of the day", async () => {
+    resetTables();
+    brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-20 10:00:00" });
+    brokerTopUp(BRANCH, 50, "TRY", { CreatedAt: "2026-10-20 11:00:00" });
+    brokerTopUp(BRANCH, 25, "EUR", { CreatedAt: "2026-10-21 09:00:00" });
+    brokerTopUp(OTHER, 75, "EUR", { CreatedAt: "2026-10-20 12:00:00" });
+
+    const call = routeCaller("/currentcash");
+    const r = await call({ branch: BRANCH, date: "2026-10-20", tzOffset: "0" });
+    eq(r.code, 200, "status");
+    eq(r.body.brokerCash, { EUR: 125, TRY: 50 }, "the branch's live balance");
+    eq(
+      r.body.brokerCashTransactions.map((t) => [t.Amount, t.Currency, t.Username]),
+      [[50, "TRY", USER], [100, "EUR", USER]],
+      "that day's and branch's manual top-ups, newest first"
+    );
+    eq(r.body.transactions, [], "the cash Transactions list stays cash only");
+  });
+
+  await check("the daily report totals the broker money of the day", async () => {
+    resetTables();
+    brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-20 10:00:00" });
+    brokerTopUp(OTHER, 50, "EUR", { CreatedAt: "2026-10-20 11:00:00" });
+    brokerTopUp(BRANCH, 30, "TRY", { CreatedAt: "2026-10-21 09:00:00" });
+    brokerTopUp(BRANCH, 20, "EUR", { Type: "annulment", CreatedAt: "2026-10-20 12:00:00" });
+    await CC.recordCashMovement(
+      fakeDb, BRANCH, USER, "increase", 15, "walk-in", "EUR", "2026-10-20 08:00:00"
+    );
+
+    const call = routeCaller("/currentcash/daily");
+    let r = await call({ date: "2026-10-20", tzOffset: "0" });
+    eq(r.code, 200, "status");
+    eq(r.body.cashFromBrokers, { EUR: 150, TRY: 0 },
+      "all branches, manual top-ups of the day only");
+    eq(r.body.totalDailyCash, { EUR: 15, TRY: 0 }, "cash stays cash");
+
+    r = await call({ date: "2026-10-20", tzOffset: "0", branch: BRANCH });
+    eq(r.body.cashFromBrokers, { EUR: 100, TRY: 0 }, "scoped to the branch");
+    eq(r.body.availableCash, { EUR: 15, TRY: 0 },
+      "the drawer balance of that day, without the broker money");
   });
 
 

@@ -2286,6 +2286,29 @@ async function currentCashView(overrideBranch, overrideDate) {
     cardsRow.appendChild(leftCol);
   }
 
+  // Cash from brokers: the money brokers handed over at this branch since its
+  // last reset. It is kept apart from the cash drawer above (a broker top-up
+  // no longer increases Available cash), so it is shown to everyone, admins
+  // included.
+  const brokerCashCard = el("div", null, { class: "balance-card" });
+  brokerCashCard.appendChild(el("h3", t("cashFromBrokers")));
+  const brokerCashBalances = data.brokerCash || {};
+  const brokerCashNonZero = Object.entries(brokerCashBalances).filter(
+    ([, value]) => Number(value) !== 0
+  );
+  if (brokerCashNonZero.length === 0) {
+    brokerCashCard.appendChild(el("p", money(0), { class: "big" }));
+  } else {
+    const list = el("div");
+    for (const [currency, value] of brokerCashNonZero) {
+      list.appendChild(
+        el("p", `${money(value)} ${currency}`, { class: "big" })
+      );
+    }
+    brokerCashCard.appendChild(list);
+  }
+  cardsRow.appendChild(brokerCashCard);
+
   // Country-wide daily report for the picked day. It is independent of the
   // branch selector above: insurances and cash are counted across all branches.
   const dailyCard = el("div", null, { class: "balance-card daily-report" });
@@ -2367,6 +2390,17 @@ async function currentCashView(overrideBranch, overrideDate) {
     );
   }
 
+  // Total cash from brokers: the money brokers handed over that day (top-ups
+  // of a broker balance). Shown to admins and workers alike, right above the
+  // branch's available cash.
+  dailyCard.appendChild(
+    dailyStat(
+      t("totalCashFromBrokers"),
+      renderCashBalances(daily.cashFromBrokers || {}),
+      t("totalCashFromBrokersHint")
+    )
+  );
+
   // The selected branch's cash drawer balance at the end of the picked day. It
   // is walked back from the live balance, so choosing an older date shows how
   // much cash that branch actually had available on that day. Kept at the
@@ -2441,6 +2475,8 @@ async function currentCashView(overrideBranch, overrideDate) {
   resetBtn.addEventListener("click", async () => {
     if (!confirm(t("resetConfirm"))) return;
     try {
+      // "Reset to 0" also clears the branch's cash from brokers, recording what
+      // was kept.
       await api("/currentcash/reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2531,15 +2567,62 @@ async function currentCashView(overrideBranch, overrideDate) {
           ]
         : []
   );
+  // Expences: the money that LEFT this branch's drawer by hand on the picked
+  // day. The server lists only the manual reductions - the refunds of annulled
+  // or deleted insurances reduce the drawer as well, but they are policy
+  // movements, not money the branch spent, so they are not expenses and stay
+  // out of both the list and the total.
+  const expencesTotal = el(
+    "p",
+    `${t("totalExpences")}: ${renderCashBalances(data.totalExpences || {})}`
+  );
+  const expencesTable = renderTable(data.expences, [
+    { key: "Amount", label: t("amount"), format: (v) => money(v) },
+    { key: "Currency", label: t("currency") },
+    { key: "Reason", label: t("reason") },
+    { key: "Username", label: t("user") },
+    {
+      key: "CreatedAt",
+      label: t("created"),
+      format: (v) => formatDateTime(v),
+    },
+  ]);
+
+  // Every top-up a broker made at this branch on the picked day, in the order
+  // it was received. Top-ups recorded before broker money was separated from
+  // current cash were given a branch by the server's one-time migration, so they
+  // are listed here too; a top-up the migration could not match stays out.
+  const brokerCashTable = renderTable(
+    data.brokerCashTransactions,
+    [
+      { key: "BrokerName", label: t("broker") },
+      { key: "Amount", label: t("amount"), format: (v) => money(v) },
+      { key: "Currency", label: t("currency") },
+      { key: "Username", label: t("user") },
+      { key: "Reason", label: t("reason") },
+      {
+        key: "CreatedAt",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+      },
+    ]
+  );
+
   // A "Reset to 0" clears the cash drawer (one `cash_resets` row per currency)
-  // AND the branch's card balance (one `card_resets` row). Merge the two so the
-  // Resets table also shows the card amount kept, tagged as "Card payments".
+  // AND the branch's card balance (one `card_resets` row) AND its cash from
+  // brokers (one `broker_cash_resets` row per currency with something kept).
+  // Merge all three so the Resets table shows every amount kept, tagged with
+  // what it was.
   const cardResets = (data.cardResets || []).map((r) => ({
     ...r,
     Currency: t("cardPayments"),
   }));
+  const brokerCashResets = (data.brokerCashResets || []).map((r) => ({
+    ...r,
+    Currency: t("cashFromBrokers"),
+  }));
   const resetTable = renderTable(
-    [...(data.resets || []), ...cardResets].sort((a, b) =>
+    [...(data.resets || []), ...cardResets, ...brokerCashResets].sort((a, b) =>
       String(b.CreatedAt || "").localeCompare(String(a.CreatedAt || ""))
     ),
     [
@@ -2577,6 +2660,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     dateRow,
     el("h3", t("transactions")),
     txTable,
+    el("h3", t("expences")),
+    expencesTotal,
+    el("p", t("expencesHint"), { class: "muted" }),
+    expencesTable,
+    el("h3", t("transactionsCashFromBrokers")),
+    brokerCashTable,
     el("h3", t("resets")),
     resetTable
   );
@@ -3139,9 +3228,13 @@ function brokerAdjust(broker, kind) {
       { key: "reason", label: t("reason"), value: "" },
     ],
     async (payload) => {
-      // The resulting broker movement (and, for an increase, the mirrored cash
-      // transaction) is stamped with the worker's local time.
+      // The resulting broker movement is stamped with the worker's local time.
       payload.CreatedAt = localDateTimeNow();
+      // Money handed over by the broker is kept apart from current cash as the
+      // branch's Cash from Brokers, so an increase must name the branch that
+      // took the money (the logged-in user's branch). A reduction moves no
+      // cash and is left without one.
+      if (kind === "increase") payload.branch = getBranch();
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

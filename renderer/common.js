@@ -97,7 +97,7 @@ const I18N = {
     balance: "Balance",
     currentCash: "Current cash",
     currentCashHint:
-      "Only the cash balance: money that physically arrived as cash. Card payments and email payments funded by a broker balance are tracked separately.",
+      "Only the cash balance: money that physically arrived as cash. Card payments, email payments funded by a broker balance and money handed over by brokers (cash from brokers) are tracked separately.",
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
@@ -208,11 +208,11 @@ const I18N = {
     registrationFailed: "Registration failed",
     currentCashIncreased: "Current cash increased",
     currentCashReduced: "Current cash reduced",
-    currentCashReset: "Current cash and card balance reset",
+    currentCashReset: "Current cash, card balance and cash from brokers reset",
     transactionUpdated: "Transaction updated",
     editTransaction: "Edit transaction",
     resetConfirm:
-      "Reset this branch's current cash and card balance to 0? This will record the kept amounts.",
+      "Reset this branch's current cash, card balance and cash from brokers to 0? This will record the kept amounts.",
     brokerBalanceIncreased: "Broker balance increased",
     brokerBalanceReduced: "Broker balance reduced",
     brokerCreated: "Broker created",
@@ -264,6 +264,9 @@ const I18N = {
       "Clear the card balance to 0? This will record the kept amount.",
     cardBalanceCleared: "Card balance cleared",
     cardBalanceTotal: "Card balance (all branches)",
+    cashFromBrokers: "Cash from brokers",
+    cashFromBrokersHint:
+      "Money brokers handed over at this branch since its last reset. It is kept apart from the available cash, which no longer grows when a broker balance is increased.",
     unassignedBranch: "(no branch)",
 
     dailyReport: "Daily report",
@@ -282,6 +285,15 @@ const I18N = {
     brokerBalanceTotal: "Broker balance total",
     brokerBalanceTotalHint:
       "Money funded from a broker's balance at this branch on this day (email policies).",
+    totalCashFromBrokers: "Total cash from brokers",
+    totalCashFromBrokersHint:
+      "Money brokers handed over on this day (broker balance top-ups). Refunds of annulled insurances are not counted.",
+    transactionsCashFromBrokers: "Transactions cash from brokers",
+
+    expences: "Expences",
+    totalExpences: "Total expences",
+    expencesHint:
+      "Money taken out of this branch's drawer by hand on this day (the manual reductions). Refunds of annulled or deleted insurances reduce the drawer too, but they are policy movements, not money the branch spent, so they are not counted here.",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -628,7 +640,7 @@ const I18N = {
     balance: "Баланс",
     currentCash: "Наличен кеш",
     currentCashHint:
-      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания и имейл плащанията, финансирани от баланс на брокер, се отчитат отделно.",
+      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно.",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -739,11 +751,12 @@ const I18N = {
     registrationFailed: "Регистрацията не успя",
     currentCashIncreased: "Наличният кеш беше увеличен",
     currentCashReduced: "Наличният кеш беше намален",
-    currentCashReset: "Наличният кеш и балансът на картата бяха нулирани",
+    currentCashReset:
+      "Наличният кеш, балансът на картата и кешът от брокери бяха нулирани",
     transactionUpdated: "Транзакцията е обновена",
     editTransaction: "Редактирай транзакция",
     resetConfirm:
-      "Да се нулират ли наличният кеш и балансът на картата на този клон? Ще бъдат записани задържаните суми.",
+      "Да се нулират ли наличният кеш, балансът на картата и кешът от брокери на този клон? Ще бъдат записани задържаните суми.",
     brokerBalanceIncreased: "Балансът на брокера беше увеличен",
     brokerBalanceReduced: "Балансът на брокера беше намален",
     brokerCreated: "Брокерът е създаден",
@@ -806,6 +819,9 @@ const I18N = {
       "Да се нулира ли балансът на картата? Ще бъде записана задържаната сума.",
     cardBalanceCleared: "Балансът на картата е изчистен",
     cardBalanceTotal: "Баланс карта (всички клонове)",
+    cashFromBrokers: "Кеш от брокери",
+    cashFromBrokersHint:
+      "Пари, предадени от брокери в този клон след последното нулиране. Те се отчитат отделно от наличния кеш, който вече не се увеличава при увеличаване на баланс на брокер.",
     unassignedBranch: "(без клон)",
 
     dailyReport: "Дневен отчет",
@@ -824,6 +840,15 @@ const I18N = {
     brokerBalanceTotal: "Общ баланс на брокери",
     brokerBalanceTotalHint:
       "Пари, финансирани от баланс на брокер, в този клон на този ден (застраховки по имейл).",
+    totalCashFromBrokers: "Общо кеш от брокери",
+    totalCashFromBrokersHint:
+      "Пари, предадени от брокери на този ден (увеличения на баланс на брокер). Върнатите суми за анулирани застраховки не се броят.",
+    transactionsCashFromBrokers: "Транзакции кеш от брокери",
+
+    expences: "Разходи",
+    totalExpences: "Общо разходи",
+    expencesHint:
+      "Пари, извадени на ръка от касата на този клон на този ден (ръчните намаления). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук.",
 
     annul: "Анулирай",
     annulled: "Анулирана",
