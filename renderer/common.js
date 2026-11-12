@@ -215,6 +215,10 @@ const I18N = {
     currentCashReset: "Current cash, card balance and cash from brokers reset",
     transactionUpdated: "Transaction updated",
     editTransaction: "Edit transaction",
+    deleteTransaction: "Delete transaction",
+    deleteTransactionConfirm:
+      "Delete transaction #{i} ({t} {a} {c} - {r})? It is kept in the database but hidden from the ledger, and its money is reversed on the drawer.",
+    transactionDeleted: "Transaction deleted",
     resetConfirm:
       "Reset this branch's current cash, card balance and cash from brokers to 0? This will record the kept amounts.",
     brokerBalanceIncreased: "Broker balance increased",
@@ -223,6 +227,7 @@ const I18N = {
     brokerUpdated: "Broker updated",
     brokerDeleted: "Broker deleted",
     editMovement: "Edit movement",
+    deleteMovement: "Delete movement",
     movementUpdated: "Movement updated",
     movementDeleted: "Movement deleted",
     movementRestored: "Movement restored",
@@ -323,6 +328,7 @@ const I18N = {
     includeDeleted: "Include deleted",
     annulledFilter: "Annulled",
     deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
+    deleteInsurance: "Delete insurance",
     insuranceDeleted: "Insurance deleted",
     restore: "Restore",
     restoreInsuranceConfirm: "Restore insurance {b}? Its money and broker balance will be reapplied and it will reappear in lists and reports.",
@@ -516,6 +522,7 @@ const I18N = {
     "err.brokerNotFound": "Broker not found",
     "err.clientNotFound": "Client not found",
     "err.transactionNotFound": "Transaction not found",
+    "err.transactionAlreadyDeleted": "The transaction is already deleted",
     "err.blancBatchNotFound": "Blanc batch not found",
     "err.cannotDeleteSelf": "You cannot delete your own account",
     "err.cannotDeleteAdmin": "An admin account cannot be deleted",
@@ -761,6 +768,10 @@ const I18N = {
       "Наличният кеш, балансът на картата и кешът от брокери бяха нулирани",
     transactionUpdated: "Транзакцията е обновена",
     editTransaction: "Редактирай транзакция",
+    deleteTransaction: "Изтрий транзакция",
+    deleteTransactionConfirm:
+      "Да се изтрие ли транзакция #{i} ({t} {a} {c} - {r})? Тя ще остане в базата данни, но ще бъде скрита от регистъра, а сумата ѝ ще бъде сторнирана.",
+    transactionDeleted: "Транзакцията е изтрита",
     resetConfirm:
       "Да се нулират ли наличният кеш, балансът на картата и кешът от брокери на този клон? Ще бъдат записани задържаните суми.",
     brokerBalanceIncreased: "Балансът на брокера беше увеличен",
@@ -769,6 +780,7 @@ const I18N = {
     brokerUpdated: "Брокерът е обновен",
     brokerDeleted: "Брокерът е изтрит",
     editMovement: "Редактирай движение",
+    deleteMovement: "Изтрий движение",
     movementUpdated: "Движението е обновено",
     movementDeleted: "Движението е изтрито",
     movementRestored: "Движението е възстановено",
@@ -787,6 +799,7 @@ const I18N = {
     annulledFilter: "Анулирани",
     deleteInsuranceConfirm:
       "Да се изтрие ли застраховка {b}? Тя ще остане в базата данни, но ще бъде скрита от списъците и справките.",
+    deleteInsurance: "Изтрий застраховка",
     insuranceDeleted: "Застраховката е изтрита",
     restore: "Възстанови",
     restoreInsuranceConfirm:
@@ -1065,6 +1078,7 @@ const I18N = {
     "err.brokerNotFound": "Брокерът не е намерен",
     "err.clientNotFound": "Клиентът не е намерен",
     "err.transactionNotFound": "Транзакцията не е намерена",
+    "err.transactionAlreadyDeleted": "Транзакцията вече е изтрита",
     "err.blancBatchNotFound": "Партидата с бланки не е намерена",
     "err.cannotDeleteSelf": "Не можете да изтриете собствения си акаунт",
     "err.cannotDeleteAdmin": "Администраторски акаунт не може да се изтрие",
@@ -1203,6 +1217,7 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Broker not found": "err.brokerNotFound",
   "Client not found": "err.clientNotFound",
   "Transaction not found": "err.transactionNotFound",
+  "Transaction already deleted": "err.transactionAlreadyDeleted",
   "Blanc batch not found": "err.blancBatchNotFound",
   "Cannot delete your own account": "err.cannotDeleteSelf",
   "Forbidden: cannot delete an admin": "err.cannotDeleteAdmin",

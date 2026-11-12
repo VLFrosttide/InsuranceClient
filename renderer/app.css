@@ -532,6 +532,41 @@ tr.row-clickable:hover td {
   background: var(--bg-soft);
 }
 
+/* Destructive row action ("X" delete). It is invisible until its row is
+   hovered, so a long list stays readable and a destructive click is never one
+   stray click away; it also appears when it is reached with the keyboard.
+   Mirrors .email-card-x (WorkPage.css) so both "X" buttons look the same.
+   Selected as `button.row-hover-x` so it also overrides the generic
+   `button` / `button.danger` background and padding. */
+button.row-hover-x {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  /* Not only faded out: it must not be clickable while it cannot be seen. */
+  pointer-events: none;
+  transition: opacity 120ms ease, background 150ms ease, color 150ms ease;
+}
+tr:hover button.row-hover-x,
+button.row-hover-x:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+button.row-hover-x:hover {
+  background: rgba(229, 83, 75, 0.18);
+  color: var(--danger);
+}
+
 /* Sign colours for amounts and running balances in the broker history. */
 td.num-pos {
   color: var(--success);

@@ -1039,6 +1039,12 @@ function buildForm(spec, onSubmit, submitLabel) {
 
 // ---------------------------------------------------------------------------
 // Table helper (with optional per-row action buttons)
+//
+// `actions` is an array (or a function returning one) of
+//   { label, class, onClick, hover?, icon? }
+// A normal action renders as a small button. One flagged `hover: true` renders
+// as an icon button (default "×") that stays invisible until the row is
+// hovered - see the row-hover-x rules in app.css.
 // ---------------------------------------------------------------------------
 function renderTable(items, columns, actions, rowClass, onRowClick) {
   if (!items || items.length === 0) {
@@ -1108,6 +1114,21 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
         const td = el("td");
         const wrap = el("div", null, { class: "row actions" });
         rowActions.forEach((a) => {
+          // A hover action is an icon button (the delete "X") that only shows
+          // while the row is hovered, so a long list stays readable and a
+          // destructive click is never one stray click away. Its label becomes
+          // the tooltip / accessible name, since the button shows the icon.
+          if (a.hover) {
+            const btn = el("button", a.icon || "×", {
+              class: `row-hover-x ${a.class || "danger"}`,
+              type: "button",
+              title: a.label,
+              "aria-label": a.label,
+            });
+            btn.addEventListener("click", () => a.onClick(item));
+            wrap.appendChild(btn);
+            return;
+          }
           const btn = el("button", a.label, {
             class: `small ${a.class || "secondary"}`,
           });
@@ -2363,6 +2384,38 @@ async function restoreInsurance(insurance, onDone) {
   }
 }
 
+// Soft-delete one entry of the Current cash ledger (admin only, the row's
+// hovering "X"). The entry is kept in the database - tagged with
+// Deleted/DeletedAt/DeletedBy by the server - but it disappears from the ledger
+// (and from the day's expenses and totals), and the money it moved is reversed:
+// an increase is taken back off the drawer, a reduction is put back in. The
+// server rejects a reversal the drawer cannot fund (e.g. the money was already
+// spent or reset), so the balance can never go negative here.
+async function deleteCashTransaction(tx, onDone) {
+  const text = t("deleteTransactionConfirm")
+    .replace("{i}", tx.id)
+    .replace("{t}", t(tx.Type))
+    .replace("{a}", money(tx.Amount))
+    .replace("{c}", tx.Currency)
+    .replace("{r}", tx.Reason || "");
+  if (!confirm(text)) {
+    return;
+  }
+  try {
+    await api(`/currentcash/transactions/${tx.id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        CreatedAt: localDateTimeNow(),
+      }),
+    });
+    toast(t("transactionDeleted"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 // Local calendar day as "YYYY-MM-DD" (built from local components, not
 // toISOString, so the day never shifts around midnight).
 function localDateString(d = new Date()) {
@@ -2761,16 +2814,30 @@ async function currentCashView(overrideBranch, overrideDate) {
         format: (v) => formatDateTime(v),
       },
     ],
-    (tx) =>
-      String(tx.Username) === String(username)
-        ? [
-            {
-              label: t("edit"),
-              class: "",
-              onClick: () => openTransactionEditor(tx),
-            },
-          ]
-        : [],
+    // The author can correct their own entry ("Edit"); an admin can delete any
+    // entry. The delete is the row's "X" and only appears while the row is
+    // hovered, so the ledger stays readable and a destructive click is never
+    // one stray click away.
+    (tx) => {
+      const rowActions = [];
+      if (String(tx.Username) === String(username)) {
+        rowActions.push({
+          label: t("edit"),
+          class: "",
+          onClick: () => openTransactionEditor(tx),
+        });
+      }
+      if (isAdmin) {
+        rowActions.push({
+          label: t("deleteTransaction"),
+          class: "danger",
+          hover: true,
+          onClick: () =>
+            deleteCashTransaction(tx, () => currentCashView(branch, date)),
+        });
+      }
+      return rowActions;
+    },
     // Soft green for money in, soft red for money out; an amount above the
     // currency's notable amount (100 EUR / 5 500 TRY) is tinted a step stronger.
     (tx) => cashLedgerRowClass(tx.Type, tx.Amount, tx.Currency, tx.Reason)
@@ -3355,8 +3422,10 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
             onClick: (m) => brokerHistoryEditForm(broker, m, page, date, includeDeleted),
           },
           {
-            label: t("delete"),
+            // The delete "X": hidden until the row is hovered.
+            label: t("deleteMovement"),
             class: "danger",
+            hover: true,
             onClick: async (m) => {
               if (!confirm(t("deleteMovementConfirm"))) return;
               try {
@@ -4228,6 +4297,12 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
             ...sortHeader("PaymentType"),
           },
           { key: "Broker", label: t("broker"), ...sortHeader("Broker") },
+          // The broker's human-readable ID ("2.1"). A walk-in policy has no
+          // BrokerId of its own, but the server still fills its ID from the
+          // branch's broker record - the border crossings are registered as
+          // brokers - so a policy issued at ГКПП Капитан Андреево shows 2.1 and
+          // one from ГКПП Лесово shows 4.2. Branches that are not brokers (the
+          // Harmanli office) have no ID and stay blank.
           { key: "BrokerCode", label: t("brokerId") },
           { key: "Author", label: t("author"), ...sortHeader("Author") },
           {
@@ -4258,37 +4333,40 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
                 ]
               : []
             : [
-          {
-            label: t("edit"),
-            class: "",
-            // Re-run the search after a save (like annul/delete do here) so the
-            // corrected price/payment type is re-read from the server.
-            onClick: () => openInsuranceEditor(i, () => runSearch()),
-          },
-          ...(!i.Annulled
-            ? [
                 {
-                  label: t("annul"),
-                  class: "danger",
-                  onClick: () =>
-                    openAnnulForm(i, () => {
-                      i.Annulled = 1;
-                      runSearch();
-                    }),
+                  label: t("edit"),
+                  class: "",
+                  // Re-run the search after a save (like annul/delete do here) so
+                  // the corrected price/payment type is re-read from the server.
+                  onClick: () => openInsuranceEditor(i, () => runSearch()),
                 },
-              ]
-            : []),
-          // Deleting is an admin-only action (enforced server-side too).
-          ...(userRole === "1"
-            ? [
-                {
-                  label: t("delete"),
-                  class: "danger",
-                  onClick: () => deleteInsurance(i, () => runSearch()),
-                },
-              ]
-            : []),
-        ],
+                ...(!i.Annulled
+                  ? [
+                      {
+                        label: t("annul"),
+                        class: "danger",
+                        onClick: () =>
+                          openAnnulForm(i, () => {
+                            i.Annulled = 1;
+                            runSearch();
+                          }),
+                      },
+                    ]
+                  : []),
+                // Deleting is an admin-only action (enforced server-side too). It
+                // is the row's "X": it only appears while the row is hovered, so
+                // it cannot be hit by accident.
+                ...(userRole === "1"
+                  ? [
+                      {
+                        label: t("deleteInsurance"),
+                        class: "danger",
+                        hover: true,
+                        onClick: () => deleteInsurance(i, () => runSearch()),
+                      },
+                    ]
+                  : []),
+              ],
         (i) => (i.Deleted ? "row-deleted" : annulledRowClass(i))
       )
     );

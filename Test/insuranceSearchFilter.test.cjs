@@ -77,12 +77,29 @@ const STUBS = {
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },
   "../db/branches.js": { isBranchEnabled: async () => true },
+  // The walk-in branch → broker mapping lives in BrokerInfo.BranchPricingKeys
+  // (the branch names differ from the broker names). Mirrored here only so the
+  // handler can be loaded; a drift guard below compares this copy with the real
+  // file.
+  "../db/BrokerInfo.js": {
+    BranchPricingKeys: {
+      "ГКПП Капитан Андреево": "KapAndreevo",
+      "ГКПП Лесово": "Lesovo",
+      "Офис Харманли": "Nikolay",
+    },
+  },
   "../Mail/SendReply.js": { sendReply: async () => {} },
 };
+
+// Rows the fake DB returns for the brokers lookup (the broker ID/code lookup).
+// The endpoint asks for them by BrokerId (email policies) or by Name (walk-in
+// policies of a border crossing).
+let brokerRows = [];
 
 const fakeDb = {
   query: async (sql, params) => {
     queries.push({ sql: String(sql), params: params || [] });
+    if (/FROM brokers\b/.test(String(sql))) return [brokerRows];
     return [returnRows];
   },
   withTransaction: async (fn) => fn(fakeDb),
@@ -438,6 +455,193 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     const r = await search({ includeDeleted: "1" }, ADMIN);
     eq(r.status, 400, "status");
     ok(r.queried === false, "must not hit the database");
+  });
+
+  // -------------------------------------------------------------------------
+  // Broker ID (BrokerCode) - the "ID" column of the lookup table and of the
+  // Excel export.
+  //
+  // An email policy is linked to its broker through BrokerId. A walk-in policy
+  // stores only the branch (Broker) and keeps BrokerId NULL, so a policy issued
+  // at a border crossing gets the crossing's own broker ID - the crossings are
+  // registered as brokers (Kapitan Andreevo 2.1, Lesovo 4.2). The Harmanli
+  // office is not a broker, so its policies keep an empty ID.
+  // -------------------------------------------------------------------------
+
+  // Broker lookups the handler ran for the search that just finished.
+  async function searchWithBrokers(query, user, rows, brokers) {
+    returnRows = rows;
+    brokerRows = brokers;
+    const before = queries.length;
+    const r = await search(query, user);
+    r.brokerQueries = queries
+      .slice(before)
+      .filter((q) => /FROM brokers\b/.test(q.sql));
+    return r;
+  }
+
+  await check(
+    "a Kapitan Andreevo walk-in policy gets the crossing's broker ID",
+    async () => {
+      const r = await searchWithBrokers(
+        { blancNumber: "1" },
+        undefined,
+        [
+          {
+            BlancNumber: "1",
+            Branch: "ГКПП Капитан Андреево",
+            Broker: "ГКПП Капитан Андреево",
+            BrokerId: null,
+          },
+        ],
+        [{ Name: "KapAndreevo", Code: "2.1" }]
+      );
+      eq(r.status, 200, "status");
+      eq(r.body.insurances[0].BrokerCode, "2.1", "ID of Kapitan Andreevo");
+      eq(r.brokerQueries.length, 1, "one broker lookup");
+      ok(
+        /FROM brokers WHERE Name IN/.test(flat(r.brokerQueries[0].sql)),
+        "walk-ins are looked up by broker name: " + flat(r.brokerQueries[0].sql)
+      );
+      eq(r.brokerQueries[0].params, ["KapAndreevo"], "branch → broker name");
+    }
+  );
+
+  await check("a Lesovo walk-in policy gets its crossing's broker ID", async () => {
+    const r = await searchWithBrokers(
+      { blancNumber: "2" },
+      undefined,
+      [
+        {
+          BlancNumber: "2",
+          Branch: "ГКПП Лесово",
+          Broker: "ГКПП Лесово",
+          BrokerId: null,
+        },
+      ],
+      [{ Name: "Lesovo", Code: "4.2" }]
+    );
+    eq(r.body.insurances[0].BrokerCode, "4.2", "ID of Lesovo");
+  });
+
+  await check("the walk-in broker name match ignores case", async () => {
+    const r = await searchWithBrokers(
+      { blancNumber: "3" },
+      undefined,
+      [
+        {
+          BlancNumber: "3",
+          Branch: "ГКПП Капитан Андреево",
+          Broker: "ГКПП Капитан Андреево",
+          BrokerId: null,
+        },
+      ],
+      [{ Name: "kapandreevo", Code: "2.1" }]
+    );
+    eq(r.body.insurances[0].BrokerCode, "2.1", "case-insensitive name");
+  });
+
+  await check("a branch that is not a broker keeps an empty ID", async () => {
+    const r = await searchWithBrokers(
+      { blancNumber: "4" },
+      undefined,
+      [
+        {
+          BlancNumber: "4",
+          Branch: "Офис Харманли",
+          Broker: "Офис Харманли",
+          BrokerId: null,
+        },
+      ],
+      []
+    );
+    eq(r.body.insurances[0].BrokerCode, "", "the office has no broker ID");
+  });
+
+  await check("an email policy still gets its broker's ID by BrokerId", async () => {
+    const r = await searchWithBrokers(
+      { blancNumber: "5" },
+      undefined,
+      [
+        {
+          BlancNumber: "5",
+          Branch: "ГКПП Капитан Андреево",
+          Broker: "Kamuran",
+          BrokerId: 7,
+        },
+      ],
+      [{ id: 7, Code: "1.9" }]
+    );
+    eq(r.body.insurances[0].BrokerCode, "1.9", "ID of the email broker");
+    eq(r.brokerQueries.length, 1, "one broker lookup");
+    ok(
+      /FROM brokers WHERE id IN/.test(flat(r.brokerQueries[0].sql)),
+      "by id: " + flat(r.brokerQueries[0].sql)
+    );
+    eq(r.brokerQueries[0].params, [7], "bound broker id");
+  });
+
+  await check("walk-in and email rows are resolved in one search", async () => {
+    returnRows = [
+      {
+        BlancNumber: "1",
+        Branch: "ГКПП Капитан Андреево",
+        Broker: "ГКПП Капитан Андреево",
+        BrokerId: null,
+      },
+      {
+        BlancNumber: "2",
+        Branch: "Офис Харманли",
+        Broker: "Euroins",
+        BrokerId: 9,
+      },
+    ];
+    brokerRows = [];
+    const before = queries.length;
+    const res = await search({ date: "2026-10-01" });
+    eq(res.status, 200, "status");
+    const brokerQueries = queries
+      .slice(before)
+      .filter((q) => /FROM brokers\b/.test(q.sql));
+    eq(
+      brokerQueries.map((q) => (/WHERE id IN/.test(q.sql) ? "id" : "name")),
+      ["id", "name"],
+      "one lookup per kind of policy"
+    );
+  });
+
+  await check("no broker lookup when no row can have an ID", async () => {
+    returnRows = [{ BlancNumber: "1", Broker: "Euroins", BrokerId: null }];
+    brokerRows = [];
+    const before = queries.length;
+    await search({ author: "worker1" });
+    eq(
+      queries.slice(before).filter((q) => /FROM brokers\b/.test(q.sql)).length,
+      0,
+      "no broker lookup"
+    );
+  });
+
+  // The branch → broker-name map is defined once, in BrokerInfo.js. The copy in
+  // this test only exists so the handler can be loaded; keep them in sync.
+  await check("the walk-in branch map matches BrokerInfo.BranchPricingKeys", () => {
+    const real = require(serverFile("db", "BrokerInfo.js"));
+    eq(
+      STUBS["../db/BrokerInfo.js"].BranchPricingKeys,
+      real.BranchPricingKeys,
+      "test stub is out of date"
+    );
+  });
+
+  await check("walkInBrokerName resolves the branches", () => {
+    const walkInBrokerName = mod.exports.walkInBrokerName;
+    ok(typeof walkInBrokerName === "function", "walkInBrokerName is exported");
+    eq(walkInBrokerName("ГКПП Капитан Андреево"), "KapAndreevo", "Kap Andreevo");
+    eq(walkInBrokerName("  ГКПП Лесово  "), "Lesovo", "Lesovo (trimmed)");
+    eq(walkInBrokerName("Офис Харманли"), "Nikolay", "Harmanli");
+    eq(walkInBrokerName(""), "", "empty branch");
+    eq(walkInBrokerName(null), "", "null branch");
+    eq(walkInBrokerName("Непознат клон"), "", "unknown branch");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -239,10 +239,19 @@ async function query(sql, params = []) {
   }
 
   // --- day listings for the Current cash tab --------------------------------
-  if (s.startsWith("SELECT * FROM cash_transactions WHERE Branch = ? AND CreatedAt >= ?")) {
-    return [tables.cash_transactions.filter(
-      (r) => r.Branch === p[0] && r.CreatedAt >= p[1] && r.CreatedAt < p[2]
-    )];
+  // Soft-deleted ledger rows are kept in the table but never listed.
+  if (
+    s.startsWith("SELECT * FROM cash_transactions WHERE Branch = ? AND Deleted = 0 AND CreatedAt >= ?")
+  ) {
+    return [
+      tables.cash_transactions.filter(
+        (r) =>
+          r.Branch === p[0] &&
+          !r.Deleted &&
+          r.CreatedAt >= p[1] &&
+          r.CreatedAt < p[2]
+      ),
+    ];
   }
   if (s.startsWith("SELECT * FROM cash_resets WHERE Branch = ? AND CreatedAt >= ?")) {
     return [tables.cash_resets.filter(
@@ -381,6 +390,9 @@ async function query(sql, params = []) {
     const to = scoped ? p[2] : p[1];
     const totals = {};
     for (const r of tables.cash_transactions) {
+      // Soft-deleted ledger rows are skipped by both queries (the drawer's
+      // reversal already took their money out).
+      if (r.Deleted) continue;
       if (scoped && r.Branch !== p[0]) continue;
       if (r.CreatedAt < from || r.CreatedAt >= to) continue;
       const signed = r.Type === "increase" ? Number(r.Amount) : -Number(r.Amount);
