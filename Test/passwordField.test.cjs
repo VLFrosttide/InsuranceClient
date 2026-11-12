@@ -12,6 +12,13 @@
 // The REAL files run in a vm: common.js for el()/setupPasswordToggle()/the eye
 // icon, and the form helpers cut out of WorkPage.js.
 //
+// Fixture values are generated at run time on purpose. A literal
+// username/password pair in the source reads as an embedded credential to
+// secret scanners -- GitGuardian's generic "Username Password" and "Generic
+// password" detectors flag `password` next to a quoted value, test file or not
+// (a `.cjs` test file is not always recognised as test data). Do not paste a
+// realistic pair back in here; build the value from `Date.now()` instead.
+//
 // Run with:  node Test/passwordField.test.cjs   (or: npm test)
 
 const fs = require("fs");
@@ -252,13 +259,20 @@ async function main() {
   await check(
     "submitting sends what was typed, not the wrapper",
     async () => {
-      byType(form, "text")[0].value = "worker";
-      passInput.value = "s3cret";
+      // Generated per run on purpose (see the note at the top of the file): the
+      // source must not contain a literal username + password pair, and a fresh
+      // value also proves the payload carries what was typed rather than a
+      // default the form filled in.
+      const stamp = `${Date.now()}-${process.pid}`;
+      const typedUser = `tester-${stamp}`;
+      const typedValue = `typed-${stamp}`;
+      byType(form, "text")[0].value = typedUser;
+      passInput.value = typedValue;
       form.dispatch("submit");
       await settle();
       eq(submitted.length, 1, "the form submitted");
-      eq(submitted[0].username, "worker", "the username is sent");
-      eq(submitted[0].password, "s3cret", "the typed password is sent");
+      eq(submitted[0].username, typedUser, "the username is sent");
+      eq(submitted[0].password, typedValue, "the typed value is sent");
     }
   );
 
