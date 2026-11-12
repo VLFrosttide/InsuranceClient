@@ -566,6 +566,31 @@ button.row-hover-x:hover {
   background: rgba(229, 83, 75, 0.18);
   color: var(--danger);
 }
+/* The Branches list reuses the same "X" for its enable/disable toggle. The
+   enable one is a tick, not a delete, so it hovers in the success colour. */
+button.row-hover-x.secondary:hover {
+  background: rgba(63, 185, 80, 0.18);
+  color: var(--success);
+}
+
+/* Whole row of actions that stays invisible until its row is hovered (the
+   Brokers, Users and Branches lists). Unlike the single "X" above these are
+   ordinary text buttons, so the rule fades the whole wrapper instead of the
+   button; nothing is clickable while it cannot be seen, and reaching a button
+   with the keyboard (focus, or tabbing into the row) brings them all back.
+   Selected through the wrapper class so the tables that always show their
+   buttons are untouched. */
+.row-hover-actions button {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, background 150ms ease, color 150ms ease;
+}
+tr:hover .row-hover-actions button,
+tr:focus-within .row-hover-actions button,
+.row-hover-actions button:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* Sign colours for amounts and running balances in the broker history. */
 td.num-pos {

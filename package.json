@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/package.json",
   "name": "insurance-client",
   "productName": "Insurance",
-  "version": "4.4.3",
+  "version": "4.4.4",
   "description": "Insurance client",
   "license": "ISC",
   "author": "Frosttide",
@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/brokerSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/currentCashExpenses.test.cjs && node Test/currentCashLedgerUI.test.cjs && node Test/cashTransactionDelete.test.cjs && node Test/hoverDeleteAction.test.cjs && node Test/cashFromBrokersBackfill.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/emailThread.test.cjs && node Test/emailAge.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs && node Test/insuranceExportPrice.test.cjs && node Test/insuranceExportDuration.test.cjs && node Test/addInsurancePrice.test.cjs && node Test/brokerBlancBatches.test.cjs && node Test/presence.test.cjs && node Test/outbox.test.cjs && node Test/loginAttempt.test.cjs && node Test/passwordField.test.cjs && node Test/brokerSenders.test.cjs && node Test/brokerHistory.test.cjs && node Test/numberField.test.cjs && node Test/insuranceRestore.test.cjs && node Test/websocket.test.cjs && node Test/insuranceChargePrice.test.cjs && node Test/adminInsuranceCreate.test.cjs && node Test/scans.test.cjs",
+    "test": "node Test/reconcile.test.cjs && node Test/insuranceSort.test.cjs && node Test/brokerSort.test.cjs && node Test/insuranceSearchFilter.test.cjs && node Test/insuranceEditCash.test.cjs && node Test/insuranceTotalCash.test.cjs && node Test/currentCashExpenses.test.cjs && node Test/currentCashLedgerUI.test.cjs && node Test/cashTransactionDelete.test.cjs && node Test/hoverDeleteAction.test.cjs && node Test/softDeleteAccounts.test.cjs && node Test/cashFromBrokersBackfill.test.cjs && node Test/insuranceEditorRefresh.test.cjs && node Test/insuranceEditPriceRecalc.test.cjs && node Test/emailAttachments.test.cjs && node Test/emailThread.test.cjs && node Test/emailAge.test.cjs && node Test/insuranceCreationDate.test.cjs && node Test/insuranceExport.test.cjs && node Test/insuranceExportPrice.test.cjs && node Test/insuranceExportDuration.test.cjs && node Test/addInsurancePrice.test.cjs && node Test/brokerBlancBatches.test.cjs && node Test/presence.test.cjs && node Test/outbox.test.cjs && node Test/loginAttempt.test.cjs && node Test/passwordField.test.cjs && node Test/brokerSenders.test.cjs && node Test/brokerHistory.test.cjs && node Test/numberField.test.cjs && node Test/insuranceRestore.test.cjs && node Test/websocket.test.cjs && node Test/insuranceChargePrice.test.cjs && node Test/adminInsuranceCreate.test.cjs && node Test/scans.test.cjs",
     "build": "electron-builder",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --publish always",

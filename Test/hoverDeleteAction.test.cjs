@@ -43,7 +43,9 @@ function cutFunction(marker) {
 }
 
 const block =
-  cutFunction("function renderTable(items, columns, actions, rowClass, onRowClick) {") +
+  cutFunction(
+    "function renderTable(items, columns, actions, rowClass, onRowClick, options) {"
+  ) +
   "\n" +
   cutFunction("async function deleteCashTransaction(tx, onDone) {");
 
@@ -141,8 +143,15 @@ function ok(value, msg) {
 }
 
 // Every button rendered in the body of a one-row table.
-function bodyButtons(actions) {
-  const table = renderTable([{ id: 1, Type: "increase" }], [{ key: "Type" }], actions);
+function bodyButtons(actions, options) {
+  const table = renderTable(
+    [{ id: 1, Type: "increase" }],
+    [{ key: "Type" }],
+    actions,
+    null,
+    null,
+    options
+  );
   const tbody = table.children[1];
   const row = tbody.children[0];
   const cell = row.children[row.children.length - 1];
@@ -209,6 +218,30 @@ function bodyButtons(actions) {
       { label: "Delete", class: "danger", hover: true, onClick: () => {} },
     ]);
     eq(buttons.map((b) => b.text), ["Edit", "×"], "edit first, X last");
+  });
+
+  await check("revealActions fades the whole action cell until the row is hovered", () => {
+    const plain = bodyButtons([
+      { label: "Edit", class: "secondary", onClick: () => {} },
+    ]);
+    ok(
+      !plain.wrap.className.split(" ").includes("row-hover-actions"),
+      "off by default: " + plain.wrap.className
+    );
+
+    const revealed = bodyButtons(
+      [{ label: "Edit", class: "secondary", onClick: () => {} }],
+      { revealActions: true }
+    );
+    ok(
+      revealed.wrap.className.split(" ").includes("row-hover-actions"),
+      "carries row-hover-actions: " + revealed.wrap.className
+    );
+    ok(
+      revealed.wrap.className.split(" ").includes("actions"),
+      "keeps the actions class: " + revealed.wrap.className
+    );
+    eq(revealed.buttons.map((b) => b.text), ["Edit"], "the button itself is unchanged");
   });
 
   await check("a row with no actions gets no action cell", () => {

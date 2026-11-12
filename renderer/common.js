@@ -208,6 +208,12 @@ const I18N = {
     userRoleUpdated: "User role updated",
     userSuspended: "User suspended",
     userDeleted: "User deleted",
+    userRestored: "User restored",
+    deleteUserConfirm:
+      "Delete user {u}? The account is kept in the database and an admin can restore it, but it can no longer sign in.",
+    restoreUserConfirm:
+      "Restore user {u}? The account can sign in and will appear in the users list again.",
+    deletedUsers: "Deleted users",
     userCreated: "User {u} created",
     registrationFailed: "Registration failed",
     currentCashIncreased: "Current cash increased",
@@ -226,6 +232,12 @@ const I18N = {
     brokerCreated: "Broker created",
     brokerUpdated: "Broker updated",
     brokerDeleted: "Broker deleted",
+    brokerRestored: "Broker restored",
+    deleteBrokerConfirm:
+      "Delete broker {b}? It is kept in the database and an admin can restore it, but it disappears from the lists and its emails are no longer shown. Its balance, blancs and policies are untouched.",
+    restoreBrokerConfirm:
+      "Restore broker {b}? It will appear in the lists again with the balance and blancs it kept.",
+    deletedBrokers: "Deleted brokers",
     editMovement: "Edit movement",
     deleteMovement: "Delete movement",
     movementUpdated: "Movement updated",
@@ -325,6 +337,7 @@ const I18N = {
     alreadyAnnulled: "Already annulled",
 
     deleted: "Deleted",
+    deletedBy: "Deleted by",
     includeDeleted: "Include deleted",
     annulledFilter: "Annulled",
     deleteInsuranceConfirm: "Delete insurance {b}? It will be kept in the database but hidden from lists and reports.",
@@ -485,6 +498,7 @@ const I18N = {
     "err.usernameLength": "Username must be at least 2 characters",
     "err.passwordLength": "Password must be at least 6 characters",
     "err.accountSuspended": "Account suspended",
+    "err.accountDeleted": "Account deleted",
     "err.branchDisabled": "This branch is disabled",
     "err.branchExists": "A branch with this name already exists",
     "err.branchNameRequired": "Branch name is required",
@@ -519,7 +533,10 @@ const I18N = {
     "err.invalidDuration": "Invalid duration",
     "err.invalidVehicleType": "Invalid vehicle type",
     "err.userNotFound": "User not found",
+    "err.userNotDeleted": "The user is not deleted",
     "err.brokerNotFound": "Broker not found",
+    "err.brokerNotDeleted": "The broker is not deleted",
+    "err.brokerDeleted": "This broker is deleted and has to be restored first",
     "err.clientNotFound": "Client not found",
     "err.transactionNotFound": "Transaction not found",
     "err.transactionAlreadyDeleted": "The transaction is already deleted",
@@ -760,6 +777,12 @@ const I18N = {
     userRoleUpdated: "Ролята е обновена",
     userSuspended: "Потребителят е спрян",
     userDeleted: "Потребителят е изтрит",
+    userRestored: "Потребителят е възстановен",
+    deleteUserConfirm:
+      "Да се изтрие ли потребител {u}? Акаунтът се запазва в базата данни и администратор може да го възстанови, но той вече не може да влиза.",
+    restoreUserConfirm:
+      "Да се възстанови ли потребител {u}? Акаунтът ще може да влиза отново и ще се появи в списъка с потребители.",
+    deletedUsers: "Изтрити потребители",
     userCreated: "Потребител {u} е създаден",
     registrationFailed: "Регистрацията не успя",
     currentCashIncreased: "Наличният кеш беше увеличен",
@@ -779,6 +802,12 @@ const I18N = {
     brokerCreated: "Брокерът е създаден",
     brokerUpdated: "Брокерът е обновен",
     brokerDeleted: "Брокерът е изтрит",
+    brokerRestored: "Брокерът е възстановен",
+    deleteBrokerConfirm:
+      "Да се изтрие ли брокер {b}? Той се запазва в базата данни и администратор може да го възстанови, но изчезва от списъците и имейлите му вече не се показват. Балансът, бланките и застраховките му остават непроменени.",
+    restoreBrokerConfirm:
+      "Да се възстанови ли брокер {b}? Той ще се появи отново в списъците със запазения си баланс и бланки.",
+    deletedBrokers: "Изтрити брокери",
     editMovement: "Редактирай движение",
     deleteMovement: "Изтрий движение",
     movementUpdated: "Движението е обновено",
@@ -795,6 +824,7 @@ const I18N = {
     setBalanceFor: "Задай баланс за",
     deleteConfirm: "Изтриване",
     deleted: "Изтрита",
+    deletedBy: "Изтрит от",
     includeDeleted: "Включи изтритите",
     annulledFilter: "Анулирани",
     deleteInsuranceConfirm:
@@ -1040,6 +1070,7 @@ const I18N = {
     "err.usernameLength": "Потребителското име трябва да е поне 2 символа",
     "err.passwordLength": "Паролата трябва да е поне 6 символа",
     "err.accountSuspended": "Акаунтът е спрян",
+    "err.accountDeleted": "Акаунтът е изтрит",
     "err.branchDisabled": "Този клон е деактивиран",
     "err.branchExists": "Вече съществува клон с това име",
     "err.branchNameRequired": "Името на клона е задължително",
@@ -1075,7 +1106,10 @@ const I18N = {
     "err.invalidDuration": "Невалиден период",
     "err.invalidVehicleType": "Невалиден вид превозно средство",
     "err.userNotFound": "Потребителят не е намерен",
+    "err.userNotDeleted": "Потребителят не е изтрит",
     "err.brokerNotFound": "Брокерът не е намерен",
+    "err.brokerNotDeleted": "Брокерът не е изтрит",
+    "err.brokerDeleted": "Този брокер е изтрит и трябва първо да бъде възстановен",
     "err.clientNotFound": "Клиентът не е намерен",
     "err.transactionNotFound": "Транзакцията не е намерена",
     "err.transactionAlreadyDeleted": "Транзакцията вече е изтрита",
@@ -1214,7 +1248,11 @@ const SERVER_ERROR_TRANSLATIONS = {
 
   // Users / brokers / cash.
   "User not found": "err.userNotFound",
+  "User is not deleted": "err.userNotDeleted",
   "Broker not found": "err.brokerNotFound",
+  "Broker is not deleted": "err.brokerNotDeleted",
+  "Broker is deleted; it has to be restored first": "err.brokerDeleted",
+  "Account deleted": "err.accountDeleted",
   "Client not found": "err.clientNotFound",
   "Transaction not found": "err.transactionNotFound",
   "Transaction already deleted": "err.transactionAlreadyDeleted",

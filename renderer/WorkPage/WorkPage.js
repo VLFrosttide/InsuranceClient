@@ -1045,8 +1045,14 @@ function buildForm(spec, onSubmit, submitLabel) {
 // A normal action renders as a small button. One flagged `hover: true` renders
 // as an icon button (default "×") that stays invisible until the row is
 // hovered - see the row-hover-x rules in app.css.
+//
+// `options.revealActions` additionally hides ALL of the row's action buttons
+// until the row is hovered or something inside it has the keyboard focus (the
+// row-hover-actions rules in app.css). The lists that are read far more often
+// than acted on - Brokers, Users and Branches - use it so their buttons never
+// clutter the table.
 // ---------------------------------------------------------------------------
-function renderTable(items, columns, actions, rowClass, onRowClick) {
+function renderTable(items, columns, actions, rowClass, onRowClick, options) {
   if (!items || items.length === 0) {
     return el("p", t("noData"), { class: "muted" });
   }
@@ -1112,7 +1118,14 @@ function renderTable(items, columns, actions, rowClass, onRowClick) {
         typeof actions === "function" ? actions(item) : actions;
       if (rowActions && rowActions.length) {
         const td = el("td");
-        const wrap = el("div", null, { class: "row actions" });
+        // See the renderTable comment: a table that only shows its buttons while
+        // the row is hovered gets the extra wrapper class.
+        const wrap = el("div", null, {
+          class:
+            options && options.revealActions
+              ? "row actions row-hover-actions"
+              : "row actions",
+        });
         rowActions.forEach((a) => {
           // A hover action is an icon button (the delete "X") that only shows
           // while the row is hovered, so a long list stays readable and a
@@ -1991,11 +2004,16 @@ async function adminDashboard() {
 }
 
 async function adminUsers() {
+  // ?includeDeleted=1 also returns the soft-deleted accounts (data.deleted), so
+  // the panel can offer Restore; the live list itself never contains them.
   const [data, brokerData] = await Promise.all([
-    api("/admin/users"),
+    api("/admin/users?includeDeleted=1"),
     api("/brokers"),
   ]);
   const brokerList = (brokerData && brokerData.brokers) || [];
+  // Soft-deleted accounts: shown in their own list at the bottom, greyed out,
+  // each with a Restore button (the delete is reversible).
+  const deletedUsers = (data && data.deleted) || [];
   const brokerById = new Map(brokerList.map((b) => [Number(b.id), b]));
   const brokerNameOf = (id) => {
     if (id === null || id === undefined || id === "") return "";
@@ -2167,20 +2185,46 @@ async function adminUsers() {
       {
         label: t("delete"),
         class: "danger",
-        onClick: async (u) => {
-          if (!confirm(`${t("deleteConfirm")} "${u.Username}"?`)) return;
-          try {
-            await api(`/admin/users/${u.Username}/delete`, { method: "POST" });
-            toast(t("userDeleted"), "success");
-            adminUsers();
-          } catch (err) {
-            toast(err.message, "error");
-          }
-        },
+        hover: true,
+        onClick: (u) => deleteUser(u, () => adminUsers()),
       },
-    ]
+    ],
+    null,
+    null,
+    { revealActions: true }
   );
-  Content.replaceChildren(el("h2", t("users")), toolbar, table);
+  // Live accounts first; the soft-deleted ones (if any) are listed separately so
+  // they can be restored without cluttering the table above.
+  const children = [el("h2", t("users")), toolbar, table];
+  if (deletedUsers.length) {
+    children.push(el("h3", t("deletedUsers")));
+    children.push(
+      renderTable(
+        deletedUsers,
+        [
+          { key: "Username", label: t("username") },
+          { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
+          {
+            key: "DeletedAt",
+            label: t("deleted"),
+            format: (v) => formatDateTime(v),
+          },
+          { key: "DeletedBy", label: t("deletedBy") },
+        ],
+        (u) => [
+          {
+            label: t("restore"),
+            class: "secondary",
+            onClick: (u) => restoreUser(u, () => adminUsers()),
+          },
+        ],
+        () => "row-deleted",
+        null,
+        { revealActions: true }
+      )
+    );
+  }
+  Content.replaceChildren(...children);
 }
 
 function registerUserForm() {
@@ -2268,8 +2312,12 @@ async function adminBranches() {
         onClick: (b) => branchForm(b),
       },
       {
+        // The on/off toggle is the row's hovering "X" (a tick when it brings the
+        // branch back), so it looks and behaves like the deletes elsewhere.
         label: branch.Enabled ? t("disable") : t("enable"),
         class: branch.Enabled ? "danger" : "secondary",
+        hover: true,
+        icon: branch.Enabled ? "×" : "✓",
         onClick: async (b) => {
           try {
             await api(`/admin/branches/${b.id}`, {
@@ -2285,7 +2333,10 @@ async function adminBranches() {
           }
         },
       },
-    ]
+    ],
+    null,
+    null,
+    { revealActions: true }
   );
 
   Content.replaceChildren(el("h2", t("branches")), toolbar, table);
@@ -2378,6 +2429,73 @@ async function restoreInsurance(insurance, onDone) {
       }),
     });
     toast(t("insuranceRestored"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Soft-delete a user account from the Users panel (the row's hovering "X"). The
+// account is kept in the database - the server tags it with
+// Deleted/DeletedAt/DeletedBy and drops its sessions - so it can no longer sign
+// in or appear in the users list, but an admin can bring it back with
+// restoreUser.
+async function deleteUser(user, onDone) {
+  if (!confirm(t("deleteUserConfirm").replace("{u}", user.Username))) {
+    return;
+  }
+  try {
+    await api(`/admin/users/${user.Username}/delete`, { method: "POST" });
+    toast(t("userDeleted"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Restore a soft-deleted account: the server clears the Deleted flags, so the
+// account can sign in and shows up in the users list again. Nothing else is
+// reapplied - the delete never touched the password, broker link or balance.
+async function restoreUser(user, onDone) {
+  if (!confirm(t("restoreUserConfirm").replace("{u}", user.Username))) {
+    return;
+  }
+  try {
+    await api(`/admin/users/${user.Username}/restore`, { method: "POST" });
+    toast(t("userRestored"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Soft-delete a broker (the row's hovering "X"). The broker's balance, blanc
+// batches, emails, tariffs and policies stay untouched - the server only tags
+// the row with Deleted/DeletedAt/DeletedBy - so the broker disappears from the
+// lists and stops being recognised as an email sender, and an admin can bring it
+// back with restoreBroker.
+async function deleteBroker(broker, onDone) {
+  if (!confirm(t("deleteBrokerConfirm").replace("{b}", broker.Name))) {
+    return;
+  }
+  try {
+    await api(`/brokers/${broker.id}`, { method: "DELETE" });
+    toast(t("brokerDeleted"), "success");
+    if (onDone) onDone();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+// Restore a soft-deleted broker: the server clears the Deleted flags, so the
+// broker (with the balance and blancs it kept) reappears in the lists.
+async function restoreBroker(broker, onDone) {
+  if (!confirm(t("restoreBrokerConfirm").replace("{b}", broker.Name))) {
+    return;
+  }
+  try {
+    await api(`/brokers/${broker.id}/restore`, { method: "POST" });
+    toast(t("brokerRestored"), "success");
     if (onDone) onDone();
   } catch (err) {
     toast(err.message, "error");
@@ -3113,8 +3231,11 @@ async function toggleBrokerCutOff(b) {
 }
 
 async function brokersView() {
-  const data = await api("/brokers");
   const isAdmin = userRole === "1";
+  // Admins also ask for the soft-deleted brokers (data.deleted) so the panel can
+  // offer Restore; the live list itself never contains them.
+  const data = await api(isAdmin ? "/brokers?includeDeleted=1" : "/brokers");
+  const deletedBrokers = (data && data.deleted) || [];
 
   const toolbar = el("div", null, { class: "row" });
   if (isAdmin) {
@@ -3258,16 +3379,8 @@ async function brokersView() {
               {
                 label: t("delete"),
                 class: "danger",
-                onClick: async (b) => {
-                  if (!confirm(`${t("deleteConfirm")} "${b.Name}"?`)) return;
-                  try {
-                    await api(`/brokers/${b.id}`, { method: "DELETE" });
-                    toast(t("brokerDeleted"), "success");
-                    brokersView();
-                  } catch (err) {
-                    toast(err.message, "error");
-                  }
-                },
+                hover: true,
+                onClick: (b) => deleteBroker(b, () => brokersView()),
               },
             ]
           : []),
@@ -3277,7 +3390,8 @@ async function brokersView() {
         if (brokerHasNoEmail(b)) classes.push("row-broker-alert");
         return classes.join(" ");
       },
-      (b) => brokerHistoryView(b)
+      (b) => brokerHistoryView(b),
+      { revealActions: true }
     );
   };
   tableHolder.appendChild(buildTable());
@@ -3289,7 +3403,43 @@ async function brokersView() {
     title: t("brokersHint"),
   });
 
-  Content.replaceChildren(heading, toolbar, tableHolder);
+  const children = [heading, toolbar, tableHolder];
+
+  // Soft-deleted brokers (admin only): kept apart from the live list, greyed out,
+  // each with a Restore button - the delete is reversible.
+  if (isAdmin && deletedBrokers.length) {
+    const deletedHolder = el("div");
+    deletedHolder.appendChild(el("h3", t("deletedBrokers")));
+    deletedHolder.appendChild(
+      renderTable(
+        deletedBrokers,
+        [
+          { key: "Name", label: t("name") },
+          { key: "Code", label: t("brokerId") },
+          { key: "CashBalance", label: t("balance"), format: (v) => money(v) },
+          {
+            key: "DeletedAt",
+            label: t("deleted"),
+            format: (v) => formatDateTime(v),
+          },
+          { key: "DeletedBy", label: t("deletedBy") },
+        ],
+        (b) => [
+          {
+            label: t("restore"),
+            class: "secondary",
+            onClick: (b) => restoreBroker(b, () => brokersView()),
+          },
+        ],
+        () => "row-deleted",
+        null,
+        { revealActions: true }
+      )
+    );
+    children.push(deletedHolder);
+  }
+
+  Content.replaceChildren(...children);
 }
 
 // Label for a broker balance movement type (policy, annulment, deletion,

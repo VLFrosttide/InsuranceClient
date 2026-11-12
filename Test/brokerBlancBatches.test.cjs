@@ -37,6 +37,8 @@ function resetDb() {
     app_settings: {},
     nextBroker: 3,
     nextBatch: 1,
+    // Addresses the fake websocket layer was asked to evict.
+    evicted: [],
   };
 }
 
@@ -73,8 +75,8 @@ async function query(sql, params = []) {
   if (s.startsWith("SELECT id, CashBalance FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id, CashBalance: b.CashBalance }))];
   }
-  if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers ORDER BY id")) {
-    return [db.brokers.map((b) => ({ ...b }))];
+  if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE Deleted = 0 ORDER BY id")) {
+    return [db.brokers.filter((b) => !b.Deleted).map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT Email FROM broker_emails WHERE BrokerId = ?")) {
     return [db.broker_emails.filter((e) => e.BrokerId === Number(p[0]))];
@@ -163,6 +165,41 @@ async function query(sql, params = []) {
     const broker = db.brokers.find((x) => x.id === Number(p[1]));
     if (broker) broker.Code = p[0];
     return [{ affectedRows: broker ? 1 : 0 }];
+  }
+  // --- soft delete / restore of a broker -----------------------------------
+  if (s.startsWith("SELECT id, Deleted FROM brokers WHERE id = ?")) {
+    return [brokerById(p[0]).map((b) => ({ id: b.id, Deleted: b.Deleted || 0 }))];
+  }
+  if (
+    s.startsWith(
+      "UPDATE brokers SET Deleted = 1, DeletedAt = NOW(), DeletedBy = ? WHERE id = ?"
+    )
+  ) {
+    const broker = db.brokers.find((x) => x.id === Number(p[1]));
+    if (!broker) return [{ affectedRows: 0 }];
+    broker.Deleted = 1;
+    broker.DeletedAt = "2026-12-11 10:30:00";
+    broker.DeletedBy = p[0];
+    return [{ affectedRows: 1 }];
+  }
+  if (
+    s.startsWith(
+      "UPDATE brokers SET Deleted = 0, DeletedAt = NULL, DeletedBy = NULL WHERE id = ?"
+    )
+  ) {
+    const broker = db.brokers.find((x) => x.id === Number(p[0]));
+    if (!broker) return [{ affectedRows: 0 }];
+    broker.Deleted = 0;
+    broker.DeletedAt = null;
+    broker.DeletedBy = null;
+    return [{ affectedRows: 1 }];
+  }
+  if (
+    s.startsWith(
+      "SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff, DeletedAt, DeletedBy FROM brokers WHERE Deleted = 1 ORDER BY id"
+    )
+  ) {
+    return [db.brokers.filter((b) => b.Deleted).map((b) => ({ ...b }))];
   }
   if (s.startsWith("SELECT value FROM app_settings WHERE name = ?")) {
     const v = db.app_settings[p[0]];
@@ -254,6 +291,12 @@ const STUBS = {
     parseClientDateTime,
   },
   "./PaymentSchedule.js": { getSchedule: () => ({}) },
+  // Only the broker delete evicts live email claims (like the cut-off toggle).
+  "../Users/websocket.js": {
+    evictEmailsForAddresses: async (addresses) => {
+      db.evicted.push(...(addresses || []));
+    },
+  },
 };
 
 const mod = { exports: {} };
@@ -599,6 +642,48 @@ const brokerOf = async (id) =>
     eq(db.app_settings.broker_allow_negative_balance, "0", "stored as 0");
     await M.setBrokerAllowNegativeBalance(fakeDb, true);
     eq(db.app_settings.broker_allow_negative_balance, "1", "stored as 1");
+  });
+
+  await check("deleting a broker only tags the row", async () => {
+    await addBatch(1, 100, 199);
+    db.broker_emails.push({ BrokerId: 1, Email: "alpha@example.com" });
+    const r = await call("delete", "/brokers/:id", { params: { id: 1 } });
+
+    eq(r.status, 200, "status");
+    eq(r.body.deleted, true, "reports a soft delete");
+    const broker = db.brokers.find((b) => b.id === 1);
+    ok(broker, "the broker row is still there");
+    eq(broker.Deleted, 1, "flagged");
+    eq(broker.DeletedBy, "admin1", "who deleted it");
+    ok(broker.DeletedAt, "when it was deleted");
+    eq(db.batches.length, 1, "its blanc batches are kept");
+    eq(db.broker_emails.length, 1, "its email addresses are kept");
+    eq(db.evicted, ["alpha@example.com"], "live email claims are evicted");
+  });
+
+  await check("a deleted broker is hidden from the list and can be restored", async () => {
+    const del = await call("delete", "/brokers/:id", { params: { id: 1 } });
+    eq(del.status, 200, "deleted");
+
+    const list = await call("get", "/brokers");
+    eq(list.body.brokers.map((b) => b.id), [2], "the live list skips it");
+    eq(list.body.deleted, [], "nothing is asked for");
+
+    const withDeleted = await call("get", "/brokers", {
+      query: { includeDeleted: "1" },
+    });
+    eq(
+      withDeleted.body.deleted.map((b) => b.id),
+      [1],
+      "the deleted list has it"
+    );
+    eq(withDeleted.body.includeDeleted, true, "flagged in the response");
+
+    const back = await call("post", "/brokers/:id/restore", {
+      params: { id: 1 },
+    });
+    eq(back.status, 200, "restored");
+    eq((await call("get", "/brokers")).body.brokers.length, 2, "back in the list");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
