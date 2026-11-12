@@ -1,4 +1,20 @@
-https://online.bulins.bg/ims/login/index.isc\
-https://online.bulins.bg/ims/Home/Index.isc
-https://online.bulins.bg/ims/tpl/BorderClientStep.isc?instype=border
-https://online.bulins.bg/ims/tpl/VehicleStep.isc
+
+Annuling: Send email, unknown number attachments. 
+Subject: MOLQ DA SE ANULIRA BG/02/FI26170121/FA156089/54ZS584
+Plus attached file
+send to anulirane@bulins.bg
+send ONLY from ipg.k.andreevo@gmail.com
+
+Bulsigorta / bulsig
+
+
+for blanc numbers. If blanc number exist in range
+
+
+Show daily reports from 12:00 to 00:00
+
+
+ask location and make sure branch selection 
+
+Rename the reductions to spends
+

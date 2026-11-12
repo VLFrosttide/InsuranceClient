@@ -20,8 +20,6 @@ import https from "node:https";
 import crypto from "node:crypto";
 import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
-import { BulinsController } from "./bulins.js";
-import { ScanWatcher, ensureOcrLanguages } from "./scans.js";
 const { autoUpdater } = electronUpdater;
 let win;
 let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
@@ -853,34 +851,9 @@ const GuardWindowClose = (window) => {
   });
 };
 
-// ---------------------------------------------------------------------------
-// Scans folder (Desktop\Scans)
-// ---------------------------------------------------------------------------
-// Created on start when it is missing. Every scan dropped into it is read with
-// the Windows OCR engine and the text is logged (see ./scans.js). The English,
-// Turkish and Arabic OCR language packs are checked on every start and the
-// missing ones are installed, which makes Windows ask for permission.
-let scanWatcher = null;
-
-const SetupScans = () => {
-  try {
-    scanWatcher = new ScanWatcher({
-      dir: path.join(app.getPath("desktop"), "Scans"),
-    });
-    scanWatcher.start();
-  } catch (err) {
-    console.error("[Scans] Failed to watch the scans folder:", err);
-  }
-  ensureOcrLanguages().catch((err) => {
-    console.error("[Scans] Failed to check the OCR language packs:", err);
-  });
-};
-
 app.whenReady().then(() => {
   SetupOutbox();
   CreateWindow();
-  SetupBulins();
-  SetupScans();
   Menu.setApplicationMenu(null);
   SetupAutoUpdater();
 });
@@ -888,30 +861,6 @@ app.whenReady().then(() => {
 ipcMain.on("LoadPage", (event, page) => {
   win.loadFile(page);
 });
-
-// ---------------------------------------------------------------------------
-// Bulins web form (WebContentsView)
-// ---------------------------------------------------------------------------
-// Opening an email or a walk-in insurance now shows the Bulins border-insurance
-// website in a WebContentsView layered over the main window, instead of the
-// in-app AddInsurance form. Every page the worker visits is scraped and stored
-// (see ./bulins.js for the controller + scraper).
-let bulins = null;
-
-const SetupBulins = () => {
-  bulins = new BulinsController({
-    getWindow: () => win,
-    onScraped: (entry) => BroadcastToWindows("BulinsScraped", entry),
-    onClosed: (context) => BroadcastToWindows("BulinsClosed", context),
-  });
-
-  ipcMain.handle("BulinsOpen", (event, context) => bulins.open(context));
-  ipcMain.handle("BulinsClose", () => bulins.close());
-  ipcMain.handle("BulinsGetState", () => bulins.getState());
-  ipcMain.handle("BulinsListScrapes", (event, limit) => bulins.listScrapes(limit));
-  // Sent from the floating "← Insurance" button injected into the Bulins page.
-  ipcMain.on("BulinsViewCloseRequest", () => bulins.close());
-};
 
 // Print an image (data URL) by loading it in a visible window and invoking the
 // system print dialog. Used by the "printable picture" feature and by the
