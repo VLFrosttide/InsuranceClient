@@ -178,6 +178,95 @@ body {
   font-weight: 600;
 }
 
+/* Collapsible ledger sections (Current cash). The heading is the click target,
+   and the table only opens when asked, so a busy day stays compact. */
+.collapsible-section {
+  margin-bottom: 14px;
+}
+.collapsible-section > summary {
+  cursor: pointer;
+  padding: 9px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+}
+.collapsible-section > summary:hover {
+  background: var(--bg-soft);
+}
+.collapsible-section > summary::marker {
+  color: var(--muted);
+}
+.collapsible-section[open] > summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+}
+.collapsible-body {
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 0 0 8px 8px;
+}
+.collapsible-body > p {
+  margin: 0 0 8px 0;
+}
+
+/* The Expenses card borrows a whisper of the red used for money going out, so
+   it is tellable from the cash and broker cards at a glance. */
+.balance-card.expenses-card {
+  border-color: rgba(196, 84, 84, 0.35);
+}
+
+/* Light row tints for the cash ledger tables. Deliberately soft: the colour has
+   to guide the eye, not decorate the page.
+     green = money in, red = money out
+     stronger step = a movement above the currency's notable amount
+                     (100 EUR / 5 500 TRY, the same money)
+   The leading stripe keeps a big movement visible even where the tints fade. */
+tr.row-increase td {
+  background: rgba(88, 166, 88, 0.07);
+}
+tr.row-increase td:first-child {
+  box-shadow: inset 3px 0 0 rgba(88, 166, 88, 0.35);
+}
+tr.row-large-increase td {
+  background: rgba(88, 166, 88, 0.15);
+}
+tr.row-large-increase td:first-child {
+  box-shadow: inset 3px 0 0 rgba(88, 166, 88, 0.7);
+}
+tr.row-reduce td {
+  background: rgba(196, 84, 84, 0.07);
+}
+tr.row-reduce td:first-child {
+  box-shadow: inset 3px 0 0 rgba(196, 84, 84, 0.3);
+}
+tr.row-large-reduce td {
+  background: rgba(196, 84, 84, 0.15);
+}
+tr.row-large-reduce td:first-child {
+  box-shadow: inset 3px 0 0 rgba(196, 84, 84, 0.7);
+}
+/* The amount of a notable movement is emphasised too, so it is still obvious
+   when the row tint alone is too quiet. */
+td.amount-notable {
+  font-weight: 600;
+}
+
+/* A reason with words in it says why the money moved: that row is nudged up a
+   little. A purely numerical reason (a bare policy number, a date) explains
+   nothing: that row steps back instead. */
+tr.row-text-reason td {
+  color: #ffffff;
+}
+tr.row-numeric-reason td {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
 /* Branch selector (Current cash): a row of buttons instead of a dropdown. */
 .branch-selector {
   display: flex;
@@ -218,6 +307,26 @@ body {
 .actions {
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* Increase / Reduce are the broker actions used all day and sit side by side.
+   They get a larger hit area and extra space between them, so a hurried click
+   cannot land on the neighbouring button. */
+.actions button.broker-adjust {
+  padding: 8px 18px;
+  font-size: 13px;
+  min-width: 96px;
+}
+.actions button.broker-adjust-increase {
+  margin-right: 6px;
+}
+
+/* A heading whose tooltip explains the colours used below it (Brokers): the
+   dotted underline says the text can be hovered. */
+h2.heading-hint[title] {
+  display: inline-block;
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
 }
 
 /* Modal */

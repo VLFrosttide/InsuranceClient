@@ -892,10 +892,14 @@ ipcMain.on("LoadPage", (event, page) => {
 // ---------------------------------------------------------------------------
 // Bulins web form (WebContentsView)
 // ---------------------------------------------------------------------------
-// Opening an email or a walk-in insurance now shows the Bulins border-insurance
-// website in a WebContentsView layered over the main window, instead of the
-// in-app AddInsurance form. Every page the worker visits is scraped and stored
-// (see ./bulins.js for the controller + scraper).
+// Bulins can show its border-insurance website in a WebContentsView layered over
+// the main window, in place of the in-app AddInsurance form, and scrape every
+// page the worker visits (see ./bulins.js for the controller + scraper).
+//
+// NOTE: currently inactive. New insurances use the in-app form again - the
+// renderer gates these calls behind USE_BULINS_WEB_FORM in
+// renderer/WorkPage/WorkPage.js. Everything below is kept so the web form can
+// be switched back on by flipping that flag.
 let bulins = null;
 
 const SetupBulins = () => {

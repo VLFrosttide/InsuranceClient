@@ -170,15 +170,17 @@ tr.row-broker-alert td {
   color: #ffd9d6;
 }
 
-/* Broker is two weeks behind on payment (overdue): paint the row dark red. */
-tr.row-broker-overdue td {
-  background: #7a1016;
-  color: #ffd9d6;
-}
-
 tr td.cell-broker-alert {
   background: #6b0f14;
   color: #ffd9d6;
+}
+
+/* Broker balance is negative: only the balance cell turns light pink, so the
+   rest of the row keeps its normal text colour and the negative number stands
+   out on its own. It comes after the row/cell alert rules so a broker that
+   also has no email still shows the pink balance. */
+tr td.cell-broker-negative {
+  color: #ffb6c1;
 }
 
 th.sortable {

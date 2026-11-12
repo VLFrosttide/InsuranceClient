@@ -1,6 +1,6 @@
 "use strict";
 
-// Node test for the EXPENCES section of the Current cash tab.
+// Node test for the EXPENSES section of the Current cash tab.
 //
 // An expense is money that left a branch's drawer BY HAND: a manual "Reduce"
 // from the Current cash screen (rent, supplies, a payout ...). The very same
@@ -14,7 +14,7 @@
 // Test/serverPath.cjs) in a vm against an in-memory fake MySQL, so the
 // assertions are about what the deployed code actually returns.
 //
-// Run with:  node Test/currentCashExpences.test.cjs   (or: npm test)
+// Run with:  node Test/currentCashExpenses.test.cjs   (or: npm test)
 
 const fs = require("fs");
 const vm = require("vm");
@@ -115,7 +115,7 @@ const row = (id, type, amount, currency, reason) => ({
 });
 
 (async () => {
-  console.log("Current cash — expences (manual reductions only)");
+  console.log("Current cash — expenses (manual reductions only)");
 
   check("every insurance-driven reduction is recognised", () => {
     for (const reason of POLICY_REASONS) {
@@ -144,7 +144,7 @@ const row = (id, type, amount, currency, reason) => ({
     eq(CC.isPolicyMovementReason(42), false, "number");
   });
 
-  check("only the manual reductions are expences", () => {
+  check("only the manual reductions are expenses", () => {
     const rows = [
       row(1, "reduce", 30, "EUR", "Annul 123456"),
       row(2, "reduce", 20, "TRY", "Supplies"),
@@ -160,7 +160,7 @@ const row = (id, type, amount, currency, reason) => ({
     );
   });
 
-  check("the expences total is per currency", () => {
+  check("the expenses total is per currency", () => {
     const split = CC.splitExpences([
       row(1, "reduce", 20, "TRY", "Supplies"),
       row(2, "reduce", 5.55, "EUR", "Rent"),
@@ -170,7 +170,7 @@ const row = (id, type, amount, currency, reason) => ({
     eq(split.totalExpences, { EUR: 10, TRY: 20 }, "cents add up exactly");
   });
 
-  check("a day without manual reductions has no expences", () => {
+  check("a day without manual reductions has no expenses", () => {
     const split = CC.splitExpences([
       row(1, "reduce", 30, "EUR", "Annul 123456"),
       row(2, "increase", 100, "EUR", "Opening"),
@@ -246,7 +246,7 @@ const row = (id, type, amount, currency, reason) => ({
     return res;
   };
 
-  await checkAsync("GET /currentcash lists the day's expences", async () => {
+  await checkAsync("GET /currentcash lists the day's expenses", async () => {
     const res = await callCurrentCash({
       branch: "Офис Харманли",
       date: DAY,

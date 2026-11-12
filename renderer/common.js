@@ -101,6 +101,8 @@ const I18N = {
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
+    brokersHint:
+      "Row and cell colours: dark red row = the broker has no email address; light pink balance = the balance is negative; dark red Inactive cell = fewer than 30 blancs are left. Admins can cut a broker off at any time with the Cut off button, which blocks new insurances for that broker.",
     clients: "Clients",
     movements: "movements",
     admins: "Admins",
@@ -134,10 +136,6 @@ const I18N = {
     brokerCutOff: "Cut off",
     brokerCutOffRestore: "Re-enable",
     brokerCutOffHint: "Block new insurances for this broker",
-    brokerCutOffReady: "Two weeks without payment — click to cut this broker off",
-    brokerCutOffDisabledHint:
-      "Unavailable until the broker is two weeks behind on payment",
-    brokerCutOffAdminOnly: "Only admins can cut off a broker",
     brokerCutOffSet: "Broker cut off — new insurances are blocked",
     brokerCutOffRestored: "Broker re-enabled — new insurances are allowed again",
     edit: "Edit",
@@ -290,9 +288,9 @@ const I18N = {
       "Money brokers handed over on this day (broker balance top-ups). Refunds of annulled insurances are not counted.",
     transactionsCashFromBrokers: "Transactions cash from brokers",
 
-    expences: "Expences",
-    totalExpences: "Total expences",
-    expencesHint:
+    expenses: "Expenses",
+    totalExpenses: "Total expenses",
+    expensesHint:
       "Money taken out of this branch's drawer by hand on this day (the manual reductions). Refunds of annulled or deleted insurances reduce the drawer too, but they are policy movements, not money the branch spent, so they are not counted here.",
 
     annul: "Annul",
@@ -644,6 +642,8 @@ const I18N = {
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
+    brokersHint:
+      "Цветове на редовете и клетките: тъмночервен ред = брокерът няма имейл адрес; светлорозов баланс = отрицателен баланс; тъмночервена клетка Неактивни = остават под 30 бланки. Администраторите могат да спрат брокер по всяко време с бутона Спри, който блокира новите застраховки за този брокер.",
     clients: "Клиенти",
     movements: "движения",
     admins: "Администратори",
@@ -677,10 +677,6 @@ const I18N = {
     brokerCutOff: "Спри",
     brokerCutOffRestore: "Активирай",
     brokerCutOffHint: "Спри новите застраховки за този брокер",
-    brokerCutOffReady: "Две седмици без плащане — натисни, за да спреш брокера",
-    brokerCutOffDisabledHint:
-      "Недостъпно, докато брокерът не е с две седмици закъснение с плащането",
-    brokerCutOffAdminOnly: "Само администратори могат да спират брокер",
     brokerCutOffSet: "Брокерът е спрян — новите застраховки са блокирани",
     brokerCutOffRestored: "Брокерът е активиран — новите застраховки са разрешени отново",
     edit: "Редактирай",
@@ -845,9 +841,9 @@ const I18N = {
       "Пари, предадени от брокери на този ден (увеличения на баланс на брокер). Върнатите суми за анулирани застраховки не се броят.",
     transactionsCashFromBrokers: "Транзакции кеш от брокери",
 
-    expences: "Разходи",
-    totalExpences: "Общо разходи",
-    expencesHint:
+    expenses: "Разходи",
+    totalExpenses: "Общо разходи",
+    expensesHint:
       "Пари, извадени на ръка от касата на този клон на този ден (ръчните намаления). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук.",
 
     annul: "Анулирай",
