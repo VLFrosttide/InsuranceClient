@@ -101,8 +101,9 @@ input[type="month"]::-webkit-calendar-picker-indicator,
 input[type="week"]::-webkit-calendar-picker-indicator {
   filter: invert(0.8);
 }
-/* Brighten to white on hover, matching the #VisIcon affordance on the login
-   page, so the icon reads as clickable (the whole date field opens the picker). */
+/* Brighten to white on hover, the same affordance the password eye button has
+   (.pw-toggle in app.css), so the icon reads as clickable (the whole date field
+   opens the picker). */
 input[type="date"]::-webkit-calendar-picker-indicator:hover,
 input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
 input[type="month"]::-webkit-calendar-picker-indicator:hover,
@@ -306,6 +307,93 @@ h3 {
 }
 .spacer {
   flex: 1;
+}
+
+/* Password field with its visibility toggle ----------------------------------
+   The eye sits inside the right edge of the field instead of beside it, so the
+   field keeps its full width and the icon reads as part of the control.
+   The icon itself is inline SVG (PASSWORD_EYE_ICON_SVG in common.js) stroked
+   with currentColor: masked shows a plain eye, readable adds the slash, and
+   aria-pressed is the single source of that state. Both the login page and the
+   password fields built in WorkPage.js use these two classes. */
+.password-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.password-row input {
+  flex: 1;
+  min-width: 0;
+  /* room for the eye, so a long password never runs under it */
+  padding-right: 40px;
+}
+.password-row .pw-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.pw-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  line-height: 0;
+  transition: color 140ms ease, background 140ms ease;
+}
+.pw-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+.pw-toggle:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+/* Password is readable: the eye turns accent-coloured and wears the slash. */
+.pw-toggle[aria-pressed="true"] {
+  color: var(--accent);
+}
+.pw-toggle[aria-pressed="true"]:hover {
+  background: rgba(79, 140, 255, 0.14);
+  color: var(--accent);
+}
+.pw-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.pw-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The slash is one 23.2 unit line (see PASSWORD_EYE_ICON_SVG); the dash is a
+   little longer so an offset of 24 parks the whole stroke outside the path and
+   it wipes in when the password becomes readable. */
+.pw-toggle .pw-eye-slash {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  opacity: 0;
+  transition: stroke-dashoffset 180ms ease, opacity 120ms ease;
+}
+.pw-toggle[aria-pressed="true"] .pw-eye-slash {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pw-toggle,
+  .pw-toggle .pw-eye-slash {
+    transition: none;
+  }
 }
 
 /* Outbox: floating "N queued" badge (bottom-right, every page) and its panel.

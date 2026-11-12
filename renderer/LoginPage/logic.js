@@ -8,6 +8,17 @@ const DisplayMsg = document.getElementById("DisplayMsg");
 const LoginForm = document.getElementById("LoginForm");
 const LangButton = document.getElementById("LangButton");
 const NetStatus = document.getElementById("NetStatus");
+const AuthCard = document.getElementById("AuthCard");
+const SubmitButton = document.getElementById("SubmitButton");
+const SubmitLabel = document.getElementById("SubmitLabel");
+const LoginSpinner = document.getElementById("LoginSpinner");
+const LoginProgress = document.getElementById("LoginProgress");
+const LoginProgressText = document.getElementById("LoginProgressText");
+
+// Handle of the reachability monitor started at the bottom of this file. It is
+// read while a login is in flight, so the phase line can say "no connection"
+// when the monitor already knows the server is unreachable.
+let netMonitor = null;
 
 function setMessage(text, isError) {
   if (!DisplayMsg) return;
@@ -16,11 +27,12 @@ function setMessage(text, isError) {
   if (!text) DisplayMsg.className = "msg";
 }
 
-if (VisIcon) {
-  VisIcon.addEventListener("click", () => {
-    Pass.type = Pass.type === "password" ? "text" : "password";
-  });
-}
+// Password visibility. The eye button is part of the page markup; its SVG comes
+// from common.js (one icon for every password field in the app) and
+// setupPasswordToggle keeps aria-pressed, the icon and the label in agreement
+// with the field's real type, so "eye with slash" always means "readable now".
+if (VisIcon) VisIcon.innerHTML = PASSWORD_EYE_ICON_SVG;
+const passwordToggle = setupPasswordToggle(VisIcon, Pass);
 
 function syncLangButton() {
   if (!LangButton) return;
@@ -30,64 +42,38 @@ if (LangButton) {
   LangButton.addEventListener("click", () => {
     toggleLang();
     syncLangButton();
+    // A language switch re-translates the static labels (including the button
+    // label), so the phase of an attempt in flight is re-applied afterwards.
+    if (busy) renderAttempt();
+    // The eye button's label is translated too (and not marked up with
+    // data-i18n-title, since its text follows the field's state).
+    if (passwordToggle) passwordToggle.sync();
   });
 }
 syncLangButton();
-
-// Distance beyond which a login is treated as "far from the selected branch"
-// and needs an explicit confirmation before it proceeds.
-const GEO_WARNING_KM = 15;
-
-// Rough coordinates of each branch, used only to sanity-check that a login
-// comes from near the branch being selected (the wrong desk, or a stray login,
-// is more than a short drive away). They are approximate and never stored —
-// they are only compared against the user's own rough position.
-const BRANCH_COORDINATES = {
-  "ГКПП Капитан Андреево": { lat: 41.720692, lng: 26.321553 },
-  "ГКПП Лесово": { lat: 41.96, lng: 26.608333 },
-  "Офис Харманли": { lat: 41.9325, lng: 25.9017 },
-};
-
-// Distance between two {lat, lng} points in kilometres (haversine).
-function haversineKm(a, b) {
-  const R = 6371;
-  const rad = (d) => (d * Math.PI) / 180;
-  const dLat = rad(b.lat - a.lat);
-  const dLng = rad(b.lng - a.lng);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-// The user's rough position from the OS location service, or null when it is
-// unavailable (permission denied, no location source, or a timeout). A missing
-// position is treated as "unknown", never as a reason to block the login.
-function userLocation() {
-  return new Promise((resolve) => {
-    if (!navigator.geolocation) return resolve(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null),
-      { enableHighAccuracy: false, timeout: 6000, maximumAge: 5 * 60 * 1000 }
-    );
-  });
-}
 
 // Login requests are retried a few times with a per-attempt timeout. A login
 // is idempotent from the client's point of view (the server deletes any prior
 // token before issuing a new one), so a transient network blip or server 5xx —
 // e.g. the daily 13:00-17:00 window — auto-recovers instead of showing a bare
 // "Server Error" and requiring the worker to retry by hand.
+//
+// onProgress({ attempt, total, retrying }) is called before each retry and again
+// when the retry actually starts, so the caller can show
+// "Server unreachable — retrying… (2/3)" in the attempt's phase line.
 const LOGIN_TIMEOUT_MS = 15000;
 const LOGIN_MAX_ATTEMPTS = 3;
 
-async function loginFetch(username, password, branch) {
+async function loginFetch(username, password, branch, onProgress) {
+  const report = typeof onProgress === "function" ? onProgress : () => {};
   let lastNetworkError = null;
   for (let attempt = 0; attempt < LOGIN_MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
-      setMessage(t("login.retrying"), false);
+      report({ attempt: attempt + 1, total: LOGIN_MAX_ATTEMPTS, retrying: true });
       await new Promise((r) => setTimeout(r, 800 * Math.pow(2, attempt - 1)));
+      // The new request starts now: back to "contacting the server" so the
+      // "waiting for the server" hint is armed again for this attempt.
+      report({ attempt: attempt + 1, total: LOGIN_MAX_ATTEMPTS, retrying: false });
     }
 
     const controller = new AbortController();
@@ -115,39 +101,203 @@ async function loginFetch(username, password, branch) {
   throw lastNetworkError || new Error("Login request failed");
 }
 
+// ---------------------------------------------------------------------------
+// Login attempt feedback.
+//
+// A login can take a while — up to three 15 s server attempts — and without
+// feedback the worker cannot tell a slow server from a dead window, so they
+// either wait blindly or click Login again. While an attempt is in flight the
+// form is frozen, the button carries a spinner, the phase line under the form
+// says what is happening (and for how long the server has been quiet), and a
+// bar slides along the top edge of the card. Every path out of doLogin() ends in
+// a visible terminal state: green + "Login successful — loading…" while the work
+// page loads, or red + shake + the error message with the form usable again.
+// ---------------------------------------------------------------------------
+
+// How long the server may stay silent before the phase line says so explicitly.
+const WAITING_HINT_MS = 4000;
+
+let busy = false; // an attempt is in flight
+let phaseKey = "login"; // i18n key of the current phase
+let phaseSuffix = ""; // e.g. "2/3" for a retry
+let phaseStartedAt = 0; // Date.now() when the phase began (drives the seconds)
+let waitingTimer = null; // fires the "waiting for the server" escalation
+let tickTimer = null; // repaints the seconds while waiting
+
+function elapsedSeconds() {
+  return Math.max(0, Math.round((Date.now() - phaseStartedAt) / 1000));
+}
+
+// What the phase line should say right now. The reachability monitor adds
+// context the request itself cannot: when the server is known to be
+// unreachable, "no connection" explains a silent wait better than "signing in".
+function attemptText() {
+  const offline = !!(netMonitor && netMonitor.getState().status === "offline");
+  switch (phaseKey) {
+    case "login.signingIn":
+    case "login.retrying":
+    case "login.waitingServer": {
+      if (offline) return t("login.offline");
+      const text = t(phaseKey);
+      const extra = [];
+      if (phaseSuffix) extra.push(phaseSuffix);
+      if (phaseKey === "login.waitingServer") {
+        extra.push(
+          t("login.elapsed").replace("{seconds}", String(elapsedSeconds()))
+        );
+      }
+      return extra.length ? `${text} (${extra.join(", ")})` : text;
+    }
+    default:
+      return t(phaseKey);
+  }
+}
+
+function renderAttempt() {
+  const text = attemptText();
+  if (LoginProgressText) LoginProgressText.textContent = text;
+  if (LoginProgress) {
+    LoginProgress.className =
+      "login-progress visible " +
+      (phaseKey === "login.success" ? "success" : "pending");
+  }
+  if (SubmitLabel) {
+    SubmitLabel.textContent =
+      phaseKey === "login.success" ? t("login.success") : t("login.signingIn");
+  }
+}
+
+function setPhase(key, suffix, keepSince) {
+  phaseKey = key;
+  phaseSuffix = suffix || "";
+  // The escalation to "waiting for the server" must not restart the clock: the
+  // seconds shown are how long the worker has been waiting, not how long the
+  // current label has been on screen.
+  if (!keepSince) phaseStartedAt = Date.now();
+  if (waitingTimer) {
+    clearTimeout(waitingTimer);
+    waitingTimer = null;
+  }
+  // A silent server is escalated to an explicit "waiting for the server" phase,
+  // so a 15 s timeout never looks like a frozen window.
+  if (key !== "login.success") {
+    waitingTimer = setTimeout(() => {
+      if (busy) setPhase("login.waitingServer", phaseSuffix, true);
+    }, WAITING_HINT_MS);
+  }
+  renderAttempt();
+}
+
+function setFormEnabled(enabled) {
+  [BranchInput, UserName, Pass, SubmitButton].forEach((node) => {
+    if (node) node.disabled = !enabled;
+  });
+  if (LoginForm) {
+    if (enabled) LoginForm.removeAttribute("aria-busy");
+    else LoginForm.setAttribute("aria-busy", "true");
+  }
+}
+
+function beginBusy(key) {
+  busy = true;
+  document.body.classList.add("login-busy");
+  if (AuthCard) AuthCard.classList.remove("card-success", "card-error");
+  setMessage("", false);
+  setFormEnabled(false);
+  setPhase(key);
+  if (tickTimer) clearInterval(tickTimer);
+  // Repaint once a second so the elapsed seconds keep counting up.
+  tickTimer = setInterval(() => {
+    if (busy) renderAttempt();
+  }, 1000);
+}
+
+// Ends an attempt without success: the form comes back to life and the card
+// flashes red, so the worker sees that the attempt is over and can retry.
+function endBusy(kind) {
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
+  if (waitingTimer) {
+    clearTimeout(waitingTimer);
+    waitingTimer = null;
+  }
+  busy = false;
+  document.body.classList.remove("login-busy");
+  setFormEnabled(true);
+  if (LoginSpinner) LoginSpinner.classList.remove("is-done");
+  if (SubmitLabel) SubmitLabel.textContent = t("login");
+  // The phase line only ever describes an attempt in flight: the outcome is the
+  // card state plus the message area, so the line is cleared here.
+  if (LoginProgress) LoginProgress.className = "login-progress";
+  if (LoginProgressText) LoginProgressText.textContent = "";
+  if (AuthCard) {
+    AuthCard.classList.remove("card-success", "card-error");
+    if (kind) {
+      AuthCard.classList.add(kind === "error" ? "card-error" : "card-success");
+    }
+  }
+}
+
+// Ends an attempt successfully. The form stays frozen because the window is
+// about to be replaced by the work page.
+function showSuccess() {
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
+  if (waitingTimer) {
+    clearTimeout(waitingTimer);
+    waitingTimer = null;
+  }
+  busy = false;
+  document.body.classList.remove("login-busy");
+  if (LoginSpinner) LoginSpinner.classList.add("is-done");
+  setPhase("login.success");
+  if (AuthCard) {
+    AuthCard.classList.remove("card-error");
+    AuthCard.classList.add("card-success");
+  }
+}
+
 async function doLogin() {
+  // A submit that arrives while an attempt is already in flight is ignored: the
+  // spinner on screen belongs to that attempt, not to the new click.
+  if (busy) return;
+
   if (!UserName.value || !Pass.value) {
     setMessage(t("enterCredentials"), true);
     return;
   }
 
-  // Warn when the login clearly comes from far away from the selected branch,
-  // so a wrong selection (or an unexpected location) needs an explicit "yes".
-  const coords = BRANCH_COORDINATES[BranchInput ? BranchInput.value : ""];
-  if (coords) {
-    const here = await userLocation();
-    if (here) {
-      const km = haversineKm(coords, here);
-      if (km > GEO_WARNING_KM) {
-        const msg = t("geo.warning")
-          .replace("{branch}", BranchInput.value)
-          .replace("{km}", String(Math.round(km)));
-        if (!window.confirm(msg)) return;
-      }
-    }
-  }
-
+  beginBusy("login.signingIn");
   try {
     const { res, data } = await loginFetch(
       UserName.value,
       Pass.value,
-      BranchInput ? BranchInput.value : ""
+      BranchInput ? BranchInput.value : "",
+      (progress) => {
+        if (progress.retrying) {
+          setPhase("login.retrying", `${progress.attempt}/${progress.total}`);
+        } else {
+          setPhase("login.signingIn");
+        }
+      }
     );
 
     if (!res.ok) {
+      // The server answered and refused: a finished attempt, not a slow one.
+      endBusy("error");
       setMessage(translateError(data.error) || t("accessDenied"), true);
+      if (Pass) {
+        Pass.focus();
+        Pass.select();
+      }
       return;
     }
+
+    showSuccess();
 
     localStorage.setItem("token", data.token || "");
     localStorage.setItem("username", data.username || "");
@@ -166,9 +316,18 @@ async function doLogin() {
       }
     }
 
-    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+    if (window.bridge && typeof window.bridge.LoadNewPage === "function") {
+      window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+    } else {
+      console.error(
+        "Cannot open the work page: window.bridge.LoadNewPage is missing"
+      );
+    }
   } catch (error) {
     console.error("Error: ", error);
+    // A dead end (timeout on every attempt, unexpected failure): back to a
+    // usable form with a red card, never a spinner that runs forever.
+    endBusy("error");
     setMessage(t("serverError"), true);
   }
 }
@@ -217,9 +376,11 @@ loadBranches();
 
 // Start the reachability monitor so the worker can see, before logging in,
 // whether the server is up (green) or unreachable (red) — and whether it is
-// recovering on its own during an intermittent outage.
+// recovering on its own during an intermittent outage. The handle is kept so a
+// login in flight can say "no connection" instead of "signing in" when the
+// server is already known to be down.
 try {
-  startNetMonitor({
+  netMonitor = startNetMonitor({
     apiBase: API_BASE,
     statusEl: NetStatus || undefined,
     labels: {

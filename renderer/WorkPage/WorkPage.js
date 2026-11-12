@@ -836,10 +836,13 @@ function field(labelText, inputNode) {
   // Link the label to its control so clicking the caption focuses (and thus
   // targets) the input. Without the `for`/`id` pairing a click on the label
   // does nothing, which made fields feel untargetable.
+  // A control can be a wrapper around the real input (a password field carries
+  // its eye button, see passwordField), so the label follows `focusTarget`.
+  const focusable = inputNode.focusTarget || inputNode;
   const id = `fld-${++fieldIdCounter}-${Date.now()}`;
   const label = el("label", labelText);
   label.setAttribute("for", id);
-  inputNode.id = inputNode.id || id;
+  focusable.id = focusable.id || id;
   wrap.appendChild(label);
   wrap.appendChild(inputNode);
   return wrap;
@@ -850,6 +853,23 @@ function input(type, value, placeholder) {
   if (value !== undefined && value !== null) node.value = value;
   if (placeholder) node.placeholder = placeholder;
   return node;
+}
+
+// Password input plus its eye button, laid out by .password-row (app.css) so the
+// eye sits inside the field's right edge. Returns the wrapper; `focusTarget`
+// lets field() point the label at the input inside it, and buildForm() reads the
+// value from the same node.
+function passwordField(value, placeholder) {
+  const wrap = el("div", null, { class: "password-row" });
+  const pass = input("password", value, placeholder);
+  const eye = el("button", null, { class: "pw-toggle", type: "button" });
+  eye.innerHTML = PASSWORD_EYE_ICON_SVG;
+  eye.setAttribute("aria-pressed", "false");
+  wrap.appendChild(pass);
+  wrap.appendChild(eye);
+  wrap.focusTarget = pass;
+  setupPasswordToggle(eye, pass);
+  return wrap;
 }
 function select(options, value) {
   const node = el("select");
@@ -977,6 +997,7 @@ function buildForm(spec, onSubmit, submitLabel) {
     else if (s.type === "batches") control = batchListEditor(s.value);
     else if (s.type === "select") control = select(s.options, s.value);
     else if (s.type === "textarea") control = textarea(s.value, s.placeholder);
+    else if (s.type === "password") control = passwordField(s.value, s.placeholder);
     else if (s.type === "checkbox") {
       control = input("checkbox");
       control.checked = !!s.value;
@@ -996,11 +1017,13 @@ function buildForm(spec, onSubmit, submitLabel) {
     const payload = {};
     for (const s of spec) {
       const c = values[s.key];
+      // The password control is a wrapper (input + eye button): read the input.
+      const node = c.focusTarget || c;
       if (s.type === "emails" || s.type === "batches") {
         payload[s.key] = c.getValues();
-      } else if (c.type === "checkbox") payload[s.key] = c.checked;
-      else if (s.type === "number") payload[s.key] = Number(c.value);
-      else payload[s.key] = c.value;
+      } else if (node.type === "checkbox") payload[s.key] = node.checked;
+      else if (s.type === "number") payload[s.key] = Number(node.value);
+      else payload[s.key] = node.value;
     }
     try {
       await onSubmit(payload);

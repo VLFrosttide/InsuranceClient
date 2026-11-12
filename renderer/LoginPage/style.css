@@ -6,6 +6,8 @@ body {
 }
 
 #AuthCard {
+  position: relative;
+  overflow: hidden;
   width: 360px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -66,25 +68,8 @@ body {
   display: none;
 }
 
-.password-row input {
-  flex: 1;
-}
-.password-row {
-  align-items: center;
-}
-#VisIcon {
-  background-image: url("../../Icons/Vis.png");
-  background-size: cover;
-  background-position: center;
-  height: 30px;
-  width: 30px;
-  flex: none;
-  cursor: pointer;
-  opacity: 0.75;
-}
-#VisIcon:hover {
-  opacity: 1;
-}
+/* `.password-row` and the eye button (.pw-toggle) are shared with the password
+   fields built in WorkPage.js, so they live in app.css. */
 
 .msg {
   margin-top: 14px;
@@ -142,5 +127,181 @@ body {
   }
   50% {
     opacity: 1;
+  }
+}
+
+/* --- Login attempt feedback -------------------------------------------------
+   A login can take a while: up to three 15 s server attempts. Without feedback
+   the worker cannot tell a slow server from a dead window, so an attempt in
+   flight shows a spinner in the button, the phase it is in (plus the seconds
+   waited once the server goes quiet), and a sliding bar along the top edge of
+   the card. A finished attempt is unmistakable: the card turns green with a
+   check mark while the work page loads, or red with a shake and the error
+   message while the form comes back to life. */
+#SubmitButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+/* The button is disabled only to stop a second submit; it must still look alive,
+   so it keeps the accent colour and shows the "working" cursor instead of the
+   greyed-out "not allowed" look from app.css. */
+body.login-busy #SubmitButton:disabled {
+  background: var(--accent);
+  cursor: progress;
+}
+
+.login-spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  animation: login-spin 0.7s linear infinite;
+}
+body.login-busy .login-spinner {
+  display: inline-block;
+}
+/* Attempt finished successfully: the spinner becomes a check mark. */
+.login-spinner.is-done {
+  display: inline-block;
+  border: none;
+  animation: none;
+}
+.login-spinner.is-done::after {
+  content: "✔";
+  display: block;
+  color: var(--success);
+  font-size: 15px;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* Live description of the current attempt (role="status", so it is announced). */
+.login-progress {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+  min-height: 18px;
+  font-size: 13px;
+  text-align: center;
+}
+.login-progress.visible {
+  display: flex;
+}
+.login-progress.pending {
+  color: var(--text);
+}
+.login-progress.success {
+  color: var(--success);
+  font-weight: 600;
+}
+
+/* Indeterminate bar along the top edge of the card while an attempt is in
+   flight, so "nothing is happening" is visibly wrong even at a glance. */
+#AuthCard::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 3px;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    #79c0ff,
+    transparent
+  );
+}
+body.login-busy #AuthCard::before {
+  opacity: 1;
+  animation: login-bar 1.15s ease-in-out infinite;
+}
+
+/* Finished states of the whole card. */
+#AuthCard.card-success {
+  border-color: var(--success);
+  box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.35), 0 12px 40px rgba(0, 0, 0, 0.45);
+  animation: login-card-success 700ms ease-out;
+}
+/* The button keeps confirming the success instead of greying out as a disabled
+   control: the window is being replaced, so it is "done", not "unavailable". */
+#AuthCard.card-success #SubmitButton:disabled,
+#AuthCard.card-success #SubmitButton:disabled:hover {
+  background: var(--success);
+  cursor: progress;
+}
+#AuthCard.card-error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(229, 83, 75, 0.35), 0 12px 40px rgba(0, 0, 0, 0.45);
+  animation: login-card-shake 420ms ease-in-out;
+}
+
+/* A request in flight owns the window: the pointer says so everywhere. */
+body.login-busy,
+body.login-busy * {
+  cursor: progress !important;
+}
+body.login-busy input,
+body.login-busy select {
+  opacity: 0.7;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes login-bar {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+@keyframes login-card-success {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.015);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes login-card-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-spinner,
+  body.login-busy #AuthCard::before,
+  #AuthCard.card-success,
+  #AuthCard.card-error {
+    animation: none;
   }
 }

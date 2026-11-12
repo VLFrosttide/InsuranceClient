@@ -27,14 +27,39 @@
             type="password"
             autocomplete="current-password"
           />
-          <div
+          <!-- Eye button. The icon is injected from PASSWORD_EYE_ICON_SVG
+               (common.js) and its masked/readable state is carried by
+               aria-pressed, which .pw-toggle in app.css turns into the
+               slash over the eye. logic.js keeps the state in sync. -->
+          <button
             id="VisIcon"
-            data-i18n-title="showHidePassword"
-            title="Show/hide password"
-          ></div>
+            class="pw-toggle"
+            type="button"
+            aria-controls="PassInput"
+            aria-pressed="false"
+            aria-label="Show password"
+            title="Show password"
+          ></button>
         </div>
-        <button id="SubmitButton" type="submit" data-i18n="login">Login</button>
+        <button id="SubmitButton" type="submit">
+          <span id="LoginSpinner" class="login-spinner" aria-hidden="true"></span>
+          <span id="SubmitLabel" data-i18n="login">Login</span>
+        </button>
       </form>
+
+      <!-- Phase of the current login attempt ("Signing in…", "Server unreachable
+           — retrying… (2/3)", "Waiting for the server… (12 s)", "Login
+           successful — loading…"). Filled in by logic.js while an attempt is in
+           flight; kept empty (and hidden) when the form is idle. -->
+      <div
+        id="LoginProgress"
+        class="login-progress"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span id="LoginProgressText"></span>
+      </div>
 
       <div class="row lang-row">
         <div class="spacer"></div>

@@ -21,7 +21,10 @@ const I18N = {
     password: "Password",
     branch: "Branch",
     login: "Login",
-    showHidePassword: "Show/hide password",
+    // Labels of the eye button in a password field. The label names the action
+    // the click performs: "Show password" while the field is still masked.
+    showPassword: "Show password",
+    hidePassword: "Hide password",
     enterCredentials: "Enter username and password",
     accessDenied: "Access Denied",
     sessionExpired: "Session expired",
@@ -32,9 +35,12 @@ const I18N = {
     "net.offline": "Offline",
     "net.checking": "Checking…",
     "login.retrying": "Server unreachable — retrying…",
+    "login.signingIn": "Signing in…",
+    "login.waitingServer": "Waiting for the server…",
+    "login.offline": "No connection — the server is unreachable",
+    "login.success": "Login successful — loading…",
+    "login.elapsed": "{seconds} s",
     logout: "Logout",
-    "geo.warning":
-      "The selected branch ({branch}) is about {km} km from your current location. Log in to this branch anyway?",
 
     "nav.dashboard": "Dashboard",
     "nav.users": "Users",
@@ -563,7 +569,8 @@ const I18N = {
     password: "Парола",
     branch: "Клон",
     login: "Вход",
-    showHidePassword: "Покажи/скрий паролата",
+    showPassword: "Покажи паролата",
+    hidePassword: "Скрий паролата",
     enterCredentials: "Въведете потребителско име и парола",
     accessDenied: "Отказан достъп",
     sessionExpired: "Сесията изтече",
@@ -574,9 +581,12 @@ const I18N = {
     "net.offline": "Няма връзка",
     "net.checking": "Проверка…",
     "login.retrying": "Сървърът е недостъпен — нов опит…",
+    "login.signingIn": "Влизане…",
+    "login.waitingServer": "Изчакване на сървъра…",
+    "login.offline": "Няма връзка — сървърът е недостъпен",
+    "login.success": "Успешен вход — зареждане…",
+    "login.elapsed": "{seconds} с",
     logout: "Изход",
-    "geo.warning":
-      "Избраният клон ({branch}) е на около {km} км от вашето местоположение. Да се влезе ли в този клон?",
 
     "nav.dashboard": "Табло",
     "nav.users": "Потребители",
@@ -1534,6 +1544,67 @@ function el(tag, text, attrs) {
     }
   }
   return node;
+}
+
+// ---------------------------------------------------------------------------
+// Password visibility toggle
+//
+// One eye icon, one behaviour, everywhere a password is typed. The icon is a
+// single outline eye drawn with `currentColor` (so it follows the theme) plus a
+// slash that is stroked in when the password becomes readable: a plain eye means
+// "masked", an eye with a slash means "readable right now". Geometry, in a
+// 0 0 24 24 box:
+//   * the lens: two quadratic curves meeting in sharp corners at (2.5 12) and
+//     (21.5 12);
+//   * the pupil: circle at (12 12) r=2.8;
+//   * the slash: 45 degrees through the middle, longer than the lens is wide
+//     (~23.2 units) -- app.css animates it with a 24 unit dash.
+// The pressed state lives on aria-pressed, which is what the CSS keys off, so
+// the icon and the screen-reader state can never disagree.
+// ---------------------------------------------------------------------------
+const PASSWORD_EYE_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+  '<path d="M2.5 12Q6.25 5.6 12 5.6T21.5 12Q17.75 18.4 12 18.4T2.5 12Z"/>' +
+  '<circle cx="12" cy="12" r="2.8"/>' +
+  '<path class="pw-eye-slash" d="M3.8 3.8 20.2 20.2"/>' +
+  "</svg>";
+
+// Wires an eye button to a password input. Returns a handle whose sync() is
+// called again after a language switch, because the label is translated.
+function setupPasswordToggle(button, input) {
+  if (!button || !input) return null;
+
+  function sync() {
+    const visible = input.type === "text";
+    const label = t(visible ? "hidePassword" : "showPassword");
+    button.setAttribute("aria-pressed", visible ? "true" : "false");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+
+  button.addEventListener("click", () => {
+    const visible = input.type === "text";
+    // Flipping the type moves the caret to the end in Chromium; put it back so
+    // a typo in the middle of the password can be corrected while it is shown.
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    const direction = input.selectionDirection;
+    input.type = visible ? "password" : "text";
+    try {
+      if (typeof start === "number") {
+        input.setSelectionRange(start, end, direction);
+      }
+    } catch (err) {
+      // Not offered by every input type: the caret position is cosmetic.
+    }
+    // The click moved focus to the button; hand it back so typing continues.
+    if (typeof input.focus === "function") input.focus();
+    sync();
+  });
+
+  // Start from the field's real state: a page may render it already readable.
+  sync();
+  return { sync };
 }
 
 // Toast notification. `pointer-events` is disabled via CSS so a visible toast
