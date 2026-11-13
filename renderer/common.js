@@ -301,6 +301,11 @@ const I18N = {
     availableCashHint:
       "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
     countryWideInsurances: "Country-wide insurances",
+    countryWideInsurancesHint:
+      "The range of policy numbers issued in the country on this day: the highest number minus the lowest. The policies listed below set the ends of that range, so a mistyped or out-of-series number at either end changes the figure.",
+    countryWideFromPolicy: "From policy",
+    countryWideToPolicy: "To policy",
+    countryWideSinglePolicy: "Only policy",
     cardPaymentsHint:
       "Card payments collected at this branch on this day.",
     brokerBalanceTotal: "Broker balance total",
@@ -886,6 +891,11 @@ const I18N = {
     availableCashHint:
       "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
     countryWideInsurances: "Застраховки в страната",
+    countryWideInsurancesHint:
+      "Диапазонът на номерата на полиците, издадени в страната за този ден: най-високият номер минус най-ниският. Полиците по-долу определят краищата на диапазона, така че сгрешен или чужд номер в някой от краищата променя стойността.",
+    countryWideFromPolicy: "От полица",
+    countryWideToPolicy: "До полица",
+    countryWideSinglePolicy: "Единствена полица",
     cardPaymentsHint:
       "Плащания с карта, събрани в този клон на този ден.",
     brokerBalanceTotal: "Общ баланс на брокери",

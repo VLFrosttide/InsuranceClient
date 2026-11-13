@@ -2923,6 +2923,49 @@ async function currentCashView(overrideBranch, overrideDate) {
     row.appendChild(list);
     return row;
   };
+  // The country-wide figure is the distance between the day's lowest and
+  // highest policy number, so name the two policies that set those ends: a
+  // single mistyped or out-of-series number is what makes the figure jump, and
+  // showing the two policy numbers makes that visible straight away.
+  const dailyRangeStat = (label, value, range, hint) => {
+    const attrs = { class: "daily-report-row" };
+    if (hint) attrs.title = hint;
+    const row = el("div", null, attrs);
+    row.appendChild(el("span", label, { class: "muted" }));
+    const box = el("div", null, { class: "daily-report-range" });
+    box.appendChild(
+      el("span", String(value ?? 0), { class: "daily-report-range-value" })
+    );
+    const first = range && range.first;
+    const last = range && range.last;
+    const entries = [];
+    if (
+      first &&
+      last &&
+      first.BlancNumber &&
+      first.BlancNumber === last.BlancNumber
+    ) {
+      // One numbered policy that day: it sets both ends of the range.
+      entries.push(["countryWideSinglePolicy", first]);
+    } else {
+      if (first) entries.push(["countryWideFromPolicy", first]);
+      if (last) entries.push(["countryWideToPolicy", last]);
+    }
+    for (const [labelKey, policy] of entries) {
+      // Only the policy number is shown for these two rows. The rest of the
+      // record (blank number, branch, author, date) made the line long enough
+      // to run out of the card, so it stays in the API payload and is not
+      // rendered here.
+      const line = el("div", null, { class: "daily-report-policy" });
+      line.appendChild(el("span", t(labelKey), { class: "muted" }));
+      line.appendChild(
+        el("span", policy.PolicyNumber, { class: "daily-report-policy-number" })
+      );
+      box.appendChild(line);
+    }
+    row.appendChild(box);
+    return row;
+  };
   dailyCard.appendChild(
     dailyStat(t("totalInsurances"), String(daily.totalInsurances ?? 0))
   );
@@ -2933,7 +2976,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     dailyStat(t("walkInInsurances"), String(daily.walkInInsurances ?? 0))
   );
   dailyCard.appendChild(
-    dailyStat(t("countryWideInsurances"), String(daily.countryWideInsurances ?? 0))
+    dailyRangeStat(
+      t("countryWideInsurances"),
+      daily.countryWideInsurances ?? 0,
+      daily.countryWideRange,
+      t("countryWideInsurancesHint")
+    )
   );
 
   if (isAdmin) {

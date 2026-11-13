@@ -177,6 +177,28 @@ body {
 .daily-report-branch span:last-child {
   font-weight: 600;
 }
+/* The country-wide row also names the two policies whose numbers bound the
+   range, so its right-hand side is a small column: the figure first, then one
+   line per policy. */
+.daily-report-range {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.daily-report-range-value {
+  font-weight: 600;
+}
+.daily-report-policy {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+  font-size: 0.85em;
+}
+.daily-report-policy-number {
+  font-weight: 600;
+}
 
 /* Collapsible ledger sections (Current cash). The heading is the click target,
    and the table only opens when asked, so a busy day stays compact. */

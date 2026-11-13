@@ -1182,6 +1182,7 @@ const ledger = () =>
         walkInInsurances: 3,
         totalDailyCash: { EUR: 50, TRY: -5 },
         countryWideInsurances: 3,
+        countryWideRange: { first: null, last: null },
         cardPayments: [],
         brokerBalance: [],
         cashFromBrokers: { EUR: 0, TRY: 0 },
@@ -1191,8 +1192,8 @@ const ledger = () =>
     const dayQueries = seen.filter((q) => q.params && q.params.length);
     eq(
       dayQueries.length,
-      6,
-      "counts + span + cash + card + broker + cash from brokers queries"
+      8,
+      "counts + span + range ends + cash + card + broker + cash from brokers queries"
     );
     for (const q of dayQueries) {
       eq(q.params, [today, CC.addDays(today, 1)], "day bounds: " + q.s);
@@ -1272,6 +1273,7 @@ const ledger = () =>
         walkInInsurances: 3,
         totalDailyCash: { EUR: 50, TRY: -5 },
         countryWideInsurances: 3,
+        countryWideRange: { first: null, last: null },
         cardPayments: [],
         brokerBalance: [],
         cashFromBrokers: { EUR: 0, TRY: 0 },
@@ -1280,6 +1282,105 @@ const ledger = () =>
       "the report carries the branch's walked-back available cash"
     );
   });
+
+  await check(
+    "GET /currentcash/daily names the two policies bounding the range",
+    async () => {
+      const routes = [];
+      const router = Object.assign({}, fakeRouter, {
+        get: (p, ...h) => routes.push({ path: p, handler: h[h.length - 1] }),
+      });
+      const RouterCC = loadModule("CurrentCash.js", {
+        express: { Router: () => router },
+      });
+      const db = {
+        query: async (sql, params) => {
+          const s = String(sql).replace(/\s+/g, " ").trim();
+          if (/MIN\(CAST\(PolicyNumber AS UNSIGNED\)\)/.test(s)) {
+            return [[{ firstPolicy: "101", lastPolicy: "900103" }]];
+          }
+          if (/COUNT\(\*\) AS total/.test(s)) {
+            return [[{ total: 4, broker: 0, walkIn: 4 }]];
+          }
+          // The two policies that set the ends of the span.
+          if (/ORDER BY CAST\(PolicyNumber AS UNSIGNED\) ASC/.test(s)) {
+            eq(params, ["2026-10-20", "2026-10-21"], "ascending day bounds");
+            return [
+              [
+                {
+                  PolicyNumber: "101",
+                  BlancNumber: "B1",
+                  Branch: BRANCH,
+                  Author: USER,
+                  CreatedAt: "2026-10-20 09:15",
+                },
+              ],
+            ];
+          }
+          if (/ORDER BY CAST\(PolicyNumber AS UNSIGNED\) DESC/.test(s)) {
+            eq(params, ["2026-10-20", "2026-10-21"], "descending day bounds");
+            return [
+              [
+                {
+                  PolicyNumber: "900103",
+                  BlancNumber: "B4",
+                  Branch: OTHER,
+                  Author: USER,
+                  CreatedAt: "2026-10-20 17:40",
+                },
+              ],
+            ];
+          }
+          return [[]];
+        },
+      };
+      RouterCC.createCurrentCashRouter(db);
+      const route = routes.find((r) => r.path === "/currentcash/daily");
+      ok(route, "route registered");
+
+      const res = {
+        code: 200,
+        status(c) {
+          this.code = c;
+          return this;
+        },
+        json(b) {
+          this.body = b;
+          return this;
+        },
+      };
+      await route.handler(
+        { query: { date: "2026-10-20", tzOffset: "0" }, user: { username: USER } },
+        res
+      );
+      eq(res.code, 200, "status");
+      eq(
+        res.body.countryWideInsurances,
+        900002,
+        "the range is still last - first"
+      );
+      eq(
+        res.body.countryWideRange,
+        {
+          first: {
+            PolicyNumber: "101",
+            BlancNumber: "B1",
+            Branch: BRANCH,
+            Author: USER,
+            CreatedAt: "2026-10-20 09:15",
+          },
+          last: {
+            PolicyNumber: "900103",
+            BlancNumber: "B4",
+            Branch: OTHER,
+            Author: USER,
+            CreatedAt: "2026-10-20 17:40",
+          },
+        },
+        "both ends carry the policy that produced them"
+      );
+    }
+  );
 
   await check(
     "GET /currentcash/daily scopes card/broker to the branch and nets annulments by creation date",
