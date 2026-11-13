@@ -833,25 +833,37 @@ async function waitForSocketAuth(timeoutMs = 800) {
   }
 }
 
+// Every Gmail message of the conversation the form was opened for. The card on
+// the dashboard groups the original email and its replies, so completing only
+// the newest one would bring the older ones back as a new card.
+function conversationMessageIds() {
+  if (!PendingEmail || !PendingEmail.messageId) return [];
+  const ids = Array.isArray(PendingEmail.threadMessageIds)
+    ? PendingEmail.threadMessageIds.filter(
+        (id) => typeof id === "string" && id
+      )
+    : [];
+  if (!ids.includes(PendingEmail.messageId)) ids.push(PendingEmail.messageId);
+  return ids;
+}
+
 function completeEmail() {
   leavingEmail = true;
-  if (PendingEmail && PendingEmail.messageId) {
-    if (emailSocket && emailSocket.isReady()) {
-      try {
-        emailSocket.send({
-          type: "complete_email",
-          messageId: PendingEmail.messageId,
-        });
-        clearDurableEmailWsAction(PendingEmail.messageId);
-        return true;
-      } catch (err) {
-        reportError("Failed to complete email", err, "emailSendFailed");
+  const ids = conversationMessageIds();
+  if (ids.length === 0) return false;
+  if (emailSocket && emailSocket.isReady()) {
+    try {
+      for (const messageId of ids) {
+        emailSocket.send({ type: "complete_email", messageId });
+        clearDurableEmailWsAction(messageId);
       }
+      return true;
+    } catch (err) {
+      reportError("Failed to complete email", err, "emailSendFailed");
     }
-    queueDurableEmailWsAction({
-      type: "complete_email",
-      messageId: PendingEmail.messageId,
-    });
+  }
+  for (const messageId of ids) {
+    queueDurableEmailWsAction({ type: "complete_email", messageId });
   }
   return false;
 }
@@ -1617,6 +1629,26 @@ async function goBack() {
   window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
 }
 
+// After a reply the form closes and the worker is taken back to the email
+// cards. The email is released (not completed): it stays on the dashboard, so
+// the broker's answer updates its card with the reply colour and count.
+async function closeFormAfterReply() {
+  await waitForSocketAuth();
+  releaseEmail();
+  stopDesktopPdfWatch();
+  await new Promise((r) => setTimeout(r, 120));
+  clearPendingEmail();
+  try {
+    localStorage.setItem(
+      "flashToast",
+      JSON.stringify({ text: t("add.replySent"), type: "success" })
+    );
+  } catch (err) {
+    console.error("Failed to store flash toast:", err);
+  }
+  window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+}
+
 BackButton.addEventListener("click", goBack);
 
 // Clearing wipes every entered value and attached file, so ask first.
@@ -1957,6 +1989,8 @@ async function sendReply() {
     });
     toast(t("add.replySent"), "success");
     if (ReplyInput) ReplyInput.value = "";
+    // The reply is done: close the form and return to the email cards.
+    await closeFormAfterReply();
   } catch (error) {
     reportError("Error sending reply", error, "emailSendFailed");
   } finally {

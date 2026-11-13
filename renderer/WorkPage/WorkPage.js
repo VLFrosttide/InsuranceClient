@@ -23,7 +23,7 @@ if (!requireLogin()) {
 // ---------------------------------------------------------------------------
 // Unread email cards (workers only)
 // ---------------------------------------------------------------------------
-const emailCards = new Map(); // messageId -> { email, node }
+const emailCards = new Map(); // thread key -> { emails, email (newest), node }
 let emailSocket = null;
 let pendingClaimEmail = null;
 
@@ -38,6 +38,144 @@ const USE_BULINS_WEB_FORM = false;
 
 function emailTitle(email) {
   return email.subject || email.from || t("email.noSubject");
+}
+
+// A card is one conversation: the original request plus every reply to it.
+// Only the newest email is shown (it normally quotes the earlier ones) and it
+// is the message claimed when the card is opened; the card's badge counts the
+// replies. The server sends Gmail's threadId with every email, so replies group
+// reliably even when their subject was edited.
+function findEmailCardByMessageId(messageId) {
+  if (!messageId) return null;
+  for (const entry of emailCards.values()) {
+    if (entry.emails.some((email) => email.messageId === messageId)) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+// The card an email belongs to. The thread id is preferred; the subject/sender
+// key is only a fallback for emails restored without one. Two different Gmail
+// threads that happen to share a subject must stay separate, so the fallback
+// never pairs two emails that both carry a thread id.
+function findEmailCardFor(email) {
+  const direct = emailCards.get(emailThreadKey(email));
+  if (direct) return direct;
+  const subjectKey = emailSubjectKey(email);
+  if (!subjectKey) return null;
+  const threadId = String((email && email.threadId) || "").trim();
+  for (const entry of emailCards.values()) {
+    if (threadId && entry.threadId) continue;
+    if (entry.subjectKey === subjectKey) return entry;
+  }
+  return null;
+}
+
+// When the email was sent, used to keep a conversation oldest -> newest.
+// Falls back to when this PC first saw it when the date header is unusable.
+function emailSentMs(email) {
+  const parsed = Date.parse((email && email.date) || "");
+  if (Number.isFinite(parsed)) return parsed;
+  return emailFirstSeenMs(localStorage, email.messageId);
+}
+
+function emailThreadIdOf(emails) {
+  for (const email of emails) {
+    const threadId = String((email && email.threadId) || "").trim();
+    if (threadId) return threadId;
+  }
+  return "";
+}
+
+function replyCountLabel(count) {
+  return count === 1
+    ? t("email.replyCountOne")
+    : t("email.replyCount").replace("{n}", count);
+}
+
+// Badge text for the current language, built from the values cached on the
+// entry so it can be re-translated without splitting an email body again.
+function emailCardBadgeText(entry) {
+  if (entry.kind === "forward") {
+    return entry.threadCount > 1
+      ? `${t("email.forward")} · ${t("email.threadCount").replace(
+          "{n}",
+          entry.threadCount
+        )}`
+      : t("email.forward");
+  }
+  if (entry.replyCount > 0) {
+    return `${t("email.reply")} · ${replyCountLabel(entry.replyCount)}`;
+  }
+  return "";
+}
+
+// Apply the reply / forward colour, badge and title. Cheap (cached values), so
+// it also runs from refreshEmailCardAges to follow a language change.
+function applyEmailCardLabels(entry) {
+  const isForward = entry.kind === "forward";
+  entry.node.classList.toggle(
+    "email-card-reply",
+    !isForward && entry.replyCount > 0
+  );
+  entry.node.classList.toggle("email-card-forward", isForward);
+  const badgeText = emailCardBadgeText(entry);
+  entry.badgeNode.textContent = badgeText;
+  entry.badgeNode.style.display = badgeText ? "" : "none";
+  entry.titleNode.textContent = emailTitle(entry.email);
+}
+
+// Keep the map key in step with the conversation: an email restored without a
+// Gmail thread id may create the card under its subject key, and the thread id
+// has to take over once one of its emails carries it. Without this, the next
+// reply (which does have a thread id) would miss the card and be shown alone.
+function syncEmailCardKey(entry) {
+  const key = entry.threadId
+    ? `thread:${entry.threadId}`
+    : emailThreadKey(entry.email);
+  if (key === entry.key) return;
+  emailCards.delete(entry.key);
+  entry.key = key;
+  emailCards.set(key, entry);
+}
+
+// Refresh a card after its conversation changed (a reply arrived, or an email
+// was completed / dismissed elsewhere): newest email, reply colour + badge and
+// the title, without rebuilding the card or losing its busy state.
+function updateEmailCard(entry) {
+  entry.emails.sort((a, b) => emailSentMs(a) - emailSentMs(b));
+  const newest = entry.emails[entry.emails.length - 1];
+  entry.email = newest;
+  entry.threadId = emailThreadIdOf(entry.emails);
+  entry.subjectKey = emailSubjectKey(newest);
+  // Waiting time starts when the conversation first arrived, so a reply does
+  // not reset the card's age and push it to the end of the dashboard.
+  entry.arrivalMs = entry.emails.reduce(
+    (min, email) =>
+      Math.min(min, emailFirstSeenMs(localStorage, email.messageId)),
+    Number.POSITIVE_INFINITY
+  );
+
+  const thread = emailThreadInfo(newest);
+  let replyCount = Math.max(entry.emails.length, thread.count) - 1;
+  if (thread.kind === "reply" && replyCount < 1) replyCount = 1;
+
+  entry.kind = thread.kind;
+  entry.threadCount = thread.count;
+  entry.replyCount = replyCount;
+  applyEmailCardLabels(entry);
+  syncEmailCardKey(entry);
+  refreshEmailCardAges();
+}
+
+function renderEmailCardsIfVisible() {
+  if (activeNav && activeNav.load === workerDashboard) {
+    Content.replaceChildren(
+      el("h2", t("unreadEmails")),
+      emailCardsContainer()
+    );
+  }
 }
 
 function emailCardsContainer() {
@@ -69,6 +207,9 @@ function emailWaitingLabel(arrivalMs, now) {
 function refreshEmailCardAges() {
   const now = Date.now();
   for (const entry of emailCards.values()) {
+    // Re-translate the badge/title too: this runs on every dashboard render,
+    // including the one after a language change.
+    applyEmailCardLabels(entry);
     const overdue = isEmailOverdue(entry.arrivalMs, now);
     entry.node.classList.toggle("email-card-overdue", overdue);
     entry.timeNode.textContent = t("email.arrived").replace(
@@ -88,12 +229,7 @@ function refreshEmailCardAges() {
 const EMAIL_AGE_REFRESH_MS = 30 * 1000;
 setInterval(refreshEmailCardAges, EMAIL_AGE_REFRESH_MS);
 
-function addEmailCard(email) {
-  if (!email || !email.messageId || emailCards.has(email.messageId)) return;
-  // Its policy is already queued in the outbox (saved offline, waiting to be
-  // sent): the email is handled, so it must not be offered again.
-  if (outboxEmailIds().has(email.messageId)) return;
-
+function createEmailCard(key, email) {
   const card = el("div", null, { class: "email-card" });
 
   const openBtn = el("button", null, {
@@ -101,22 +237,16 @@ function addEmailCard(email) {
     type: "button",
   });
 
-  // Replies / forwards look different from a fresh request: a coloured edge
-  // plus a badge saying how many emails the thread contains.
-  const thread = emailThreadInfo(email);
-  if (thread.kind) {
-    card.classList.add(`email-card-${thread.kind}`);
-    let badgeText = t(thread.kind === "forward" ? "email.forward" : "email.reply");
-    if (thread.count > 1) {
-      badgeText += ` · ${t("email.threadCount").replace("{n}", thread.count)}`;
-    }
-    openBtn.appendChild(el("span", badgeText, { class: "email-card-badge" }));
-  }
-  openBtn.appendChild(el("span", emailTitle(email), { class: "email-card-title" }));
+  // Reply / forward badge. It is hidden for a fresh request and filled in by
+  // updateEmailCard, which also sets the card's coloured edge.
+  const badgeNode = el("span", null, { class: "email-card-badge" });
+  badgeNode.style.display = "none";
+  const titleNode = el("span", null, { class: "email-card-title" });
+  openBtn.appendChild(badgeNode);
+  openBtn.appendChild(titleNode);
 
   // Arrival time (when this PC first saw the email) + how long the card has
   // been waiting (filled in and kept current by refreshEmailCardAges).
-  const arrivalMs = emailFirstSeenMs(localStorage, email.messageId);
   const timeWrap = el("span", null, { class: "email-card-time" });
   const timeNode = el("span", null, { class: "email-card-arrived" });
   const waitNode = el("span", null, { class: "email-card-waiting" });
@@ -138,7 +268,31 @@ function addEmailCard(email) {
   busyNode.appendChild(busyLabelNode);
   openBtn.appendChild(busyNode);
 
-  openBtn.addEventListener("click", () => openEmailInNewForm(email));
+  const entry = {
+    key,
+    threadId: "",
+    subjectKey: "",
+    emails: [email],
+    email,
+    kind: null,
+    threadCount: 0,
+    replyCount: 0,
+    node: card,
+    openBtn,
+    xBtn: null,
+    badgeNode,
+    titleNode,
+    busyNode,
+    busyLabelNode,
+    arrivalMs: 0,
+    timeWrap,
+    timeNode,
+    waitNode,
+  };
+
+  // Open through the entry rather than the email captured here: once a reply
+  // updates the card, the newest email of the conversation is the one to show.
+  openBtn.addEventListener("click", () => openEmailInNewForm(entry.email));
 
   const xBtn = el("button", "✕", {
     class: "email-card-x",
@@ -148,69 +302,98 @@ function addEmailCard(email) {
   });
   xBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    markEmailIrrelevant(email);
+    markEmailIrrelevant(entry);
   });
+  entry.xBtn = xBtn;
 
   card.appendChild(openBtn);
   card.appendChild(xBtn);
 
-  emailCards.set(email.messageId, {
-    email,
-    node: card,
-    openBtn,
-    xBtn,
-    busyNode,
-    busyLabelNode,
-    arrivalMs,
-    timeWrap,
-    timeNode,
-    waitNode,
-  });
-  refreshEmailCardAges();
-
-  // If the dashboard is the active view, re-render it in place.
-  if (activeNav && activeNav.load === workerDashboard) {
-    Content.replaceChildren(
-      el("h2", t("unreadEmails")),
-      emailCardsContainer()
-    );
-  }
+  emailCards.set(key, entry);
+  updateEmailCard(entry);
+  return entry;
 }
 
-function removeEmailCard(messageId) {
-  if (!messageId || !emailCards.delete(messageId)) return;
-  if (activeNav && activeNav.load === workerDashboard) {
-    Content.replaceChildren(
-      el("h2", t("unreadEmails")),
-      emailCardsContainer()
-    );
-  }
-}
-
-function markEmailIrrelevant(email) {
+function addEmailCard(email) {
   if (!email || !email.messageId) return;
+  // Its policy is already queued in the outbox (saved offline, waiting to be
+  // sent): the email is handled, so it must not be offered again.
+  if (outboxEmailIds().has(email.messageId)) return;
+
+  const existing = findEmailCardFor(email);
+  if (existing) {
+    // list_emails repeats every known email; nothing changed for this one.
+    if (existing.emails.some((item) => item.messageId === email.messageId)) {
+      return;
+    }
+    // A reply to a conversation already on the dashboard: keep its one card
+    // and refresh the reply colour / badge / title instead of adding a second.
+    existing.emails.push(email);
+    updateEmailCard(existing);
+    renderEmailCardsIfVisible();
+    return;
+  }
+
+  createEmailCard(emailThreadKey(email), email);
+  renderEmailCardsIfVisible();
+}
+
+function removeEmailCard(id) {
+  if (!id) return;
+  const entry = emailCards.get(id) || findEmailCardByMessageId(id);
+  if (!entry) return;
+  emailCards.delete(entry.key);
+  renderEmailCardsIfVisible();
+}
+
+// Drop one email (completed, dismissed or read outside the app) from its
+// conversation. The card stays while another email of the thread is still
+// unread and is rebuilt around the newest remaining one.
+function removeEmailMessage(messageId) {
+  const entry = findEmailCardByMessageId(messageId);
+  if (!entry) return;
+  entry.emails = entry.emails.filter(
+    (email) => email.messageId !== messageId
+  );
+  if (entry.emails.length === 0) {
+    emailCards.delete(entry.key);
+  } else {
+    updateEmailCard(entry);
+  }
+  renderEmailCardsIfVisible();
+}
+
+function markEmailIrrelevant(entry) {
+  const emails = entry && Array.isArray(entry.emails) ? entry.emails : [];
+  if (emails.length === 0) return;
   if (!confirm(t("email.irrelevantConfirm"))) return;
 
   // Dismiss on the server. The server removes the email from the shared pool
   // and marks the Gmail message read, so it disappears for every worker and
-  // never re-surfaces on a later poll or server restart.
+  // never re-surfaces on a later poll or server restart. Every email of the
+  // conversation is dismissed - otherwise the older ones would come back as a
+  // new card after the newest was removed.
   try {
     if (!emailSocket) throw new Error(t("emailConnUnavailable"));
-    if (!emailSocket.isReady()) {
-      queueDurableEmailWsAction({
-        type: "mark_irrelevant",
-        messageId: email.messageId,
-      });
-      emailSocket.ensureConnected();
-    } else {
-      emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+    const ready = emailSocket.isReady();
+    for (const email of emails) {
+      if (!email.messageId) continue;
+      if (ready) {
+        emailSocket.send({ type: "mark_irrelevant", messageId: email.messageId });
+      } else {
+        queueDurableEmailWsAction({
+          type: "mark_irrelevant",
+          messageId: email.messageId,
+        });
+      }
     }
+    if (!ready) emailSocket.ensureConnected();
   } catch (err) {
     // Keep the card: the server never received the dismissal.
     reportError("Failed to mark email as irrelevant", err, "emailSendFailed");
     return;
   }
-  removeEmailCard(email.messageId);
+  removeEmailCard(entry.key);
   toast(t("email.irrelevantMarked"), "success");
 }
 
@@ -263,7 +446,7 @@ function logClaimResponseTime(messageId, ok, ms) {
 }
 
 function setCardBusy(messageId, busy) {
-  const entry = emailCards.get(messageId);
+  const entry = findEmailCardByMessageId(messageId);
   if (entry) {
     entry.node.classList.toggle("email-card-busy", busy);
     entry.node.setAttribute("aria-busy", String(Boolean(busy)));
@@ -309,11 +492,22 @@ function openEmailInNewForm(email) {
   // A claim is already in flight; ignore repeated clicks until it resolves.
   if (pendingClaimEmail) return;
 
+  // The card is a whole conversation, so remember every email of it: the form
+  // completes them all when the policy is saved, otherwise the older emails
+  // would come back as a card after the newest one is marked read.
+  const entry = findEmailCardByMessageId(email && email.messageId);
+  const claimEmail = entry
+    ? {
+        ...email,
+        threadMessageIds: entry.emails.map((item) => item.messageId),
+      }
+    : email;
+
   // Only navigate once the server confirms this client won the claim. If
   // another worker clicked the same card first, we show an error instead.
-  pendingClaimEmail = email;
+  pendingClaimEmail = claimEmail;
   pendingClaimSent = false;
-  setCardBusy(email.messageId, true);
+  setCardBusy(claimEmail.messageId, true);
   claimSentAt = performance.now();
 
   // Remember when this email card was clicked. The AddInsurance form uses it as
@@ -334,11 +528,14 @@ function openEmailInNewForm(email) {
   }
 
   claimTimer = setTimeout(() => {
-    if (!pendingClaimEmail || pendingClaimEmail.messageId !== email.messageId) {
+    if (
+      !pendingClaimEmail ||
+      pendingClaimEmail.messageId !== claimEmail.messageId
+    ) {
       return;
     }
     console.error(
-      `No claim_email response for "${email.messageId}" within ` +
+      `No claim_email response for "${claimEmail.messageId}" within ` +
         `${CLAIM_TIMEOUT_MS} ms; the connection looks dead, reconnecting`
     );
     clearPendingClaim();
@@ -446,24 +643,31 @@ function setupBulinsHandlers() {
 
 function reconcileEmailCards(serverEmails) {
   const seen = new Set();
+  // Emails whose policy is already waiting in the outbox are handled: they
+  // must not be offered again, and must not keep a card alive on their own.
+  const handled = outboxEmailIds();
   for (const email of serverEmails || []) {
-    if (email && email.messageId) {
-      seen.add(email.messageId);
-      addEmailCard(email);
+    if (!email || !email.messageId || handled.has(email.messageId)) continue;
+    seen.add(email.messageId);
+    addEmailCard(email);
+  }
+  // Drop any email the server no longer lists (claimed/completed while this
+  // client was disconnected). A card left behind here would otherwise become
+  // unclickable: the server no longer has the email to claim it. A card whose
+  // remaining emails are still unread stays, rebuilt around the newest one.
+  for (const entry of Array.from(emailCards.values())) {
+    const remaining = entry.emails.filter((email) =>
+      seen.has(email.messageId)
+    );
+    if (remaining.length === entry.emails.length) continue;
+    if (remaining.length === 0) {
+      emailCards.delete(entry.key);
+    } else {
+      entry.emails = remaining;
+      updateEmailCard(entry);
     }
   }
-  // Drop any card the server no longer lists (claimed/completed while this
-  // client was disconnected). A card left behind here would otherwise become
-  // unclickable: the server no longer has the email to claim it.
-  for (const messageId of Array.from(emailCards.keys())) {
-    if (!seen.has(messageId)) emailCards.delete(messageId);
-  }
-  if (activeNav && activeNav.load === workerDashboard) {
-    Content.replaceChildren(
-      el("h2", t("unreadEmails")),
-      emailCardsContainer()
-    );
-  }
+  renderEmailCardsIfVisible();
 }
 
 function setupEmailSocket() {
@@ -527,10 +731,11 @@ function setupEmailSocket() {
       }
     },
     email_claimed: (msg) => removeEmailCard(msg.messageId),
-    email_completed: (msg) => removeEmailCard(msg.messageId),
-    email_irrelevant: (msg) => removeEmailCard(msg.messageId),
-    // The original Gmail message was read outside the app: drop its card.
-    email_read: (msg) => removeEmailCard(msg.messageId),
+    email_completed: (msg) => removeEmailMessage(msg.messageId),
+    email_irrelevant: (msg) => removeEmailMessage(msg.messageId),
+    // The original Gmail message was read outside the app: drop it from its
+    // card; a still-unread reply in the same conversation keeps the card alive.
+    email_read: (msg) => removeEmailMessage(msg.messageId),
     // The reply to the broker's email could not be sent immediately: show
     // whether it is being re-tried automatically or failed for good.
     email_send_failed: handleEmailSendFailed,
@@ -548,7 +753,7 @@ function setupEmailSocket() {
   // Queue changes: hide cards of newly queued email policies and complete the
   // emails of policies the outbox just delivered.
   onOutboxState(() => {
-    for (const messageId of outboxEmailIds()) removeEmailCard(messageId);
+    for (const messageId of outboxEmailIds()) removeEmailMessage(messageId);
     syncOutboxEmails(emailSocket);
   });
 }

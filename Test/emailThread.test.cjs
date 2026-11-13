@@ -25,6 +25,11 @@ vm.runInContext(
   { filename: "emailThread.js" }
 );
 const { splitEmailThread, emailThreadInfo } = CTX;
+const {
+  emailThreadKey,
+  emailSubjectKey,
+  emailNormalizeSubject,
+} = CTX;
 
 // htmlToRoughText is private to the server module: cut it out of the file.
 const processSrc = fs.readFileSync(serverFile("Mail", "ProcessEmail.js"), "utf8");
@@ -247,6 +252,89 @@ check("htmlToRoughText keeps line breaks and blockquote levels", () => {
 
 check("htmlToRoughText decodes entities without double-decoding", () => {
   eq(htmlToRoughText("<p>a&nbsp;&lt;b&gt; &amp;lt;</p>"), "a <b> &lt;", "text");
+});
+
+// --- grouping replies under one card ----------------------------------------
+check("emails of the same Gmail thread share one card key", () => {
+  const original = {
+    messageId: "m1",
+    threadId: "t1",
+    subject: "Policy CA1234AB",
+    from: "Broker <broker@example.com>",
+  };
+  const reply = {
+    messageId: "m2",
+    threadId: "t1",
+    subject: "Re: Policy CA1234AB",
+    from: "Broker <broker@example.com>",
+  };
+  eq(emailThreadKey(reply), emailThreadKey(original), "same thread");
+});
+
+check("different Gmail threads with the same subject stay separate", () => {
+  const first = {
+    messageId: "m1",
+    threadId: "t1",
+    subject: "Policy",
+    from: "Broker <broker@example.com>",
+  };
+  const second = {
+    messageId: "m2",
+    threadId: "t2",
+    subject: "Re: Policy",
+    from: "Broker <broker@example.com>",
+  };
+  const a = emailThreadKey(first);
+  const b = emailThreadKey(second);
+  eq(a !== b, true, "different keys");
+});
+
+check("emails without a thread id group by subject and sender", () => {
+  const original = {
+    messageId: "m1",
+    subject: "Policy CA1234AB",
+    from: "Broker <Broker@Example.com>",
+  };
+  const reply = {
+    messageId: "m2",
+    subject: "RE[2]: Policy CA1234AB",
+    from: "Broker <broker@example.com>",
+  };
+  eq(emailThreadKey(reply), emailThreadKey(original), "same subject key");
+});
+
+check("different senders with the same subject are not grouped", () => {
+  const first = { messageId: "m1", subject: "Policy", from: "a@example.com" };
+  const second = {
+    messageId: "m2",
+    subject: "Re: Policy",
+    from: "b@example.com",
+  };
+  eq(emailThreadKey(first) !== emailThreadKey(second), true, "different keys");
+});
+
+check("reply and forward prefixes are stripped in every language", () => {
+  eq(emailNormalizeSubject("Re: RE[2]: Policy"), "policy", "english");
+  eq(emailNormalizeSubject("Отг: Re: Полица"), "полица", "bulgarian");
+  eq(emailNormalizeSubject("Fwd: AW: Konu"), "konu", "turkish");
+  eq(emailNormalizeSubject("Re:   Spaced   Out "), "spaced out", "whitespace");
+});
+
+check("an email without a subject is never grouped", () => {
+  const first = { messageId: "m1", subject: "", from: "a@example.com" };
+  const second = { messageId: "m2", subject: "", from: "a@example.com" };
+  eq(emailSubjectKey(first), "", "subject key");
+  eq(emailThreadKey(first), "message:m1", "first key");
+  eq(emailThreadKey(second), "message:m2", "second key");
+});
+
+check("a subject prefix alone does not leave a groupable subject", () => {
+  eq(emailNormalizeSubject("Re:"), "", "empty after prefix");
+  eq(
+    emailThreadKey({ messageId: "m1", subject: "Re:", from: "a@example.com" }),
+    "message:m1",
+    "key"
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

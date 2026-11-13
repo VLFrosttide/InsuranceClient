@@ -334,3 +334,77 @@ function emailThreadInfo(email) {
   return { kind, segments, count: segments.length };
 }
 
+// ---------------------------------------------------------------------------
+// Grouping replies under one card
+// ---------------------------------------------------------------------------
+// A reply arrives as its own Gmail message, so the dashboard would show it as
+// a second card. These helpers work out which conversation an email belongs to,
+// so the reply can update the existing card instead of adding a new one.
+//
+// Gmail's threadId is the reliable key (the server stores it with every email).
+// When it is missing (e.g. an email restored without it), the subject with the
+// reply / forward prefixes stripped plus the sender address is used instead.
+
+// Remove every leading reply/forward prefix: "Re: RE[2]: Fwd: Policy" -> "Policy".
+function emailStripSubjectPrefixes(subject) {
+  let text = String(subject || "").trim();
+  for (let i = 0; i < EMAIL_MAX_QUOTE_DEPTH; i++) {
+    let stripped = text.replace(EMAIL_REPLY_SUBJECT_RE, "").trim();
+    if (stripped === text) {
+      stripped = text.replace(EMAIL_FORWARD_SUBJECT_RE, "").trim();
+    }
+    if (stripped === text) break;
+    text = stripped;
+  }
+  return text;
+}
+
+// Lower-case, whitespace-collapsed subject without its Re:/Fwd: prefixes.
+function emailNormalizeSubject(subject) {
+  return emailStripSubjectPrefixes(subject)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+// The address inside "Name <address@example.com>" (lower-cased). Display names
+// without an address are compared as written, so the key never comes out empty
+// just because the sender has no angle brackets.
+function emailSenderAddress(from) {
+  const text = String(from || "").trim();
+  if (!text) return "";
+  const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(text);
+  if (angle) return angle[1].trim().toLowerCase();
+  const bare = /[^<>\s]+@[^<>\s]+/.exec(text);
+  return (bare ? bare[0] : text).trim().toLowerCase();
+}
+
+/**
+ * Subject + sender identity of an email: the fallback conversation key.
+ *
+ * @param {{subject?: string, from?: string}} email
+ * @returns {string} "" when the email has no usable subject or sender.
+ */
+function emailSubjectKey(email) {
+  const subject = emailNormalizeSubject(email && email.subject);
+  const sender = emailSenderAddress(email && email.from);
+  if (!subject || !sender) return "";
+  return `${subject}|${sender}`;
+}
+
+/**
+ * The conversation an email belongs to: its Gmail thread when known, otherwise
+ * its subject + sender, otherwise the message itself (never grouped).
+ *
+ * @param {{threadId?: string, subject?: string, from?: string,
+ *   messageId?: string}} email
+ * @returns {string}
+ */
+function emailThreadKey(email) {
+  const threadId = String((email && email.threadId) || "").trim();
+  if (threadId) return `thread:${threadId}`;
+  const subjectKey = emailSubjectKey(email);
+  if (subjectKey) return `subject:${subjectKey}`;
+  return `message:${String((email && email.messageId) || "")}`;
+}
+
