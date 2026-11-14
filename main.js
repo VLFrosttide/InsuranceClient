@@ -641,8 +641,9 @@ function StopDesktopPdfWatch() {
 // Give up loading a document for printing after this long (did-finish-load
 // never firing otherwise wedges the print request).
 const PrintLoadTimeoutMs = 20000;
-// Settle time after the document finishes loading before print is issued;
-// printing too early can produce blank pages.
+// Settle time used when the document cannot tell us it is ready (non-PDF files,
+// or if the internal readiness event below is unavailable). Printing too early
+// can produce blank pages.
 const PrintRenderDelayMs = 500;
 // Give up waiting for webContents.print() to finish after this long. On some
 // Electron versions printing a loaded PDF never fires the print callback, which
@@ -650,6 +651,179 @@ const PrintRenderDelayMs = 500;
 // "Print" window open forever. Generous because the native dialog is
 // interactive; the timer only fires when nothing settles the print in time.
 const PrintResultTimeoutMs = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Blank-page ("white paper") protection
+// ---------------------------------------------------------------------------
+// Chromium's PDF viewer keeps loading its content AFTER did-finish-load: the
+// page reports "loaded" while the viewer is still fetching/rendering the
+// document, and printing in that window prints blank pages. That is the root
+// cause of the Electron printing white-pages bug (electron/electron#30947,
+// upstream-fixed for Electron 32+ in #43309, but the race is still there).
+//
+// Measured on Electron 34 with a small PDF:
+//   - did-finish-load fires at ~290 ms,
+//   - "-pdf-ready-to-print" fires at ~810 ms (0.5-2 s later for bigger PDFs),
+//   - a snapshot taken at did-finish-load is exactly the size of a blank page.
+// The old fixed 500 ms delay therefore sat right on the edge and often printed
+// before the viewer was ready.
+//
+// The viewer's internal "-pdf-ready-to-print" event is the reliable signal; the
+// snapshot check below guarantees that a blank page is never sent to the
+// printer even if that event is missed or removed by a future Electron.
+
+// Let the first frame paint after the document reports it is ready.
+const PrintSettleAfterReadyMs = 150;
+// How long to wait for Chromium to report that a loaded PDF is printable.
+const PrintPdfReadyTimeoutMs = 10000;
+// How long to wait for the printable image to finish loading.
+const PrintImageDecodeTimeoutMs = 15000;
+// How often the image readiness poll runs while it is still loading.
+const PrintImagePollIntervalMs = 100;
+// A blank printed page snapshots to ~0.73-0.8 KB (measured on Electron 34), so
+// anything below 1 KB means Chromium rendered no text, image or shape at all.
+// Real policies (text, scans) snapshot to tens of KB or more, so they are never
+// affected.
+const PrintBlankSnapshotBytes = 1000;
+// Snapshot retries while the document is still blank (the viewer may still be
+// rendering) and the per-attempt backoff.
+const PrintSnapshotAttempts = 5;
+const PrintSnapshotRetryMs = 500;
+// One snapshot can take a while for a big scanned policy; don't wait forever.
+const PrintSnapshotTimeoutMs = 20000;
+const printDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Reject if `promise` does not settle within `ms` (used to bound the snapshot
+// calls, which have no timeout of their own).
+function WithPrintTimeout(promise, ms, message) {
+  let timer = null;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+// Watches Chromium's internal "-pdf-ready-to-print" event, which fires when the
+// PDF viewer has loaded its content and is ready to print. The event exists in
+// the Electron versions this app ships on but is undocumented, so listening is
+// best-effort and every wait has a timeout.
+function PdfReadyWatcher(webContents) {
+  let ready = false;
+  const waiters = new Set();
+
+  const onReady = () => {
+    ready = true;
+    for (const resolve of waiters) resolve(true);
+    waiters.clear();
+  };
+
+  try {
+    webContents.on("-pdf-ready-to-print", onReady);
+  } catch (err) {
+    console.error("[Print] Could not listen for -pdf-ready-to-print:", err);
+  }
+
+  return {
+    // Resolves true when the viewer becomes ready, false on timeout.
+    wait(timeoutMs) {
+      if (ready) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          waiters.delete(done);
+          resolve(true);
+        };
+        const timer = setTimeout(() => {
+          waiters.delete(done);
+          resolve(false);
+        }, timeoutMs);
+        waiters.add(done);
+      });
+    },
+    dispose() {
+      try {
+        webContents.removeListener("-pdf-ready-to-print", onReady);
+      } catch {
+        // The window is already gone.
+      }
+    },
+  };
+}
+
+// Snapshot the document in memory (printToPDF opens no dialog) and check that it
+// actually contains something. Returns "ready" when content is present, "blank"
+// when every snapshot was an empty page, and "unknown" when snapshotting itself
+// failed — in that case the caller prints anyway, exactly as before.
+async function CheckPrintableContent(webContents, logTag, filename) {
+  let snapshots = 0;
+
+  for (let attempt = 1; attempt <= PrintSnapshotAttempts; attempt += 1) {
+    try {
+      const pdf = await WithPrintTimeout(
+        webContents.printToPDF({}),
+        PrintSnapshotTimeoutMs,
+        "printToPDF timed out."
+      );
+      snapshots += 1;
+      const bytes = pdf ? pdf.length : 0;
+      if (bytes >= PrintBlankSnapshotBytes) return { state: "ready", bytes };
+      console.warn(
+        `${logTag} "${filename}" still renders as a blank page ` +
+          `(${bytes} bytes, attempt ${attempt}/${PrintSnapshotAttempts}); ` +
+          `waiting for the document to finish rendering.`
+      );
+    } catch (err) {
+      console.error(
+        `${logTag} Blank-page check failed for "${filename}" ` +
+          `(attempt ${attempt}/${PrintSnapshotAttempts}).`,
+        err
+      );
+    }
+    if (attempt < PrintSnapshotAttempts) {
+      await printDelay(PrintSnapshotRetryMs * attempt);
+    }
+  }
+
+  return { state: snapshots > 0 ? "blank" : "unknown", bytes: 0 };
+}
+
+// Resolve once the <img> in the print page has finished loading. Large scans
+// used to print white when print() ran before the image was ready.
+//
+// Polls <img>.complete from the main process instead of awaiting img.decode():
+// awaiting a Promise returned by executeJavaScript is subject to renderer task
+// throttling and can stall for seconds (or forever) if the window is background.
+// Returns "ok", "error" (unrenderable image), "missing" or "timeout".
+async function WaitForImageDecode(webContents) {
+  const deadline = Date.now() + PrintImageDecodeTimeoutMs;
+  let lastError = null;
+
+  do {
+    try {
+      const state = await webContents.executeJavaScript(
+        `(() => {
+          const img = document.images && document.images[0];
+          if (!img) return "missing";
+          if (!img.complete) return "loading";
+          return img.naturalWidth > 0 && img.naturalHeight > 0 ? "ok" : "error";
+        })()`,
+        true
+      );
+      if (state !== "loading") return state;
+    } catch (err) {
+      lastError = err;
+    }
+    await printDelay(PrintImagePollIntervalMs);
+  } while (Date.now() < deadline);
+
+  console.error(
+    "[PrintImage] Timed out waiting for the image to load.",
+    lastError || "(still loading)"
+  );
+  return "timeout";
+}
 
 let DesktopPdfScanning = false;
 
@@ -890,10 +1064,13 @@ async function drainDesktopPrintQueue() {
 // Print a document (usually a PDF, but any file Chromium can render) to the
 // system printer. Mirrors printImageDataUrl: the bytes are written to a temp
 // file, loaded in a visible window and handed to webContents.print(), which
-// opens the native print dialog. A settle delay after the page loads lets the
-// viewer finish rendering before the print is issued (printing too early used
-// to produce blank pages), and a load timeout prevents a stalled view from
-// hanging forever.
+// opens the native print dialog.
+//
+// Blank pages happen when print() is issued before Chromium's PDF viewer has
+// actually loaded the document, so the print waits for the viewer's readiness
+// event (not just a fixed delay) and then verifies with an in-memory snapshot
+// that the document really has printable content. A load timeout prevents a
+// stalled view from hanging forever.
 //
 // `ext` is the temp-file extension (default ".pdf") so the same helper also
 // prints other attachments, and `logTag` prefixes the log lines so the Desktop
@@ -904,12 +1081,17 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
     let settled = false;
     let loadTimer = null;
     let printTimer = null;
+    let pdfReady = null;
+    // did-finish-load can fire more than once (reload/navigation); only prepare
+    // and print one job per window.
+    let preparingPrint = false;
 
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (loadTimer) clearTimeout(loadTimer);
       if (printTimer) clearTimeout(printTimer);
+      if (pdfReady) pdfReady.dispose();
       try {
         if (printWin && !printWin.isDestroyed()) printWin.close();
       } catch (err) {
@@ -926,13 +1108,19 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
     let printWin;
     try {
       // A real, visible window: Chromium renders the PDF viewer on screen, which
-      // avoids the blank-page issues seen with hidden windows.
+      // avoids the blank-page issues seen with hidden windows. Background
+      // throttling is disabled so a window that loses focus (or is occluded)
+      // keeps rendering while the print is being prepared.
       printWin = new BrowserWindow({
         width: 900,
         height: 700,
         center: true,
         title: "Print",
-        webPreferences: { sandbox: true, contextIsolation: true },
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          backgroundThrottling: false,
+        },
       });
     } catch (err) {
       console.error(`${logTag} Failed to create print window for "${filename}".`, err);
@@ -946,6 +1134,11 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
     printWin.show();
     printWin.focus();
     printWin.webContents.focus();
+
+    // Listen from the start: the viewer may report readiness before
+    // did-finish-load fires. Only PDFs emit it; other documents fall back to a
+    // settle delay (see below).
+    pdfReady = PdfReadyWatcher(printWin.webContents);
 
     // Fail-safe: if the PDF never finishes loading (stalled viewer, missing
     // plugin, ...), give up after a bounded wait instead of hanging forever.
@@ -963,10 +1156,50 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
 
     printWin.webContents.on("did-finish-load", () => {
       clearTimeout(loadTimer);
-      // Give the PDF viewer a moment to finish rendering, then print.
-      setTimeout(() => {
-        if (settled) return;
+      if (preparingPrint) return;
+      preparingPrint = true;
+      (async () => {
         try {
+          // A loaded PDF keeps rendering after did-finish-load. Wait for the
+          // viewer to report that its content is printable, then let the last
+          // paint settle; printing in between prints a blank page.
+          const isPdf = String(ext || "").toLowerCase() === ".pdf";
+          if (isPdf) {
+            const ready = await pdfReady.wait(PrintPdfReadyTimeoutMs);
+            if (ready) {
+              await printDelay(PrintSettleAfterReadyMs);
+            } else {
+              console.warn(
+                `${logTag} "${filename}" did not report it was ready to print` +
+                  ` within ${PrintPdfReadyTimeoutMs} ms; falling back to a settle delay.`
+              );
+              await printDelay(PrintRenderDelayMs);
+            }
+          } else {
+            await printDelay(PrintRenderDelayMs);
+          }
+          if (settled) return;
+
+          // Never send white paper to the printer: snapshot the document and
+          // keep waiting while Chromium still renders an empty page.
+          const check = await CheckPrintableContent(printWin.webContents, logTag, filename);
+          if (settled) return;
+          if (check.state === "blank") {
+            console.error(
+              `${logTag} Refusing to print "${filename}": Chromium rendered only blank pages.`
+            );
+            finish({
+              ok: false,
+              error: "The document did not render (blank page), so nothing was printed.",
+            });
+            return;
+          }
+          if (check.state === "unknown") {
+            console.warn(
+              `${logTag} Could not verify the print output of "${filename}"; printing anyway.`
+            );
+          }
+
           // Focus again right before the native print dialog opens so it (and
           // the dialog) sits in the foreground rather than behind other windows.
           printWin.focus();
@@ -1017,7 +1250,7 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
           console.error(`${logTag} Exception printing "${filename}".`, err);
           finish({ ok: false, error: String(err) });
         }
-      }, PrintRenderDelayMs);
+      })();
     });
 
     const dir = path.join(app.getPath("temp"), "insurance-print");
@@ -1186,7 +1419,13 @@ function printImageDataUrl(dataUrl) {
       height: 700,
       center: true,
       title: "Print",
-      webPreferences: { sandbox: true, contextIsolation: true },
+      // Background throttling off: an unfocused/occluded print window must keep
+      // rendering the page while the print is prepared, or the output is blank.
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        backgroundThrottling: false,
+      },
     });
   } catch (err) {
     console.error("[PrintImage] Failed to create the print window.", err);
@@ -1205,6 +1444,8 @@ function printImageDataUrl(dataUrl) {
     let settled = false;
     let loadTimer = null;
     let printTimer = null;
+    // Only prepare and print one job even if did-finish-load fires again.
+    let preparingPrint = false;
 
     // Resolve exactly once and clean up (close the window + remove temp file).
     const finish = (result) => {
@@ -1233,10 +1474,46 @@ function printImageDataUrl(dataUrl) {
 
     printWin.webContents.on("did-finish-load", () => {
       clearTimeout(loadTimer);
-      // Give the image a moment to finish rendering, then print.
-      setTimeout(() => {
-        if (settled) return;
+      if (preparingPrint) return;
+      preparingPrint = true;
+      (async () => {
         try {
+          // Printing before the image decodes produced white pages for large
+          // scans, so wait for the <img> to be fully decoded first.
+          const imageState = await WaitForImageDecode(printWin.webContents);
+          if (settled) return;
+          if (imageState === "error" || imageState === "missing") {
+            console.error(`[PrintImage] The image could not be rendered (${imageState}).`);
+            finish({ ok: false, error: "The image could not be rendered for printing." });
+            return;
+          }
+          if (imageState === "timeout") {
+            console.warn(
+              "[PrintImage] The image did not finish decoding in time; continuing."
+            );
+          }
+          await printDelay(PrintSettleAfterReadyMs);
+          if (settled) return;
+
+          // Never send a white page to the printer.
+          const check = await CheckPrintableContent(
+            printWin.webContents,
+            "[PrintImage]",
+            "image"
+          );
+          if (settled) return;
+          if (check.state === "blank") {
+            console.error("[PrintImage] Refusing to print: the page rendered blank.");
+            finish({
+              ok: false,
+              error: "The image did not render (blank page), so nothing was printed.",
+            });
+            return;
+          }
+          if (check.state === "unknown") {
+            console.warn("[PrintImage] Could not verify the print output; printing anyway.");
+          }
+
           // Focus again right before the native print dialog opens so it (and
           // the dialog) sits in the foreground rather than behind other windows.
           printWin.focus();
@@ -1286,7 +1563,7 @@ function printImageDataUrl(dataUrl) {
           console.error("[PrintImage] Exception while calling print().", err);
           finish({ ok: false, error: String(err) });
         }
-      }, PrintRenderDelayMs);
+      })();
     });
 
     printWin.webContents.on("did-fail-load", (e, errorCode, errorDescription) => {
