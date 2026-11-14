@@ -24,6 +24,9 @@ function setMessage(text, isError) {
   if (!DisplayMsg) return;
   DisplayMsg.textContent = text;
   DisplayMsg.className = "msg " + (isError ? "error" : "success");
+  // The diagnosis of the previous failure lives in the tooltip; a new message
+  // must not inherit it.
+  DisplayMsg.title = "";
   if (!text) DisplayMsg.className = "msg";
 }
 
@@ -52,66 +55,226 @@ if (LangButton) {
 }
 syncLangButton();
 
-// Login requests are retried a few times with a per-attempt timeout. A login
-// is idempotent from the client's point of view (the server deletes any prior
-// token before issuing a new one), so a transient network blip or server 5xx —
-// e.g. the daily 13:00-17:00 window — auto-recovers instead of showing a bare
-// "Server Error" and requiring the worker to retry by hand.
+// Login requests are retried a few times, each with a deadline that covers the
+// WHOLE exchange: sending the credentials, receiving the headers AND reading the
+// body. Reading the body outside the deadline was a real trap: the headers
+// arrived, the body stalled on a bad link, and the form sat frozen with a
+// spinner that never timed out, never retried and never showed an error -
+// "the program just hangs at login" - while the server had already accepted the
+// login.
 //
-// onProgress({ attempt, total, retrying }) is called before each retry and again
-// when the retry actually starts, so the caller can show
-// "Server unreachable — retrying… (2/3)" in the attempt's phase line.
-const LOGIN_TIMEOUT_MS = 15000;
+// The server rotates the token on every successful /logme (it deletes the prior
+// one), so a retry is only safe when we store the token of the LAST answer.
+// `requestId` travels with every attempt of one login so the server can answer
+// a repeated attempt with the same session instead of rotating the token again
+// (the client half of the idempotency contract; harmless if the server ignores
+// it).
+//
+// onProgress({ attempt, total, retrying, timedOut }) is called before each retry
+// and again when the retry actually starts, so the caller can show
+// "Server unreachable — retrying… (2/3)" (or "...the server is slow...") in the
+// attempt's phase line.
+const LOGIN_TIMEOUT_MS = 30000;
 const LOGIN_MAX_ATTEMPTS = 3;
+const LOGIN_RETRY_BASE_MS = 1500;
+
+// One id per login attempt sequence (all retries share it).
+function makeLoginRequestId() {
+  const random = Math.floor(Math.random() * 0xffffffff).toString(16);
+  return `login-${Date.now().toString(36)}-${random}`;
+}
+
+function describeLoginError(err) {
+  if (!err) return "unknown error";
+  if (err.timedOut) return `no answer within ${Math.round(LOGIN_TIMEOUT_MS / 1000)} s`;
+  if (err.name === "AbortError") return "aborted";
+  if (err instanceof TypeError) return "network-level failure (fetch rejected)";
+  return err.message || String(err);
+}
+
+function logLoginAttempt(requestId, attempt, status, durationMs, err) {
+  const line =
+    `${requestId} attempt ${attempt}/${LOGIN_MAX_ATTEMPTS}: ` +
+    (status != null ? `HTTP ${status}` : describeLoginError(err)) +
+    `, ${durationMs} ms`;
+  console.warn(`[login] ${line}`);
+  // Persisted by the main process (userData/logs/network.log) so an
+  // intermittent failure leaves a trace a worker can hand over.
+  if (typeof logEvent === "function") logEvent("login", line);
+}
+
+function loginTimeoutError() {
+  const err = new Error(`No answer within ${Math.round(LOGIN_TIMEOUT_MS / 1000)} s`);
+  err.timedOut = true;
+  return err;
+}
+
+// Read the answer as text first: a captive portal, a proxy or the hosting
+// firewall answers with HTML, and `res.json()` alone cannot tell that apart from
+// a broken reply. Falls back to json() for a Response that has no text().
+async function readLoginAnswer(res) {
+  if (typeof res.text === "function") {
+    const raw = await res.text();
+    try {
+      return { raw, data: JSON.parse(raw) };
+    } catch {
+      return { raw, data: null };
+    }
+  }
+  try {
+    return { raw: "", data: await res.json() };
+  } catch {
+    return { raw: "", data: null };
+  }
+}
 
 async function loginFetch(username, password, branch, onProgress) {
   const report = typeof onProgress === "function" ? onProgress : () => {};
-  let lastNetworkError = null;
+  const requestId = makeLoginRequestId();
+  let lastError = null;
+
   for (let attempt = 0; attempt < LOGIN_MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
-      report({ attempt: attempt + 1, total: LOGIN_MAX_ATTEMPTS, retrying: true });
-      await new Promise((r) => setTimeout(r, 800 * Math.pow(2, attempt - 1)));
+      report({
+        attempt: attempt + 1,
+        total: LOGIN_MAX_ATTEMPTS,
+        retrying: true,
+        timedOut: !!(lastError && lastError.timedOut),
+      });
+      await new Promise((r) =>
+        setTimeout(r, LOGIN_RETRY_BASE_MS * Math.pow(2, attempt - 1))
+      );
       // The new request starts now: back to "contacting the server" so the
       // "waiting for the server" hint is armed again for this attempt.
       report({ attempt: attempt + 1, total: LOGIN_MAX_ATTEMPTS, retrying: false });
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS);
+    let timer = null;
+    // The deadline is a promise, not just an abort: a fetch that ignores the
+    // signal (or a body that never ends) must still end the attempt.
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+        reject(loginTimeoutError());
+      }, LOGIN_TIMEOUT_MS);
+    });
+    deadline.catch(() => {});
+    const startedAt = Date.now();
+
     try {
-      const res = await fetch(`${API_BASE}/logme`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, branch: branch || "" }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const data = await res.json().catch(() => ({}));
-      return { res, data };
+      const res = await Promise.race([
+        fetch(`${API_BASE}/logme`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            password,
+            branch: branch || "",
+            requestId,
+          }),
+          signal: controller.signal,
+        }),
+        deadline,
+      ]);
+      const answer = await Promise.race([readLoginAnswer(res), deadline]);
+      logLoginAttempt(requestId, attempt + 1, res.status, Date.now() - startedAt, null);
+      return { res, data: answer.data, raw: answer.raw };
     } catch (err) {
-      clearTimeout(timer);
+      logLoginAttempt(requestId, attempt + 1, null, Date.now() - startedAt, err);
       // Retry only transient failures: timeouts and network-level errors.
-      if (err.name === "AbortError" || err instanceof TypeError) {
-        lastNetworkError = err;
+      if (err.timedOut || err.name === "AbortError" || err instanceof TypeError) {
+        lastError = err;
         continue;
       }
       throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
-  throw lastNetworkError || new Error("Login request failed");
+  throw lastError || new Error("Login request failed");
+}
+
+// An answer that is not ours: a captive portal, a proxy, or the hosting
+// firewall. Returns "" when the answer came from the API (JSON), so callers can
+// fall back to the normal error handling.
+function describeBlockedAnswer(res, raw) {
+  const body = String(raw || "").trim();
+  if (!body || body.charAt(0) === "{") return "";
+  const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body);
+  const title = titleMatch ? titleMatch[1].replace(/\s+/g, " ").trim() : "";
+  return `${t("blockedBeforeServer")} (HTTP ${res.status}${title ? ` - ${title}` : ""})`;
+}
+
+// The server refuses a login when the submitted branch is disabled or unknown
+// ("Branch is disabled" / "Branch not found"). That needs a fresh branch list,
+// not another password attempt - and it is why switching branches used to be the
+// only way in on a slow link.
+function isBranchRejection(data) {
+  const message = String((data && data.error) || "");
+  return /branch/i.test(message) && /(disabled|not found|invalid|unknown)/i.test(message);
+}
+
+// Ask the main process which stage of the connection is actually slow (DNS,
+// TCP, TLS or the wait for the first byte). Runs only after a login has already
+// failed, so it never delays the attempt itself; the result is logged and shown
+// as the tooltip of the message area. This is what separates "the server is
+// down" from "this network is slow or blocking us", which need different fixes.
+async function explainLoginFailure(timedOut) {
+  if (!window.bridge || typeof window.bridge.DiagnoseServer !== "function") return;
+  let summary = null;
+  try {
+    summary = await window.bridge.DiagnoseServer();
+  } catch (err) {
+    console.error("Server diagnosis failed:", err);
+    return;
+  }
+  if (!summary) return;
+  const detail = describeDiagnosis(summary);
+  console.warn("[login] server diagnosis:", summary, "->", detail);
+  logEvent("login", `diagnosis (${timedOut ? "timeout" : "no answer"}): ${detail}`);
+  // Long text belongs in the tooltip: the message area is small.
+  if (DisplayMsg) DisplayMsg.title = detail;
+}
+
+function describeDiagnosis(d) {
+  if (!d) return "";
+  if (!d.ok) {
+    if (d.stage === "dns") return `DNS lookup failed (${d.error || "unknown"})`;
+    if (d.stage === "connect")
+      return `Could not open a connection (${d.error || "unknown"})`;
+    if (d.stage === "tls") return `TLS handshake failed (${d.error || "unknown"})`;
+    if (d.stage === "timeout")
+      return `No answer within ${Math.round((d.timeoutMs || 0) / 1000)} s`;
+    return d.error || "The server could not be reached";
+  }
+  const dur = (ms) =>
+    ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+  const parts = [];
+  if (d.dnsMs != null) parts.push(`DNS ${dur(d.dnsMs)}`);
+  if (d.connectMs != null) parts.push(`connect ${dur(d.connectMs)}`);
+  if (d.tlsMs != null) parts.push(`TLS ${dur(d.tlsMs)}`);
+  if (d.ttfbMs != null) parts.push(`first byte ${dur(d.ttfbMs)}`);
+  if (d.status != null) parts.push(`HTTP ${d.status}`);
+  return parts.join(", ");
 }
 
 // ---------------------------------------------------------------------------
 // Login attempt feedback.
 //
-// A login can take a while — up to three 15 s server attempts — and without
-// feedback the worker cannot tell a slow server from a dead window, so they
-// either wait blindly or click Login again. While an attempt is in flight the
-// form is frozen, the button carries a spinner, the phase line under the form
-// says what is happening (and for how long the server has been quiet), and a
-// bar slides along the top edge of the card. Every path out of doLogin() ends in
-// a visible terminal state: green + "Login successful — loading…" while the work
-// page loads, or red + shake + the error message with the form usable again.
+// A login can take a while — up to three 30 s attempts on a link that answers
+// slowly — and without feedback the worker cannot tell a slow server from a dead
+// window, so they either wait blindly or click Login again. While an attempt is
+// in flight the form is frozen, the button carries a spinner, the phase line
+// under the form says what is happening (and for how long the server has been
+// quiet), and a bar slides along the top edge of the card. Every path out of
+// doLogin() ends in a visible terminal state: green + "Login successful —
+// loading…" while the work page loads, or red + shake + the error message with
+// the form usable again.
 // ---------------------------------------------------------------------------
 
 // How long the server may stay silent before the phase line says so explicitly.
@@ -132,10 +295,20 @@ function elapsedSeconds() {
 // context the request itself cannot: when the server is known to be
 // unreachable, "no connection" explains a silent wait better than "signing in".
 function attemptText() {
-  const offline = !!(netMonitor && netMonitor.getState().status === "offline");
+  // Only a confident outage may replace the phase. A single slow or dropped
+  // /ping during a login would otherwise turn a request that is actually being
+  // served into "No connection — the server is unreachable", which is how a
+  // successful login came to look like a refused one.
+  const netState = netMonitor ? netMonitor.getState() : null;
+  const offline = !!(
+    netState &&
+    netState.status === "offline" &&
+    (netState.consecutiveFailures || 0) >= 2
+  );
   switch (phaseKey) {
     case "login.signingIn":
     case "login.retrying":
+    case "login.retryingSlow":
     case "login.waitingServer": {
       if (offline) return t("login.offline");
       const text = t(phaseKey);
@@ -273,13 +446,31 @@ async function doLogin() {
 
   beginBusy("login.signingIn");
   try {
-    const { res, data } = await loginFetch(
+    // The branch is part of the login request and the server refuses a branch
+    // that is disabled or gone. Give the server's list a moment to arrive so the
+    // value comes from the server rather than from the snapshot in index.html -
+    // that snapshot is what used to make a login fail until the worker switched
+    // branches by hand.
+    await waitForBranches(BRANCHES_WAIT_MS);
+    const branch = BranchInput ? BranchInput.value : "";
+    logEvent(
+      "login",
+      `branch "${branch}" (${branchesVerified ? "server list" : "fallback list"})`
+    );
+
+    const { res, data, raw } = await loginFetch(
       UserName.value,
       Pass.value,
-      BranchInput ? BranchInput.value : "",
+      branch,
       (progress) => {
         if (progress.retrying) {
-          setPhase("login.retrying", `${progress.attempt}/${progress.total}`);
+          // A timed-out attempt is a different story from an unreachable host:
+          // on a slow link the first attempt often succeeded on the server and
+          // only the answer was late, so say "slow", not "unreachable".
+          setPhase(
+            progress.timedOut ? "login.retryingSlow" : "login.retrying",
+            `${progress.attempt}/${progress.total}`
+          );
         } else {
           setPhase("login.signingIn");
         }
@@ -289,11 +480,32 @@ async function doLogin() {
     if (!res.ok) {
       // The server answered and refused: a finished attempt, not a slow one.
       endBusy("error");
-      setMessage(translateError(data.error) || t("accessDenied"), true);
+      // A rejected branch means the dropdown is out of date: refresh it now so
+      // the next click can work instead of leaving the worker to guess.
+      if (isBranchRejection(data)) void loadBranches(true, true);
+      // A 4xx/5xx that is not our JSON did not come from the API at all
+      // (hosting firewall, proxy, antivirus). Calling that "Access Denied"
+      // sent workers hunting for a password problem that did not exist.
+      setMessage(
+        (data && data.error ? translateError(data.error) : "") ||
+          describeBlockedAnswer(res, raw) ||
+          t("accessDenied"),
+        true
+      );
       if (Pass) {
         Pass.focus();
         Pass.select();
       }
+      return;
+    }
+
+    // A 2xx that carries no token is not a login: it is a captive portal, a
+    // proxy page or a truncated answer. Storing an empty token here used to
+    // "succeed", open the work page and bounce the worker straight back to this
+    // form, which looks exactly like being refused.
+    if (!data || !data.token) {
+      endBusy("error");
+      setMessage(describeBlockedAnswer(res, raw) || t("login.noToken"), true);
       return;
     }
 
@@ -325,45 +537,173 @@ async function doLogin() {
     }
   } catch (error) {
     console.error("Error: ", error);
-    // A dead end (timeout on every attempt, unexpected failure): back to a
-    // usable form with a red card, never a spinner that runs forever.
+    // A dead end (deadline on every attempt, unexpected failure): back to a
+    // usable form with a red card, never a spinner that runs forever. The
+    // message names what actually happened instead of a bare "Server Error",
+    // and a main-process diagnosis says which stage is slow.
     endBusy("error");
-    setMessage(t("serverError"), true);
+    const timedOut = !!(error && error.timedOut);
+    let message = timedOut ? t("login.timeout") : t("login.networkFailed");
+    // If the branch list never arrived, the branch that was just submitted came
+    // from the build-time snapshot. Say so: it is actionable, and it is the
+    // difference between "wrong password" and "wrong branch".
+    if (branchFetchFailed) message += " " + t("login.branchListUnverified");
+    setMessage(message, true);
+    logEvent("login", `failed: ${describeLoginError(error)}`);
+    void explainLoginFailure(timedOut);
   }
 }
 
 // Populate the branch dropdown from the server so newly created branches appear
-// and disabled branches are excluded. The hardcoded <option> list in index.html
-// stays as an offline fallback; when the server answers, it is replaced here.
-async function loadBranches() {
+// and disabled branches are excluded.
+//
+// This is not cosmetic: the branch is sent with /logme and the server refuses a
+// login for a branch that is disabled or no longer exists. The hardcoded
+// <option> list in index.html is only a build-time snapshot, so falling back to
+// it on a slow link is what made a worker unable to log in until they happened
+// to pick another option. Therefore:
+//   * the list is retried, and retried again when the network comes back;
+//   * a login waits briefly for it, so the submitted branch comes from the
+//     server, not from the snapshot;
+//   * a selection the server no longer offers is announced, never swapped
+//     silently (the branch is also stamped on every policy the worker creates);
+//   * a login refused because of the branch refreshes the list on the spot.
+//
+// It runs next to the login request, on the same link, so it gets a deadline of
+// its own: without one, a stalled connection leaves this request (and its
+// socket) hanging for as long as the operating system allows, competing with
+// the login for a saturated uplink.
+const BRANCHES_TIMEOUT_MS = 8000;
+const BRANCHES_MAX_ATTEMPTS = 3;
+const BRANCHES_RETRY_BASE_MS = 1200;
+// How long a login waits for the list before going ahead with what it has.
+const BRANCHES_WAIT_MS = 3000;
+
+// True once the dropdown holds the server's own list. While it is false the
+// options are the snapshot from index.html and the branch being sent may be
+// stale, which the worker (and support) must be able to tell.
+let branchesVerified = false;
+// True when the last fetch failed at the network level (as opposed to the
+// server answering with an empty list).
+let branchFetchFailed = false;
+let branchesLoading = null;
+
+function applyBranches(branches, options = {}) {
+  if (!BranchInput) return;
+  const names = branches
+    .map((b) => (b && (b.Name ?? b.name) ? String(b.Name ?? b.name) : ""))
+    .filter(Boolean);
+  if (names.length === 0) return;
+
+  const current = BranchInput.value;
+  BranchInput.innerHTML = "";
+  for (const name of names) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    BranchInput.appendChild(opt);
+  }
+
+  // Keep the worker's branch when the server still offers it (their current
+  // choice first, then the one they used last time).
+  const stored = (() => {
+    try {
+      return localStorage.getItem("branch") || "";
+    } catch {
+      return "";
+    }
+  })();
+  const wanted = [current, stored].find((n) => n && names.includes(n));
+  if (wanted) {
+    BranchInput.value = wanted;
+    return;
+  }
+
+  // The branch this worker was on is gone (disabled, renamed, removed). Say so
+  // instead of silently logging them in under a different branch.
+  BranchInput.value = names[0];
+  if (current && current !== names[0] && !options.silent) {
+    setMessage(
+      fmt(t("branchChanged"), { from: current, to: names[0] }),
+      false
+    );
+    logEvent(
+      "login",
+      `branch "${current}" is no longer offered; using "${names[0]}"`
+    );
+  }
+}
+
+async function fetchBranchesOnce(silent) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BRANCHES_TIMEOUT_MS);
   try {
     const res = await fetch(`${API_BASE}/branches`, {
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json().catch(() => ({}));
     const branches = Array.isArray(data.branches) ? data.branches : [];
-    if (branches.length === 0 || !BranchInput) return;
-
-    const current = BranchInput.value;
-    BranchInput.innerHTML = "";
-    for (const b of branches) {
-      const opt = document.createElement("option");
-      opt.value = b.Name;
-      opt.textContent = b.Name;
-      BranchInput.appendChild(opt);
+    if (branches.length === 0) {
+      // An empty list is an answer, not a network problem: nothing to swap in.
+      console.warn("[branches] the server returned no branches");
+      return false;
     }
+    applyBranches(branches, { silent });
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    // Restore the previously selected branch when it is still available.
-    const preferred = current || localStorage.getItem("branch") || "";
-    if (
-      preferred &&
-      [...BranchInput.options].some((o) => o.value === preferred)
-    ) {
-      BranchInput.value = preferred;
+function loadBranches(force, silent) {
+  if (branchesLoading && !force) return branchesLoading;
+  const run = (async () => {
+    for (let attempt = 1; attempt <= BRANCHES_MAX_ATTEMPTS; attempt++) {
+      try {
+        const ok = await fetchBranchesOnce(silent === true);
+        branchFetchFailed = false;
+        if (ok) branchesVerified = true;
+        return ok;
+      } catch (err) {
+        branchFetchFailed = true;
+        console.error(
+          `[branches] attempt ${attempt}/${BRANCHES_MAX_ATTEMPTS} failed:`,
+          err
+        );
+        if (attempt < BRANCHES_MAX_ATTEMPTS) {
+          await new Promise((r) =>
+            setTimeout(r, BRANCHES_RETRY_BASE_MS * Math.pow(2, attempt - 1))
+          );
+        }
+      }
     }
-  } catch (err) {
-    // Network/parse errors: keep the static fallback list.
-    console.error("Failed to load branches:", err);
+    logEvent("login", "could not load the branch list from the server");
+    return false;
+  })();
+  branchesLoading = run;
+  run.finally(() => {
+    if (branchesLoading === run) branchesLoading = null;
+  });
+  return run;
+}
+
+// Give the list a short chance to arrive before a login is sent, so the branch
+// comes from the server whenever it can. Bounded: a slow list must not block
+// the login for long.
+async function waitForBranches(ms) {
+  if (branchesVerified || !branchesLoading) return;
+  let timer = null;
+  try {
+    await Promise.race([
+      branchesLoading,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -372,13 +712,33 @@ LoginForm.addEventListener("submit", (e) => {
   doLogin();
 });
 
+// A forced logout (expired token, or a token replaced by a newer login) leaves a
+// one-shot notice behind: without it the worker is dropped on this form with no
+// explanation, which reads as "the program will not let me in".
+(function showLoginNotice() {
+  let notice = null;
+  try {
+    notice = localStorage.getItem("loginNotice");
+    if (notice) localStorage.removeItem("loginNotice");
+  } catch {
+    notice = null;
+  }
+  if (notice) setMessage(t(notice), true);
+})();
+
 loadBranches();
 
+// The network came back: if the dropdown is still the build-time snapshot, get
+// the real list (a stale branch is refused by the server at login).
+window.addEventListener("online", () => {
+  if (!branchesVerified) loadBranches();
+});
+
 // Start the reachability monitor so the worker can see, before logging in,
-// whether the server is up (green) or unreachable (red) — and whether it is
-// recovering on its own during an intermittent outage. The handle is kept so a
-// login in flight can say "no connection" instead of "signing in" when the
-// server is already known to be down.
+// whether the server is up (green), slow (amber) or unreachable (red) — and
+// whether it is recovering on its own during an intermittent outage. The handle
+// is kept so a login in flight can say "no connection" instead of "signing in"
+// when the server is already known to be down.
 try {
   netMonitor = startNetMonitor({
     apiBase: API_BASE,
@@ -387,6 +747,7 @@ try {
       online: t("net.connected"),
       offline: t("net.offline"),
       checking: t("net.checking"),
+      slow: t("net.slow"),
     },
   });
 } catch (err) {

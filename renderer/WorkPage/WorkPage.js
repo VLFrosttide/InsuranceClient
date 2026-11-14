@@ -27,6 +27,45 @@ const emailCards = new Map(); // thread key -> { emails, email (newest), node }
 let emailSocket = null;
 let pendingClaimEmail = null;
 
+// Sender address -> broker code (the ID shown in the brokers table). The
+// broker list endpoint includes every broker's Code and email addresses, and
+// workers are allowed to read it, so the card can show the code without a new
+// server field. Loaded once per dashboard; cards already on screen are
+// refreshed when it arrives.
+let brokerCodeByAddress = new Map();
+
+function brokerCodeForEmail(email) {
+  if (!email) return "";
+  const direct = String(email.brokerCode ?? email.BrokerCode ?? "").trim();
+  if (direct) return direct;
+  const address = emailSenderAddress(email.from);
+  return address ? brokerCodeByAddress.get(address) || "" : "";
+}
+
+async function loadBrokerCodes() {
+  if (userRole !== "2") return;
+  try {
+    const data = await api("/brokers");
+    const map = new Map();
+    for (const broker of (data && data.brokers) || []) {
+      const code = String(
+        (broker && (broker.Code ?? broker.code)) || ""
+      ).trim();
+      if (!code) continue;
+      for (const address of (broker && (broker.emails || broker.Emails)) || []) {
+        const sender = emailSenderAddress(address);
+        if (sender) map.set(sender, code);
+      }
+    }
+    brokerCodeByAddress = map;
+    // The cards may already be rendered (emails arrive before this request
+    // answers): refresh their broker-code chips in place.
+    for (const entry of emailCards.values()) applyEmailCardLabels(entry);
+  } catch (err) {
+    console.warn("Failed to load broker codes:", err);
+  }
+}
+
 // The Bulins border-insurance web form (see ../bulins.js and SetupBulins in
 // main.js) replaced the in-app AddInsurance form for new insurances: opening an
 // email or pressing "Add insurance" showed the Bulins site in a WebContentsView
@@ -97,6 +136,11 @@ function replyCountLabel(count) {
 // Badge text for the current language, built from the values cached on the
 // entry so it can be re-translated without splitting an email body again.
 function emailCardBadgeText(entry) {
+  if (entry.answeredAt) {
+    return entry.replyCount > 0
+      ? `${t("email.answered")} · ${replyCountLabel(entry.replyCount)}`
+      : t("email.answered");
+  }
   if (entry.kind === "forward") {
     return entry.threadCount > 1
       ? `${t("email.forward")} · ${t("email.threadCount").replace(
@@ -111,38 +155,87 @@ function emailCardBadgeText(entry) {
   return "";
 }
 
-// Apply the reply / forward colour, badge and title. Cheap (cached values), so
-// it also runs from refreshEmailCardAges to follow a language change.
+// Apply the reply / forward colour, badge, broker code and title. Cheap
+// (cached values), so it also runs from refreshEmailCardAges to follow a
+// language change.
 function applyEmailCardLabels(entry) {
   const isForward = entry.kind === "forward";
+  const answered = Boolean(entry.answeredAt);
   entry.node.classList.toggle(
     "email-card-reply",
-    !isForward && entry.replyCount > 0
+    !isForward && !answered && entry.replyCount > 0
   );
-  entry.node.classList.toggle("email-card-forward", isForward);
+  entry.node.classList.toggle("email-card-forward", isForward && !answered);
+  entry.node.classList.toggle("email-card-answered", answered);
+
+  // The broker code (ID) sits above the subject in its own accent chip, so it
+  // stands out from the title instead of reading as part of it.
+  const code = brokerCodeForEmail(entry.email);
+  entry.brokerCode = code;
+  if (entry.codeNode) {
+    entry.codeNode.textContent = code ? `${t("brokerId")} ${code}` : "";
+    entry.codeNode.style.display = code ? "" : "none";
+    entry.codeNode.title = code ? t("email.brokerCodeTitle") : "";
+  }
+
   const badgeText = emailCardBadgeText(entry);
   entry.badgeNode.textContent = badgeText;
   entry.badgeNode.style.display = badgeText ? "" : "none";
+  entry.badgeNode.classList.toggle("email-card-badge-answered", answered);
   entry.titleNode.textContent = emailTitle(entry.email);
 }
+
 
 // Keep the map key in step with the conversation: an email restored without a
 // Gmail thread id may create the card under its subject key, and the thread id
 // has to take over once one of its emails carries it. Without this, the next
 // reply (which does have a thread id) would miss the card and be shown alone.
+// The locally stored conversation / answered state is moved along, so nothing
+// recorded under the old key is lost.
 function syncEmailCardKey(entry) {
   const key = entry.threadId
     ? `thread:${entry.threadId}`
     : emailThreadKey(entry.email);
   if (key === entry.key) return;
+  emailConversationReKey(localStorage, entry.key, key);
+  emailAnsweredReKey(localStorage, entry.key, key);
   emailCards.delete(entry.key);
   entry.key = key;
   emailCards.set(key, entry);
 }
 
+// Store the emails visible in this conversation (the newest email plus the
+// earlier ones it quotes) so the add-insurance form can show the history even
+// when the Gmail thread is not available. Employee replies are added by the
+// form itself when they are sent.
+function recordEmailConversation(entry) {
+  if (!entry || !entry.email) return;
+  for (const message of emailConversationMessagesFromThread(entry.email)) {
+    emailConversationRecord(localStorage, entry.key, message);
+  }
+}
+
+// A gentle highlight when an answered card becomes active again (the broker
+// replied). The class is removed after the animation so it can play again on
+// the next revival.
+function markEmailRevived(entry) {
+  const node = entry && entry.node;
+  if (!node) return;
+  node.classList.remove("email-card-revived");
+  // Reading offsetWidth restarts the animation when the class was just removed.
+  void node.offsetWidth;
+  node.classList.add("email-card-revived");
+  clearTimeout(entry.reviveTimer);
+  entry.reviveTimer = setTimeout(() => {
+    node.classList.remove("email-card-revived");
+  }, 1600);
+}
+
+
 // Refresh a card after its conversation changed (a reply arrived, or an email
-// was completed / dismissed elsewhere): newest email, reply colour + badge and
-// the title, without rebuilding the card or losing its busy state.
+// was completed / dismissed elsewhere): newest email, reply colour + badge,
+// answered state and the title, without rebuilding the card or losing its busy
+// state.
 function updateEmailCard(entry) {
   entry.emails.sort((a, b) => emailSentMs(a) - emailSentMs(b));
   const newest = entry.emails[entry.emails.length - 1];
@@ -164,10 +257,43 @@ function updateEmailCard(entry) {
   entry.kind = thread.kind;
   entry.threadCount = thread.count;
   entry.replyCount = replyCount;
-  applyEmailCardLabels(entry);
+
+  // The key may change once a thread id becomes known; move the stored
+  // conversation/answered records before reading them back below.
   syncEmailCardKey(entry);
+
+  // Answered state. The server marks every email of a replied-to thread, so
+  // the newest email is authoritative. A locally stored record (this PC sent
+  // the reply) survives server restarts; it stops applying as soon as a newer
+  // email arrives - the broker has answered and the card must come back.
+  const messageIds = entry.emails.map((email) => email.messageId);
+  const serverAnsweredAt = Number(newest.answeredAt) || 0;
+  const localAnswered = emailAnsweredFor(localStorage, entry.key);
+  const wasAnswered = Boolean(entry.answeredAt);
+  let answeredAt = 0;
+  if (serverAnsweredAt) {
+    answeredAt = serverAnsweredAt;
+    emailMarkAnswered(localStorage, entry.key, {
+      at: serverAnsweredAt,
+      by: newest.answeredBy || "",
+      messageIds,
+    });
+  } else if (localAnswered && emailAnsweredApplies(localAnswered, messageIds)) {
+    answeredAt = localAnswered.at;
+  } else if (localAnswered) {
+    // A new email arrived after the reply: the broker answered.
+    emailClearAnswered(localStorage, entry.key);
+  }
+  entry.answeredAt = answeredAt;
+  entry.answeredBy =
+    (newest.answeredBy || (localAnswered && localAnswered.by)) || "";
+  if (wasAnswered && !answeredAt) markEmailRevived(entry);
+
+  recordEmailConversation(entry);
+  applyEmailCardLabels(entry);
   refreshEmailCardAges();
 }
+
 
 function renderEmailCardsIfVisible() {
   if (activeNav && activeNav.load === workerDashboard) {
@@ -179,19 +305,54 @@ function renderEmailCardsIfVisible() {
 }
 
 function emailCardsContainer() {
-  const container = el("div", null, { id: "EmailCards", class: "email-cards" });
+  const container = el("div", null, {
+    id: "EmailCards",
+    class: "email-cards-layout",
+  });
   if (emailCards.size === 0) {
     container.appendChild(el("p", t("noUnreadEmails"), { class: "muted" }));
     return container;
   }
+
   // Oldest first: the card that has waited longest is the one to process next.
-  const entries = Array.from(emailCards.values()).sort((a, b) =>
-    compareEmailArrival(a.arrivalMs, b.arrivalMs)
-  );
-  for (const entry of entries) container.appendChild(entry.node);
+  // Answered cards leave the queue and stay in their own block at the bottom
+  // right until the broker replies.
+  const entries = Array.from(emailCards.values());
+  const active = entries
+    .filter((entry) => !entry.answeredAt)
+    .sort((a, b) => compareEmailArrival(a.arrivalMs, b.arrivalMs));
+  const answered = entries
+    .filter((entry) => entry.answeredAt)
+    .sort((a, b) => compareEmailArrival(a.arrivalMs, b.arrivalMs));
+
+  const activeGrid = el("div", null, { class: "email-cards" });
+  if (active.length === 0) {
+    activeGrid.appendChild(
+      el("p", t(answered.length ? "email.allAnswered" : "noUnreadEmails"), {
+        class: "muted",
+      })
+    );
+  }
+  for (const entry of active) activeGrid.appendChild(entry.node);
+  container.appendChild(activeGrid);
+
+  if (answered.length) {
+    const block = el("div", null, { class: "email-answered" });
+    block.appendChild(
+      el("h3", t("email.answeredSection"), { class: "email-answered-heading" })
+    );
+    const grid = el("div", null, {
+      class: "email-cards email-cards-answered",
+    });
+    for (const entry of answered) grid.appendChild(entry.node);
+    block.appendChild(grid);
+    container.appendChild(block);
+  }
+
   refreshEmailCardAges();
   return container;
 }
+
 
 function emailWaitingLabel(arrivalMs, now) {
   const minutes = emailWaitingMinutes(arrivalMs, now);
@@ -210,19 +371,34 @@ function refreshEmailCardAges() {
     // Re-translate the badge/title too: this runs on every dashboard render,
     // including the one after a language change.
     applyEmailCardLabels(entry);
-    const overdue = isEmailOverdue(entry.arrivalMs, now);
+    const answered = Boolean(entry.answeredAt);
+    // An answered card is waiting for the broker, not for the worker, so it
+    // must never turn red as overdue.
+    const overdue = !answered && isEmailOverdue(entry.arrivalMs, now);
     entry.node.classList.toggle("email-card-overdue", overdue);
-    entry.timeNode.textContent = t("email.arrived").replace(
-      "{t}",
-      formatEmailArrival(entry.arrivalMs, now)
-    );
-    entry.waitNode.textContent = emailWaitingLabel(entry.arrivalMs, now);
-    entry.timeWrap.title = overdue ? t("email.overdue") : "";
+    if (answered) {
+      entry.timeNode.textContent = t("email.answeredAt").replace(
+        "{t}",
+        formatEmailArrival(entry.answeredAt, now)
+      );
+      entry.waitNode.textContent = t("email.awaitingBroker");
+      entry.timeWrap.title = entry.answeredBy
+        ? `${t("email.answered")} · ${entry.answeredBy}`
+        : t("email.answered");
+    } else {
+      entry.timeNode.textContent = t("email.arrived").replace(
+        "{t}",
+        formatEmailArrival(entry.arrivalMs, now)
+      );
+      entry.waitNode.textContent = emailWaitingLabel(entry.arrivalMs, now);
+      entry.timeWrap.title = overdue ? t("email.overdue") : "";
+    }
     if (entry.busyLabelNode) {
       entry.busyLabelNode.textContent = t("email.opening");
     }
   }
 }
+
 
 // Ages change while the dashboard sits open: refresh them periodically.
 // Cheap (text/class updates only) and harmless when the dashboard is hidden.
@@ -241,9 +417,15 @@ function createEmailCard(key, email) {
   // updateEmailCard, which also sets the card's coloured edge.
   const badgeNode = el("span", null, { class: "email-card-badge" });
   badgeNode.style.display = "none";
+  // Broker code chip: its own line above the subject, so the ID stands out
+  // from the title. Hidden until a code is known for the sender.
+  const codeNode = el("span", null, { class: "email-card-broker" });
+  codeNode.style.display = "none";
   const titleNode = el("span", null, { class: "email-card-title" });
   openBtn.appendChild(badgeNode);
+  openBtn.appendChild(codeNode);
   openBtn.appendChild(titleNode);
+
 
   // Arrival time (when this PC first saw the email) + how long the card has
   // been waiting (filled in and kept current by refreshEmailCardAges).
@@ -277,10 +459,15 @@ function createEmailCard(key, email) {
     kind: null,
     threadCount: 0,
     replyCount: 0,
+    answeredAt: 0,
+    answeredBy: "",
+    brokerCode: "",
+    reviveTimer: null,
     node: card,
     openBtn,
     xBtn: null,
     badgeNode,
+    codeNode,
     titleNode,
     busyNode,
     busyLabelNode,
@@ -289,6 +476,7 @@ function createEmailCard(key, email) {
     timeNode,
     waitNode,
   };
+
 
   // Open through the entry rather than the email captured here: once a reply
   // updates the card, the newest email of the conversation is the one to show.
@@ -322,8 +510,22 @@ function addEmailCard(email) {
 
   const existing = findEmailCardFor(email);
   if (existing) {
-    // list_emails repeats every known email; nothing changed for this one.
-    if (existing.emails.some((item) => item.messageId === email.messageId)) {
+    const known = existing.emails.find(
+      (item) => item.messageId === email.messageId
+    );
+    if (known) {
+      // list_emails repeats every known email. The server may have changed the
+      // thread's state (e.g. another worker replied), so refresh the stored
+      // copy and let updateEmailCard re-evaluate the answered state.
+      if (!Object.prototype.hasOwnProperty.call(email, "answeredAt")) {
+        // The server clears these when the broker answers; merge only what
+        // the server sent so a stale "answered" flag cannot stick.
+        delete known.answeredAt;
+        delete known.answeredBy;
+      }
+      Object.assign(known, email);
+      updateEmailCard(existing);
+      renderEmailCardsIfVisible();
       return;
     }
     // A reply to a conversation already on the dashboard: keep its one card
@@ -342,6 +544,9 @@ function removeEmailCard(id) {
   if (!id) return;
   const entry = emailCards.get(id) || findEmailCardByMessageId(id);
   if (!entry) return;
+  // The card may come back (e.g. the other worker cancels), so the answered
+  // marker is left in place; only an explicit dismissal/completion clears it.
+  if (entry.reviveTimer) clearTimeout(entry.reviveTimer);
   emailCards.delete(entry.key);
   renderEmailCardsIfVisible();
 }
@@ -356,12 +561,15 @@ function removeEmailMessage(messageId) {
     (email) => email.messageId !== messageId
   );
   if (entry.emails.length === 0) {
+    emailClearAnswered(localStorage, entry.key);
+    if (entry.reviveTimer) clearTimeout(entry.reviveTimer);
     emailCards.delete(entry.key);
   } else {
     updateEmailCard(entry);
   }
   renderEmailCardsIfVisible();
 }
+
 
 function markEmailIrrelevant(entry) {
   const emails = entry && Array.isArray(entry.emails) ? entry.emails : [];
@@ -393,6 +601,9 @@ function markEmailIrrelevant(entry) {
     reportError("Failed to mark email as irrelevant", err, "emailSendFailed");
     return;
   }
+  // Dismissed for good: the answered marker no longer applies. The
+  // conversation history is kept (it is harmless and helps future context).
+  emailClearAnswered(localStorage, entry.key);
   removeEmailCard(entry.key);
   toast(t("email.irrelevantMarked"), "success");
 }
@@ -500,8 +711,13 @@ function openEmailInNewForm(email) {
     ? {
         ...email,
         threadMessageIds: entry.emails.map((item) => item.messageId),
+        // The form stores the conversation under the same key and shows the
+        // broker code the card already resolved.
+        conversationKey: entry.key,
+        brokerCode: entry.brokerCode || brokerCodeForEmail(email),
       }
     : email;
+
 
   // Only navigate once the server confirms this client won the claim. If
   // another worker clicked the same card first, we show an error instead.
@@ -2460,7 +2676,7 @@ function registerUserForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 401) {
-        redirectToLogin();
+        redirectToLogin("sessionExpired");
         throw new Error(data.error || t("sessionExpired"));
       }
       if (!res.ok) {
@@ -5515,6 +5731,7 @@ async function init() {
   setupPresenceSocket();
   fetchUnreadEmails();
   initializeBrokerPricing();
+  loadBrokerCodes();
   loadEnabledBranches();
 
   const defs = NAV_DEFS[userRole] || [];

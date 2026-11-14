@@ -17,6 +17,7 @@ import {
 import path from "path";
 import fs from "fs";
 import https from "node:https";
+import dnsLookup from "node:dns";
 import crypto from "node:crypto";
 import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
@@ -356,6 +357,173 @@ ipcMain.handle("OutboxUpdateToken", async (event, username, token) => {
   await outboxReady;
   return outbox.updateToken(username, token);
 });
+
+// ---------------------------------------------------------------------------
+// Network diagnostics + log.
+//
+// A connection problem in the field leaves no trace today: the only evidence is
+// the DevTools console (Ctrl + ~), which a worker cannot read and support cannot
+// collect. Every interesting client event is therefore appended to
+// userData/logs/network.log, and a failing login can ask for one timed /ping so
+// the client knows WHICH stage is slow: DNS, TCP, TLS, or the server's first
+// byte. That is what separates "the network blocks/slows us" from "the server is
+// down".
+// ---------------------------------------------------------------------------
+const NET_LOG_MAX_BYTES = 512 * 1024;
+
+const NetLogPath = () =>
+  path.join(app.getPath("userData"), "logs", "network.log");
+
+const AppendNetLog = (channel, message) => {
+  const line = `${new Date().toISOString()} [${channel || "client"}] ${message}`;
+  try {
+    const file = NetLogPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    try {
+      if (fs.statSync(file).size > NET_LOG_MAX_BYTES) {
+        fs.renameSync(file, `${file}.1`);
+      }
+    } catch {
+      // No file yet (or the rename was refused): append() will create it.
+    }
+    fs.appendFileSync(file, line + "\n");
+  } catch (err) {
+    console.error("[netlog] write failed:", err);
+  }
+};
+
+ipcMain.on("ClientLog", (event, channel, message) => {
+  AppendNetLog(
+    String(channel || "client").slice(0, 24),
+    String(message || "").slice(0, 2000)
+  );
+});
+
+// One GET /ping with every stage timed. /ping needs no auth and never touches
+// the database, so this is safe to run while a login is failing.
+const DIAGNOSE_TIMEOUT_MS = 20000;
+
+const DiagnoseServer = () =>
+  new Promise((resolve) => {
+    let url;
+    try {
+      url = new URL(OUTBOX_DEFAULT_ORIGIN);
+    } catch (err) {
+      resolve({
+        ok: false,
+        stage: "url",
+        error: String((err && err.message) || err),
+      });
+      return;
+    }
+
+    const startedAt = process.hrtime.bigint();
+    const since = () => Number(process.hrtime.bigint() - startedAt) / 1e6;
+    const summary = {
+      ok: false,
+      host: url.host,
+      timeoutMs: DIAGNOSE_TIMEOUT_MS,
+    };
+    let dnsMs = null;
+    let connectMs = null;
+    let tlsMs = null;
+    let settled = false;
+
+    const finish = (extra) => {
+      if (settled) return;
+      settled = true;
+      Object.assign(summary, { dnsMs, connectMs, tlsMs, totalMs: since() }, extra);
+      AppendNetLog("diagnose", JSON.stringify(summary));
+      resolve(summary);
+    };
+
+    const req = https.request({
+      protocol: url.protocol,
+      host: url.hostname,
+      port: url.port || 443,
+      path: "/ping",
+      method: "GET",
+      agent: false,
+      headers: {
+        "User-Agent": `Insurance/${APP_VERSION}`,
+        Accept: "application/json",
+      },
+      // Time the resolver separately: a filtered or hijacked DNS answer is the
+      // difference between "this network blocks us" and "the app is slow".
+      lookup: (hostname, options, callback) => {
+        dnsLookup.lookup(hostname, options, (err, address, family) => {
+          if (!err) {
+            dnsMs = since();
+          } else {
+            finish({
+              stage: "dns",
+              error: String((err && (err.code || err.message)) || "lookup failed"),
+            });
+          }
+          callback(err, address, family);
+        });
+      },
+    });
+
+    req.setTimeout(DIAGNOSE_TIMEOUT_MS, () => {
+      const err = new Error("timeout");
+      err.code = "ETIMEDOUT";
+      req.destroy(err);
+    });
+
+    req.on("socket", (socket) => {
+      socket.once("connect", () => {
+        connectMs = since();
+      });
+      socket.once("secureConnect", () => {
+        tlsMs = since();
+      });
+    });
+
+    req.on("response", (res) => {
+      const ttfbMs = since();
+      res.resume();
+      res.on("end", () =>
+        finish({
+          ok: true,
+          status: res.statusCode,
+          ttfbMs,
+          server: res.headers.server || null,
+        })
+      );
+      res.on("error", () =>
+        finish({
+          ok: false,
+          stage: "body",
+          status: res.statusCode,
+          ttfbMs,
+          error: "response stream failed",
+        })
+      );
+    });
+
+    req.on("error", (err) => {
+      const code = String((err && err.code) || "");
+      const stage =
+        code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT"
+          ? "timeout"
+          : connectMs == null
+            ? "connect"
+            : tlsMs == null
+              ? "tls"
+              : "response";
+      finish({
+        stage,
+        error: `${code || (err && err.name) || "error"}${
+          err && err.message ? `: ${err.message}` : ""
+        }`,
+      });
+    });
+
+    req.end();
+  });
+
+ipcMain.handle("ServerDiagnose", () => DiagnoseServer());
 
 // ---------------------------------------------------------------------------
 // WebSocket handshake probe (runs in the main process: no CORS, no browser

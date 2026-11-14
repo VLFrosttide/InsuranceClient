@@ -109,6 +109,15 @@ body {
 .net-status.online::before {
   background: var(--success);
 }
+/* The server answered, but slowly: still usable, so it is not painted as an
+   outage - a red pill during a slow login reads as "the program is broken". */
+.net-status.slow {
+  color: var(--warning);
+}
+.net-status.slow::before {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(210, 153, 34, 0.2);
+}
 .net-status.offline {
   color: var(--danger);
 }

@@ -5,7 +5,7 @@
 // one email ends and the next starts.
 //
 // Runs the REAL renderer file in a vm (it is a classic browser <script>), plus
-// the server's htmlToRoughText (InsuranceServer/Mail/ProcessEmail.js, see
+// the server's htmlToRoughText (InsuranceServer/Mail/messageText.js, see
 // Test/serverPath.cjs) to check that HTML-only replies keep enough structure
 // to be split.
 //
@@ -32,17 +32,20 @@ const {
 } = CTX;
 
 // htmlToRoughText is private to the server module: cut it out of the file.
-const processSrc = fs.readFileSync(serverFile("Mail", "ProcessEmail.js"), "utf8");
-const fnStart = processSrc.indexOf("function htmlToRoughText(");
+const messageTextSrc = fs.readFileSync(
+  serverFile("Mail", "messageText.js"),
+  "utf8"
+);
+const fnStart = messageTextSrc.indexOf("function htmlToRoughText(");
 // The server file may use CRLF line endings.
-const fnEndMatch = /\r?\nfunction uniqueFileName\(/.exec(processSrc);
+const fnEndMatch = /\r?\nfunction readMessageBody\(/.exec(messageTextSrc);
 const fnEnd = fnEndMatch ? fnEndMatch.index : -1;
 if (fnStart < 0 || fnEnd < fnStart) {
-  console.error("Could not locate htmlToRoughText in Mail/ProcessEmail.js");
+  console.error("Could not locate htmlToRoughText in Mail/messageText.js");
   process.exit(1);
 }
-vm.runInContext(processSrc.slice(fnStart, fnEnd), CTX, {
-  filename: "Mail/ProcessEmail.js#htmlToRoughText",
+vm.runInContext(messageTextSrc.slice(fnStart, fnEnd), CTX, {
+  filename: "Mail/messageText.js#htmlToRoughText",
 });
 const { htmlToRoughText } = CTX;
 

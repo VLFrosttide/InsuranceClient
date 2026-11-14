@@ -89,6 +89,8 @@ const STUBS = {
     },
   },
   "../Mail/SendReply.js": { sendReply: async () => {} },
+  "../Mail/mailStore.js": { markAnswered: () => null },
+  "../Mail/threadHistory.js": { fetchThreadConversation: async () => null },
 };
 
 // Rows the fake DB returns for the brokers lookup (the broker ID/code lookup).

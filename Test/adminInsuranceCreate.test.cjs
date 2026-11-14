@@ -112,6 +112,8 @@ const STUBS = {
   "./PaymentSchedule.js": { getSchedule: async () => null },
   "../db/branches.js": { isBranchEnabled: async () => true },
   "../Mail/SendReply.js": { sendReply: async () => {} },
+  "../Mail/mailStore.js": { markAnswered: () => null },
+  "../Mail/threadHistory.js": { fetchThreadConversation: async () => null },
 };
 
 const BROKER = { id: 5, Name: "Тест Брокер", ParentBrokerId: null };

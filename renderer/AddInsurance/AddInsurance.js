@@ -19,6 +19,9 @@ const EmailSideBody = document.getElementById("EmailSideBody");
 const ReplySection = document.getElementById("ReplySection");
 const ReplyInput = document.getElementById("ReplyInput");
 const ReplyButton = document.getElementById("ReplyButton");
+const ConversationSection = document.getElementById("ConversationSection");
+const ConversationStatus = document.getElementById("ConversationStatus");
+const ConversationHistory = document.getElementById("ConversationHistory");
 
 // File drop area
 const DropArea = document.getElementById("DropArea");
@@ -522,6 +525,165 @@ function renderEmailSegment(segment, index, thread) {
   return box;
 }
 
+// ---------------------------------------------------------------------------
+// Conversation history (above the reply form)
+// ---------------------------------------------------------------------------
+// The history combines three sources, de-duplicated by content:
+//   - the emails quoted inside the newest email (works fully offline),
+//   - the server's Gmail thread endpoint (exact client + employee messages),
+//   - the replies sent from this form, stored locally when they are sent.
+let conversationRequested = false;
+
+function conversationKey() {
+  if (!PendingEmail) return "";
+  return PendingEmail.conversationKey || emailConversationKey(PendingEmail);
+}
+
+// "12.11.2026 14:05" from a Gmail date header or an epoch-ms value.
+function formatConversationDate(value) {
+  if (value === undefined || value === null || value === "") return "";
+  const parsed = typeof value === "number" ? value : Date.parse(value);
+  if (!Number.isFinite(parsed)) return String(value);
+  const d = new Date(parsed);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(
+    d.getHours()
+  )}:${p(d.getMinutes())}`;
+}
+
+// One display text per message: the server sends the full Gmail body, which
+// quotes the earlier emails; keep only the new part so it matches the locally
+// split segments and the same message is not shown twice.
+function conversationMessageText(message) {
+  const text = String((message && message.text) || "");
+  if (
+    message &&
+    message.source === "gmail" &&
+    typeof splitEmailThread === "function"
+  ) {
+    const segments = splitEmailThread(text);
+    if (segments.length && segments[0].text) return segments[0].text;
+  }
+  return text;
+}
+
+function conversationMessages() {
+  const key = conversationKey();
+  const stored = key ? emailConversationFor(localStorage, key) : [];
+  const quoted = emailConversationMessagesFromThread(PendingEmail);
+
+  // Later sources win ties: the Gmail thread has the real sender/date, then
+  // the quoted emails, then a reply typed on this PC.
+  const rank = { employee: 0, thread: 1, gmail: 2 };
+  const byContent = new Map();
+  const add = (message) => {
+    const text = conversationMessageText(message).trim();
+    if (!text) return;
+    const direction = message.direction === "employee" ? "employee" : "client";
+    const signature = `${direction}|${text.replace(/\s+/g, " ").toLowerCase()}`;
+    const candidate = { ...message, direction, text };
+    const current = byContent.get(signature);
+    if (
+      !current ||
+      (rank[candidate.source] || 0) >= (rank[current.source] || 0)
+    ) {
+      byContent.set(signature, candidate);
+    }
+  };
+  for (const message of quoted) add(message);
+  for (const message of stored) add(message);
+
+  return Array.from(byContent.values()).sort(
+    (a, b) => Number(a.at || 0) - Number(b.at || 0)
+  );
+}
+
+function renderConversationHistory() {
+  if (!ConversationSection || !ConversationHistory || !PendingEmail) return;
+  ConversationSection.classList.remove("hidden");
+  ConversationHistory.replaceChildren();
+
+  const messages = conversationMessages();
+  if (messages.length === 0) {
+    if (ConversationStatus) {
+      ConversationStatus.textContent = t("add.conversationEmpty");
+    }
+    return;
+  }
+  if (ConversationStatus) ConversationStatus.textContent = "";
+
+  for (const message of messages) {
+    const employee = message.direction === "employee";
+    const item = el("li", null, {
+      class: `conversation-message ${
+        employee
+          ? "conversation-message-employee"
+          : "conversation-message-client"
+      }`,
+    });
+
+    const meta = el("div", null, { class: "conversation-meta" });
+    meta.appendChild(
+      el(
+        "span",
+        t(employee ? "add.messageFromEmployee" : "add.messageFromBroker"),
+        { class: "conversation-who" }
+      )
+    );
+    if (message.from) meta.appendChild(el("span", message.from));
+    const when = formatConversationDate(message.date || message.at);
+    if (when) meta.appendChild(el("span", when));
+    item.appendChild(meta);
+    item.appendChild(
+      el("pre", message.text || t("email.emptyBody"), {
+        class: "conversation-text",
+      })
+    );
+    ConversationHistory.appendChild(item);
+  }
+
+  // Oldest first; start at the newest message, like a chat log.
+  ConversationHistory.scrollTop = ConversationHistory.scrollHeight;
+}
+
+// Ask the server for the real Gmail thread. Older servers do not have the
+// endpoint: the quoted emails and the locally stored replies are still shown,
+// so the history never blocks the worker.
+async function loadConversationHistory() {
+  if (!PendingEmail || !PendingEmail.messageId) return;
+  if (ConversationStatus) {
+    ConversationStatus.textContent = t("add.conversationLoading");
+  }
+  try {
+    const data = await api(
+      `/worker/emails/${encodeURIComponent(PendingEmail.messageId)}/thread`
+    );
+    const messages =
+      data && Array.isArray(data.messages) ? data.messages : [];
+    const key = conversationKey();
+    for (const message of messages) {
+      const dateMs = Date.parse(message.date);
+      const at =
+        Number(message.at) || (Number.isFinite(dateMs) ? dateMs : Date.now());
+      emailConversationRecord(localStorage, key, {
+        id: `gmail:${message.id || at}`,
+        direction: message.direction === "employee" ? "employee" : "client",
+        from: message.from || "",
+        text: message.text || "",
+        at,
+        source: "gmail",
+      });
+    }
+    renderConversationHistory();
+  } catch (err) {
+    console.warn("Failed to load the email conversation:", err);
+    renderConversationHistory();
+    if (ConversationStatus && ConversationHistory.childElementCount === 0) {
+      ConversationStatus.textContent = t("add.conversationUnavailable");
+    }
+  }
+}
+
 function renderEmailSide() {
   if (!PendingEmail || !EmailSide || !EmailSideBody || !EmailSideTitle) {
     return;
@@ -535,6 +697,13 @@ function renderEmailSide() {
 
   // The reply UI only makes sense when the form was opened from an email card.
   if (ReplySection) ReplySection.classList.remove("hidden");
+
+  // Conversation history sits directly above the reply form.
+  renderConversationHistory();
+  if (!conversationRequested) {
+    conversationRequested = true;
+    loadConversationHistory();
+  }
 
   EmailSideTitle.textContent = emailSubject(PendingEmail);
   EmailSideBody.replaceChildren();
@@ -1630,8 +1799,9 @@ async function goBack() {
 }
 
 // After a reply the form closes and the worker is taken back to the email
-// cards. The email is released (not completed): it stays on the dashboard, so
-// the broker's answer updates its card with the reply colour and count.
+// cards. The email is released (not completed): it stays on the dashboard,
+// parked and dimmed as "answered" until the broker's answer arrives as a new
+// email, which revives and re-queues the card.
 async function closeFormAfterReply() {
   await waitForSocketAuth();
   releaseEmail();
@@ -1910,7 +2080,7 @@ InsuranceForm.addEventListener("submit", async function (e) {
         // Session expired (401). The policy is safe in the outbox and is sent
         // with the new token right after the worker logs in again.
         toast(t("outbox.authToast"), "error");
-        redirectToLogin();
+        redirectToLogin("sessionExpired");
         return;
       }
       window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
@@ -1989,6 +2159,26 @@ async function sendReply() {
     });
     toast(t("add.replySent"), "success");
     if (ReplyInput) ReplyInput.value = "";
+
+    // Remember the employee's answer and mark the conversation as answered.
+    // The dashboard reads both after the navigation: the card is dimmed and
+    // parked at the bottom right until the broker's answer arrives.
+    const key = conversationKey();
+    const now = Date.now();
+    emailConversationRecord(localStorage, key, {
+      id: `employee:${PendingEmail.messageId}:${now}`,
+      direction: "employee",
+      from: getUsername() || "",
+      text,
+      at: now,
+      source: "employee",
+    });
+    emailMarkAnswered(localStorage, key, {
+      at: now,
+      by: getUsername() || "",
+      messageIds: conversationMessageIds(),
+    });
+
     // The reply is done: close the form and return to the email cards.
     await closeFormAfterReply();
   } catch (error) {

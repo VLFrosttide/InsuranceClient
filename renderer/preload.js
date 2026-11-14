@@ -51,6 +51,13 @@ contextBridge.exposeInMainWorld("bridge", {
   // Privileged raw WebSocket-upgrade probe (bypasses CORS + browser redirect
   // hiding) so the renderer can learn the status + Location a CDN returned.
   WsHandshakeProbe: () => ipcRenderer.invoke("WsHandshakeProbe"),
+  // Timed GET /ping from the main process: DNS, TCP, TLS and first-byte
+  // timings, so a failed login can say which stage is slow or blocked.
+  DiagnoseServer: () => ipcRenderer.invoke("ServerDiagnose"),
+  // Append one line to userData/logs/network.log (the trail a worker can hand
+  // over when a login misbehaves only on their network).
+  LogEvent: (channel, message) =>
+    ipcRenderer.send("ClientLog", String(channel || "client"), String(message || "")),
   // Subscribe to queue changes / late deliveries. Returns an unsubscribe fn.
   OnOutboxState: (callback) => {
     const listener = (event, state) => callback(state);

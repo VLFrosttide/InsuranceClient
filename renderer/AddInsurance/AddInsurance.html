@@ -157,6 +157,14 @@
           </button>
         </div>
 
+        <!-- Conversation history (broker + employee replies), shown above the
+             reply form when the form was opened from an email card. -->
+        <section id="ConversationSection" class="hidden">
+          <h3 data-i18n="add.conversationHistory">Разговор</h3>
+          <p id="ConversationStatus" class="conversation-status"></p>
+          <ol id="ConversationHistory" class="conversation-history"></ol>
+        </section>
+
         <!-- Reply UI, shown only when the form was opened from an email card. -->
         <section id="ReplySection" class="hidden">
           <label for="ReplyInput" data-i18n="add.reply">Отговор</label>
@@ -221,6 +229,7 @@
 
     <script src="../common.js" defer></script>
     <script src="../emailThread.js" defer></script>
+    <script src="../emailConversation.js" defer></script>
     <script src="../numberField.js" defer></script>
     <script src="../presence.js" defer></script>
     <script src="AddInsurance.js" defer></script>

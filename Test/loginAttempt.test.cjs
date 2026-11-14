@@ -1,7 +1,7 @@
 "use strict";
 
 // Node test for the login-attempt feedback on the login page
-// (renderer/LoginPage/logic.js). A login can take a while (up to three 15 s
+// (renderer/LoginPage/logic.js). A login can take a while (up to three 30 s
 // server attempts), so the worker has to be able to tell two things at a glance:
 //   * an attempt is still running -- the form is frozen, the button carries a
 //     spinner and the phase line under it says what is happening, escalating to
@@ -118,6 +118,9 @@ function makeEl(tagName, id) {
     },
     appendChild(child) {
       el.children.push(child);
+      // A <select>'s options are what the page reads back, so the stub has to
+      // keep them the way a browser does.
+      if (String(child.tagName).toUpperCase() === "OPTION") el.options.push(child);
       return child;
     },
     focus() {},
@@ -136,7 +139,10 @@ function makeEl(tagName, id) {
       return "";
     },
     set innerHTML(value) {
-      if (!value) el.children.length = 0;
+      if (!value) {
+        el.children.length = 0;
+        el.options.length = 0;
+      }
     },
   };
   return el;
@@ -244,6 +250,29 @@ function jsonResponse(status, body) {
     async json() {
       return body;
     },
+    // The real Response always has text(); the login path reads the body as text
+    // so an HTML page from a proxy can be told apart from our JSON.
+    async text() {
+      return typeof body === "string" ? body : JSON.stringify(body);
+    },
+  };
+}
+
+// What a captive portal, a proxy or the hosting firewall answers with: HTML,
+// sometimes with a 2xx status.
+function htmlResponse(status, title, body) {
+  const html =
+    `<!DOCTYPE html><html><head><title>${title || ""}</title></head>` +
+    `<body>${body || ""}</body></html>`;
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() {
+      return html;
+    },
+    async json() {
+      return JSON.parse(html); // throws, exactly like the real Response
+    },
   };
 }
 
@@ -276,7 +305,9 @@ function createPage(options = {}) {
   // Requests are answered by the test: /ping and /branches always answer, while
   // /logme is served from a queue so a scenario can hold the answer back.
   const loginQueue = [];
+  const branchQueue = [];
   const requests = [];
+  const bodies = [];
 
   const ctx = {
     console: { log() {}, warn() {}, error() {}, info() {} },
@@ -294,8 +325,11 @@ function createPage(options = {}) {
     fetch(url, init) {
       const target = String(url);
       requests.push(target);
+      bodies.push({ url: target, body: init && init.body });
       if (target.endsWith("/ping")) return Promise.resolve(jsonResponse(200, {}));
       if (target.endsWith("/branches")) {
+        const handler = branchQueue.shift();
+        if (handler) return handler(init);
         return Promise.resolve(jsonResponse(200, { branches: [] }));
       }
       if (target.endsWith("/logme")) {
@@ -353,10 +387,19 @@ function createPage(options = {}) {
     localStorage,
     storage,
     requests,
+    bodies,
     networkError,
     // Queue the answer of the next /logme request.
     answerLogin(handler) {
       loginQueue.push(handler);
+    },
+    // Queue the answer of the next /branches request.
+    answerBranches(handler) {
+      branchQueue.push(handler);
+    },
+    // Reload the branch list the way a refresh (or the online event) would.
+    loadBranches() {
+      return vm.runInContext("loadBranches(true)", ctx);
     },
     login(username, password) {
       elements.get("UsernameInput").value = username;
@@ -453,7 +496,7 @@ async function main() {
     );
     ok(page.document.body.classList.contains("login-busy"), "still busy");
 
-    page.clock.advance(800); // backoff before the second attempt
+    page.clock.advance(1500); // backoff before the second attempt
     await settleDeep();
     eq(
       page.el("LoginProgressText").textContent,
@@ -564,9 +607,9 @@ async function main() {
       page.answerLogin(() => Promise.reject(netError));
       void page.login("worker", "secret");
       await settleDeep();
-      page.clock.advance(800); // backoff before attempt 2
+      page.clock.advance(1500); // backoff before attempt 2
       await settleDeep();
-      page.clock.advance(1600); // backoff before attempt 3
+      page.clock.advance(3000); // backoff before attempt 3
       await settleDeep();
       await settleDeep();
 
@@ -576,8 +619,202 @@ async function main() {
         page.el("AuthCard").classList.contains("card-error"),
         "card must flash as failed"
       );
-      eq(page.el("DisplayMsg").textContent, "Server Error", "server error message");
+      eq(
+        page.el("DisplayMsg").textContent,
+        "No answer from the server — check the network connection and try again.",
+        "the message says what happened"
+      );
       eq(page.bridge.loaded.length, 0, "the work page must not open");
+    }
+  );
+
+  // The three cases below are the ones the field reports describe: the server
+  // accepted the login, but the client saw something that was not a login.
+  await check(
+    "a 2xx HTML page (captive portal / proxy) is not a login",
+    async () => {
+      const page = createPage();
+      page.answerLogin(() =>
+        Promise.resolve(htmlResponse(200, "Sign in to the network", "<p>Wi-Fi</p>"))
+      );
+      await page.login("worker", "secret");
+      await settleDeep();
+
+      eq(page.storage.get("token"), undefined, "no token was stored");
+      eq(page.bridge.loaded.length, 0, "the work page must not open");
+      eq(page.bridge.tokenUpdates.length, 0, "the outbox must not get a token");
+      ok(
+        page.el("DisplayMsg").textContent.includes("blocked before reaching the server"),
+        `expected the blocked-before-server message, got: ${page.el("DisplayMsg").textContent}`
+      );
+      ok(
+        page.el("DisplayMsg").textContent.includes("Sign in to the network"),
+        "the page title names the intermediary"
+      );
+      ok(!page.document.body.classList.contains("login-busy"), "the form is usable");
+    }
+  );
+
+  await check("a 2xx without a token does not open the work page", async () => {
+    const page = createPage();
+    page.answerLogin(() => Promise.resolve(jsonResponse(200, {})));
+    await page.login("worker", "secret");
+    await settleDeep();
+
+    eq(page.storage.get("token"), undefined, "no empty token was stored");
+    eq(page.bridge.loaded.length, 0, "the work page must not open");
+    eq(
+      page.el("DisplayMsg").textContent,
+      "The server's answer was incomplete — please try again.",
+      "an incomplete answer is named"
+    );
+  });
+
+  await check(
+    "a stalled body is cut off by the deadline and retried, not left spinning",
+    async () => {
+      const page = createPage();
+      const timeoutMs = vm.runInContext("LOGIN_TIMEOUT_MS", page.ctx);
+      // Headers arrive; the body never does. Before the deadline covered the
+      // body, this froze the form forever with no error and no retry.
+      page.answerLogin(() => ({
+        ok: true,
+        status: 200,
+        text: () => new Promise(() => {}),
+      }));
+      page.answerLogin(() => new Promise(() => {}));
+      void page.login("worker", "secret");
+      await settleDeep();
+      ok(page.document.body.classList.contains("login-busy"), "still busy");
+
+      page.clock.advance(timeoutMs);
+      await settleDeep();
+      eq(
+        page.el("LoginProgressText").textContent,
+        "The server is slow — retrying… (2/3)",
+        "the deadline ends the attempt and says the server was slow"
+      );
+
+      page.clock.advance(1500); // backoff before the second attempt
+      await settleDeep();
+      eq(
+        page.el("LoginProgressText").textContent,
+        "Signing in…",
+        "the retry is running"
+      );
+    }
+  );
+
+  // The branch is part of the login request and the server refuses a branch that
+  // was disabled or renamed. The dropdown must therefore come from the server -
+  // the snapshot in index.html is what made "switch branch to get in" necessary.
+  await check("the branch list is retried until the server answers", async () => {
+    const page = createPage();
+    page.el("BranchInput").value = "";
+    page.answerBranches(() => Promise.reject(page.networkError()));
+    page.answerBranches(() =>
+      Promise.resolve(
+        jsonResponse(200, { branches: [{ Name: "Server A" }, { Name: "Server B" }] })
+      )
+    );
+
+    const done = page.loadBranches();
+    await settleDeep();
+    page.clock.advance(1200); // backoff before the second attempt
+    await done;
+    await settleDeep();
+
+    eq(
+      page.el("BranchInput").options.map((o) => o.value),
+      ["Server A", "Server B"],
+      "the server's branches replace the snapshot"
+    );
+    eq(page.el("BranchInput").value, "Server A", "a valid branch is selected");
+  });
+
+  await check(
+    "a login sends the branch from the server list, not the stale snapshot",
+    async () => {
+      const page = createPage();
+      page.answerBranches(() =>
+        Promise.resolve(jsonResponse(200, { branches: [{ Name: "Офис Нов" }] }))
+      );
+      await page.loadBranches();
+      await settleDeep();
+      eq(page.el("BranchInput").value, "Офис Нов", "the server branch is selected");
+
+      page.answerLogin(() =>
+        Promise.resolve(
+          jsonResponse(200, { token: "t", username: "worker", role: "2" })
+        )
+      );
+      await page.login("worker", "secret");
+      await settleDeep();
+
+      const sent = page.bodies.filter((r) => r.url.endsWith("/logme")).pop();
+      ok(sent, "a login request was sent");
+      eq(
+        JSON.parse(sent.body).branch,
+        "Офис Нов",
+        "the login carries the branch the server listed"
+      );
+    }
+  );
+
+  await check(
+    "a branch the server no longer offers is announced, not swapped silently",
+    async () => {
+      const page = createPage();
+      // That is the snapshot's default, i.e. what a stale dropdown would send.
+      page.el("BranchInput").value = "ГКПП Капитан Андреево";
+      page.answerBranches(() =>
+        Promise.resolve(
+          jsonResponse(200, { branches: [{ Name: "Офис Харманли" }] })
+        )
+      );
+      await page.loadBranches();
+      await settleDeep();
+
+      eq(
+        page.el("BranchInput").value,
+        "Офис Харманли",
+        "the first branch the server offers is selected"
+      );
+      const text = page.el("DisplayMsg").textContent;
+      ok(
+        text.includes("ГКПП Капитан Андреево") && text.includes("Офис Харманли"),
+        `the change must be announced, got: ${text}`
+      );
+    }
+  );
+
+  await check(
+    "a login refused because of the branch refreshes the branch list",
+    async () => {
+      const page = createPage();
+      page.answerLogin(() =>
+        Promise.resolve(jsonResponse(403, { error: "Branch is disabled" }))
+      );
+      page.answerBranches(() =>
+        Promise.resolve(
+          jsonResponse(200, { branches: [{ Name: "Офис Харманли" }] })
+        )
+      );
+      await page.login("worker", "secret");
+      await settleDeep();
+
+      eq(
+        page.el("DisplayMsg").textContent,
+        "This branch is disabled",
+        "the server's reason is shown"
+      );
+      const branchCalls = page.requests.filter((u) => u.endsWith("/branches")).length;
+      ok(branchCalls >= 2, `the list must be fetched again (calls: ${branchCalls})`);
+      eq(
+        page.el("BranchInput").value,
+        "Офис Харманли",
+        "the refreshed list is applied for the next attempt"
+      );
     }
   );
 
@@ -640,11 +877,14 @@ async function main() {
     const page = createPage();
     const rows = vm.runInContext(
       "['login.signingIn','login.retrying'," +
-        "'login.waitingServer','login.offline','login.success','login.elapsed']" +
+        "'login.waitingServer','login.offline','login.success','login.elapsed'," +
+        "'login.retryingSlow','login.timeout','login.networkFailed'," +
+        "'login.noToken','login.replaced','net.slow'," +
+        "'login.branchListUnverified','branchChanged']" +
         ".map((key) => [key, I18N.en[key], I18N.bg[key]])",
       page.ctx
     );
-    eq(rows.length, 6, "key count");
+    eq(rows.length, 14, "key count");
     for (const [key, en, bg] of rows) {
       ok(typeof en === "string" && en.length > 0, `${key} missing in en`);
       ok(typeof bg === "string" && bg.length > 0, `${key} missing in bg`);

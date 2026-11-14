@@ -12,8 +12,11 @@
       <h1 data-i18n="brand">Insurance Console</h1>
 
       <form id="LoginForm" class="auth-form">
+        <!-- The label must not live inside the <select>: a <label> there is
+             invalid markup and browsers drop it, which is why the branch field
+             could render without its caption. -->
+        <label for="BranchInput" data-i18n="branch">Branch</label>
         <select id="BranchInput" class="FormInput">
-          <label for="BranchInput" data-i18n="branch">Branch</label>
           <option value="ГКПП Капитан Андреево" selected>ГКПП Капитан Андреево</option>
           <option value="ГКПП Лесово">ГКПП Лесово</option>
           <option value="Офис Харманли">Офис Харманли</option>

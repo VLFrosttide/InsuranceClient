@@ -14,8 +14,17 @@
 // a timeout means "unreachable". This makes the monitor robust even against a
 // server that has not been updated with a /ping route yet.
 //
+// A slow answer is not an outage. On a jittery link /ping can take several
+// seconds and fail once in a while while the server is still answering and still
+// logging workers in, so:
+//   * a slow-but-successful probe reports "Slow connection", not "Offline";
+//   * a single failed probe keeps the previous state; only `offlineAfterFailures`
+//     consecutive failures turn the pill red.
+// Reporting a false outage during a login is what made workers believe the app
+// had refused them while the server had in fact accepted the login.
+//
 // Usage: startNetMonitor({ apiBase, statusEl, intervalMs, timeoutMs })
-// Returns { stop, getState }.
+// Returns { stop, getState, check } — `check` runs one probe on demand.
 
 function startNetMonitor(options = {}) {
   const apiBase = String(
@@ -27,10 +36,19 @@ function startNetMonitor(options = {}) {
   ).replace(/\/+$/, "");
 
   const intervalMs = Number(options.intervalMs) || 15000;
-  const timeoutMs = Number(options.timeoutMs) || 8000;
+  const timeoutMs = Number(options.timeoutMs) || 12000;
+  // A probe that answers, but slowly, is not an outage: the link is bad
+  // (jitter, saturated uplink) while the server is still serving requests and
+  // still accepting logins. Reporting it as "offline" is what makes a worker
+  // believe the program is broken while their login has already gone through.
+  const slowMs = Number(options.slowMs) || 4000;
+  // One failed probe is a blip. Only this many failures in a row mean the
+  // server is really unreachable; until then the previous state is kept, so a
+  // single dropped /ping cannot paint the pill red during a login.
+  const offlineAfterFailures = Number(options.offlineAfterFailures) || 2;
   const statusEl = options.statusEl || null;
   const labels = Object.assign(
-    { online: "Connected", offline: "Offline", checking: "Checking…" },
+    { online: "Connected", offline: "Offline", checking: "Checking…", slow: "Slow connection" },
     options.labels || {}
   );
 
@@ -41,6 +59,7 @@ function startNetMonitor(options = {}) {
 
   const state = {
     status: "unknown", // "online" | "offline" | "unknown"
+    slow: false, // online, but the last probe was slower than slowMs
     latencyMs: null,
     lastCheckedAt: null,
     consecutiveFailures: 0,
@@ -59,16 +78,23 @@ function startNetMonitor(options = {}) {
     if (!statusEl) return;
     const cls =
       state.status === "online"
-        ? "online"
+        ? state.slow
+          ? "slow"
+          : "online"
         : state.status === "offline"
           ? "offline"
           : "checking";
-    statusEl.textContent = labels[state.status] || labels.checking;
+    statusEl.textContent =
+      state.status === "online" && state.slow
+        ? labels.slow || labels.online
+        : labels[state.status] || labels.checking;
     statusEl.className = "net-status " + cls;
     statusEl.title =
       state.latencyMs != null
         ? "Last check: " + state.latencyMs + " ms"
-        : labels.checking;
+        : state.lastError
+          ? state.lastError
+          : labels.checking;
   }
 
   function setStatus(next, extra = {}) {
@@ -76,11 +102,16 @@ function startNetMonitor(options = {}) {
     Object.assign(state, extra);
     state.status = next;
     if (prev !== next) {
-      console.log(
+      const line =
         next === "online"
-          ? `[netMonitor] ${iso()} server reachable (${state.latencyMs}ms)`
-          : `[netMonitor] ${iso()} server unreachable${state.lastError ? " - " + state.lastError : ""}`
-      );
+          ? `${iso()} server reachable (${state.latencyMs}ms${state.slow ? ", slow" : ""})`
+          : next === "offline"
+            ? `${iso()} server unreachable${state.lastError ? " - " + state.lastError : ""}`
+            : `${iso()} checking`;
+      console.log(`[netMonitor] ${line}`);
+      // Mirror the transition into userData/logs/network.log: ping latency
+      // rising and falling is the trail that explains an intermittent login.
+      if (typeof logEvent === "function") logEvent("netMonitor", line);
     }
     render();
   }
@@ -100,6 +131,7 @@ function startNetMonitor(options = {}) {
       const latencyMs = Date.now() - started;
       setStatus("online", {
         latencyMs,
+        slow: latencyMs >= slowMs,
         consecutiveFailures: 0,
         lastCheckedAt: iso(),
         lastError: null,
@@ -112,10 +144,20 @@ function startNetMonitor(options = {}) {
           : err && err.message
             ? err.message
             : String(err);
-      setStatus("offline", {
-        consecutiveFailures: state.consecutiveFailures + 1,
+      const failures = state.consecutiveFailures + 1;
+      // Keep the previous verdict until the failures add up: a single slow or
+      // dropped probe must not turn a working connection red.
+      const nextStatus =
+        failures >= offlineAfterFailures
+          ? "offline"
+          : state.status === "unknown"
+            ? "unknown"
+            : state.status;
+      setStatus(nextStatus, {
+        consecutiveFailures: failures,
         lastCheckedAt: iso(),
         lastError: message,
+        slow: false,
       });
     } finally {
       checking = false;
@@ -131,7 +173,16 @@ function startNetMonitor(options = {}) {
     if (!stopped) check();
   }
   function onOffline() {
-    if (!stopped) setStatus("offline");
+    // The operating system says there is no network at all: that IS a confident
+    // outage, so the login phase may say "no connection" right away.
+    if (!stopped) {
+      setStatus("offline", {
+        consecutiveFailures: Math.max(state.consecutiveFailures, offlineAfterFailures),
+        slow: false,
+        lastCheckedAt: iso(),
+        lastError: "the operating system reports no network",
+      });
+    }
   }
   function onVisorChange() {
     if (!stopped && document.visibilityState === "visible") check();
@@ -151,5 +202,5 @@ function startNetMonitor(options = {}) {
 
   start();
 
-  return { stop, getState: () => ({ ...state }) };
+  return { stop, getState: () => ({ ...state }), check };
 }

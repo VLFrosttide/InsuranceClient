@@ -34,12 +34,32 @@ const I18N = {
     "net.connected": "Connected",
     "net.offline": "Offline",
     "net.checking": "Checking…",
+    "net.slow": "Slow connection",
     "login.retrying": "Server unreachable — retrying…",
+    "login.retryingSlow": "The server is slow — retrying…",
     "login.signingIn": "Signing in…",
     "login.waitingServer": "Waiting for the server…",
     "login.offline": "No connection — the server is unreachable",
     "login.success": "Login successful — loading…",
     "login.elapsed": "{seconds} s",
+    // Terminal outcomes that are not an answer from the API. A slow server, a
+    // network with no answer at all, a captive portal and an incomplete answer
+    // are different problems and must not all read "Server Error".
+    "login.timeout":
+      "The server did not answer in time — your login may already have been accepted. Please try again.",
+    "login.networkFailed":
+      "No answer from the server — check the network connection and try again.",
+    "login.noToken":
+      "The server's answer was incomplete — please try again.",
+    // The login request carries the branch, and the server refuses a branch that
+    // was disabled or renamed. Say when the dropdown could not be confirmed.
+    "login.branchListUnverified":
+      "The branch list could not be loaded from the server, so the selected branch may be out of date.",
+    branchChanged:
+      "Your branch “{from}” is no longer available; using “{to}”.",
+    // A forced logout (expired or replaced token) explains itself on the form.
+    "login.replaced":
+      "Your login was replaced by a newer one. Please sign in again.",
     logout: "Logout",
 
     "nav.dashboard": "Dashboard",
@@ -411,6 +431,13 @@ const I18N = {
     "add.desktopPdfAttached": "Policy PDF attached from the Desktop.",
     "add.emailLost":
       "This email is no longer reserved for you: it was taken by another worker or handled while you were disconnected.",
+    "add.conversationHistory": "Conversation",
+    "add.conversationEmpty": "No replies yet.",
+    "add.conversationLoading": "Loading conversation…",
+    "add.conversationUnavailable":
+      "The older conversation could not be loaded; the quoted emails and your replies are shown below.",
+    "add.messageFromBroker": "Client",
+    "add.messageFromEmployee": "Employee",
 
     "email.noSubject": "(no subject)",
     "email.from": "From:",
@@ -446,6 +473,12 @@ const I18N = {
       "Mark this email as irrelevant? It will be removed and will not appear again.",
     "email.irrelevantMarked": "Email marked as irrelevant",
     "email.opening": "Opening…",
+    "email.brokerCodeTitle": "Broker code",
+    "email.answered": "Answered",
+    "email.answeredSection": "Answered — awaiting broker reply",
+    "email.answeredAt": "Answered {t}",
+    "email.awaitingBroker": "awaiting broker",
+    "email.allAnswered": "All caught up — waiting for the brokers.",
 
     pricing: "Pricing",
     viewPricing: "View/Edit Pricing",
@@ -611,12 +644,26 @@ const I18N = {
     "net.connected": "Свързан",
     "net.offline": "Няма връзка",
     "net.checking": "Проверка…",
+    "net.slow": "Бавна връзка",
     "login.retrying": "Сървърът е недостъпен — нов опит…",
+    "login.retryingSlow": "Сървърът отговаря бавно — нов опит…",
     "login.signingIn": "Влизане…",
     "login.waitingServer": "Изчакване на сървъра…",
     "login.offline": "Няма връзка — сървърът е недостъпен",
     "login.success": "Успешен вход — зареждане…",
     "login.elapsed": "{seconds} с",
+    "login.timeout":
+      "Сървърът не отговори навреме — възможно е входът вече да е приет. Опитайте отново.",
+    "login.networkFailed":
+      "Няма отговор от сървъра — проверете връзката и опитайте отново.",
+    "login.noToken":
+      "Отговорът на сървъра е непълен — опитайте отново.",
+    "login.branchListUnverified":
+      "Списъкът с клонове не можа да се зареди от сървъра, затова избраният клон може да е остарял.",
+    branchChanged:
+      "Клонът „{from}“ вече не е наличен; използва се „{to}“.",
+    "login.replaced":
+      "Входът беше заменен от по-нов. Моля, влезте отново.",
     logout: "Изход",
 
     "nav.dashboard": "Табло",
@@ -989,6 +1036,13 @@ const I18N = {
     "add.desktopPdfAttached": "PDF от работния плот е прикачен към полицата.",
     "add.emailLost":
       "Този имейл вече не е запазен за вас: бил е взет от друг служител или обработен, докато връзката беше прекъсната.",
+    "add.conversationHistory": "Разговор",
+    "add.conversationEmpty": "Няма отговори още.",
+    "add.conversationLoading": "Зареждане на разговора…",
+    "add.conversationUnavailable":
+      "По-старият разговор не можа да бъде зареден; цитираните имейли и вашите отговори са показани по-долу.",
+    "add.messageFromBroker": "Клиент",
+    "add.messageFromEmployee": "Служител",
 
     "email.noSubject": "(без тема)",
     "email.from": "От:",
@@ -1024,6 +1078,12 @@ const I18N = {
       "Да се маркира ли този имейл като нерелевантен? Той ще бъде премахнат и няма да се показва отново.",
     "email.irrelevantMarked": "Имейлът е маркиран като нерелевантен",
     "email.opening": "Отваряне…",
+    "email.brokerCodeTitle": "Код на брокер",
+    "email.answered": "Отговорено",
+    "email.answeredSection": "Отговорени — чакат отговор от брокера",
+    "email.answeredAt": "Отговорено {t}",
+    "email.awaitingBroker": "чака брокер",
+    "email.allAnswered": "Всичко е обработено — чакаме брокерите.",
 
     pricing: "Цени",
     viewPricing: "Преглед/редактиране на цени",
@@ -1468,9 +1528,35 @@ function clearSession() {
   localStorage.removeItem("role");
 }
 
-function redirectToLogin() {
+// Drop the session and go back to the login page.
+//
+// `noticeKey` is an i18n key explaining WHY the worker was sent back (expired
+// token, token replaced by a newer login). It is stored as a one-shot notice the
+// login page shows once, so a forced logout never looks like "the program just
+// refuses to let me in".
+function redirectToLogin(noticeKey) {
   clearSession();
+  try {
+    if (noticeKey) localStorage.setItem("loginNotice", noticeKey);
+    else localStorage.removeItem("loginNotice");
+  } catch {
+    // localStorage unavailable: the redirect still has to happen.
+  }
   window.bridge.LoadNewPage("renderer/LoginPage/index.html");
+}
+
+// Send a client-side event to the main process, which appends it to
+// userData/logs/network.log. The DevTools console (Ctrl + ~) is the only trail a
+// connection problem leaves today, and a worker in the field cannot read it, so
+// the interesting events are mirrored into a file support can collect.
+function logEvent(channel, message) {
+  try {
+    if (window.bridge && typeof window.bridge.LogEvent === "function") {
+      window.bridge.LogEvent(channel, message);
+    }
+  } catch {
+    // Logging must never break the page.
+  }
 }
 
 // How long a single REST request may run before it is aborted. Slow or unstable
@@ -1551,7 +1637,7 @@ async function api(path, options = {}) {
     clearTimeout(timer);
 
     if (res.status === 401) {
-      redirectToLogin();
+      redirectToLogin("sessionExpired");
       throw new Error(
         data.error ? translateError(data.error) : t("sessionExpired")
       );
@@ -2429,7 +2515,7 @@ class UnreadEmailSocket {
         }
         try {
           if (this.handlers.auth_error) this.handlers.auth_error(msg);
-          else redirectToLogin();
+          else redirectToLogin("sessionExpired");
         } finally {
           // The token was rejected: there is no point in retrying.
           this.close();
