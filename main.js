@@ -607,18 +607,21 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 // ---------------------------------------------------------------------------
 // Desktop PDF watcher
 // ---------------------------------------------------------------------------
-// While a worker processes an email-sourced policy, an external tool downloads
-// the policy PDFs to the user's Desktop. The renderer starts this watcher when
-// the email card is clicked; we then poll the Desktop every second for PDFs
-// created after that moment, push their bytes to the form at once, delete the
-// source files, and queue a paper-copy print in the background (see the print
-// queue below).
+// While a worker processes a policy, an external tool downloads the policy
+// PDFs to the user's Desktop. The renderer starts this watcher when the email
+// card or the walk-in insurance button is clicked; we then poll the Desktop
+// every second for PDFs created after that moment and queue paper copies in
+// the background (see the print queue below).
 //
-// Both PDFs are auto-attached to the form. The policy PDF itself
-// ("BG_02_ FI<policy>.pdf") is uploaded but never auto-printed; only the
-// remaining PDF gets a paper copy. The watcher stops itself once it has
-// collected both files.
-let DesktopPdfWatch = null; // { sinceMs, timer, emitted, sizes, foundPolicy, foundOther }
+// Email mode: both PDFs are pushed to the form at once and deleted from the
+// Desktop; the policy PDF ("BG_02_ FI<policy>.pdf") is uploaded but never
+// auto-printed, only the remaining PDF gets a paper copy. The watcher stops
+// once it has collected both files.
+//
+// Walk-in mode: both PDFs get a paper copy, and each Desktop file is deleted
+// only after its print has settled. The watcher stops once both paper copies
+// are done (or the form is closed).
+let DesktopPdfWatch = null; // { mode, sinceMs, timer, emitted, sizes, foundPolicy, foundOther, foundCount, printedCount }
 
 function DesktopPdfDirectory() {
   try {
@@ -666,6 +669,10 @@ async function ScanDesktopPdfsOnce() {
   const dir = DesktopPdfDirectory();
   if (!dir) return;
 
+  const watch = DesktopPdfWatch;
+  if (!watch) return;
+  const isWalkIn = watch.mode === "walkin";
+
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -679,11 +686,11 @@ async function ScanDesktopPdfsOnce() {
     if (path.extname(entry.name).toLowerCase() !== ".pdf") continue;
 
     const filePath = path.join(dir, entry.name);
-    if (DesktopPdfWatch.emitted.has(filePath)) continue;
+    if (watch.emitted.has(filePath)) continue;
 
     // The policy PDF ("BG_02_ FI<policy>.pdf") is auto-attached like every
-    // other PDF, but it is never auto-printed: only the remaining PDF gets a
-    // paper copy.
+    // other PDF, but it is never auto-printed in email mode: only the
+    // remaining PDF gets a paper copy.
     const isPolicyPdf = /^BG_02_\s*FI/i.test(entry.name);
 
     let stat;
@@ -699,15 +706,15 @@ async function ScanDesktopPdfsOnce() {
       Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
         ? stat.birthtimeMs
         : stat.mtimeMs;
-    if (!(createdMs > DesktopPdfWatch.sinceMs)) continue;
+    if (!(createdMs > watch.sinceMs)) continue;
 
     // A download may still be in progress (its size keeps growing). Accept the
     // file only once its size has held steady across one poll cycle.
-    if (DesktopPdfWatch.sizes.get(filePath) !== stat.size) {
-      DesktopPdfWatch.sizes.set(filePath, stat.size);
+    if (watch.sizes.get(filePath) !== stat.size) {
+      watch.sizes.set(filePath, stat.size);
       continue;
     }
-    DesktopPdfWatch.sizes.delete(filePath);
+    watch.sizes.delete(filePath);
 
     let base64;
     try {
@@ -717,18 +724,48 @@ async function ScanDesktopPdfsOnce() {
       continue;
     }
 
-    // Capture is complete: push the bytes to the form immediately so the
-    // upload is never blocked by printing, mark the file handled, and remove
-    // the Desktop copy. A paper copy is printed afterwards in the background
-    // queue (its bytes are already safe in the queue, so deleting the source
-    // file here cannot lose the policy).
-    DesktopPdfWatch.emitted.add(filePath);
+    watch.emitted.add(filePath);
+    watch.foundCount += 1;
     if (isPolicyPdf) {
-      DesktopPdfWatch.foundPolicy = true;
+      watch.foundPolicy = true;
     } else {
-      DesktopPdfWatch.foundOther = true;
+      watch.foundOther = true;
     }
 
+    if (isWalkIn) {
+      // Walk-ins are print-only: nothing is attached to the form. Every PDF
+      // downloaded for the visit gets a paper copy, and the Desktop file is
+      // kept until that print has settled (see the print queue below), so the
+      // source is still there if the print fails.
+      enqueueDesktopPrint(base64, entry.name, {
+        filePath,
+        deleteAfterPrint: true,
+        onSettled: () => {
+          // Only count a print for the watcher that queued it: the form may
+          // have been closed and reopened (starting a new walk-in watch) while
+          // an older print dialog was still open.
+          if (watch !== DesktopPdfWatch || watch.mode !== "walkin") return;
+          watch.printedCount += 1;
+          if (watch.printedCount >= 2) StopDesktopPdfWatch();
+        },
+      });
+
+      // Both downloads are in hand: stop polling so unrelated PDFs saved to
+      // the Desktop are not picked up. The watcher stays alive (without a
+      // timer) until both print jobs settle, which is when it is stopped.
+      if (watch.foundCount >= 2) {
+        if (watch.timer) clearInterval(watch.timer);
+        watch.timer = null;
+        break;
+      }
+      continue;
+    }
+
+    // Email mode: push the bytes to the form immediately so the upload is
+    // never blocked by printing, mark the file handled, and remove the Desktop
+    // copy. A paper copy is printed afterwards in the background queue (its
+    // bytes are already safe in the queue, so deleting the source file here
+    // cannot lose the policy).
     if (win && !win.isDestroyed()) {
       win.webContents.send("DesktopPdfFound", {
         filename: entry.name,
@@ -749,7 +786,7 @@ async function ScanDesktopPdfsOnce() {
       enqueueDesktopPrint(base64, entry.name);
     }
 
-    if (DesktopPdfWatch.foundPolicy && DesktopPdfWatch.foundOther) {
+    if (watch.foundPolicy && watch.foundOther) {
       StopDesktopPdfWatch();
       break;
     }
@@ -766,13 +803,21 @@ async function ScanDesktopPdfsOnce() {
 // with the dialog (printed or cancelled) — or the print has failed — the dialog
 // is never re-opened automatically, so the print window cannot pop up again
 // after the user is already done with it.
-let DesktopPrintQueue = []; // { base64, filename }
+let DesktopPrintQueue = []; // { base64, filename, filePath, deleteAfterPrint, onSettled }
 let DesktopPrintRunning = false;
 
-function enqueueDesktopPrint(base64, filename) {
+function enqueueDesktopPrint(base64, filename, options = {}) {
   if (!base64) return;
   if (DesktopPrintQueue.some((job) => job.filename === filename)) return;
-  DesktopPrintQueue.push({ base64, filename });
+  DesktopPrintQueue.push({
+    base64,
+    filename,
+    // Walk-in jobs keep the Desktop source around until this print settles.
+    filePath: options.filePath || "",
+    deleteAfterPrint: options.deleteAfterPrint === true,
+    onSettled:
+      typeof options.onSettled === "function" ? options.onSettled : null,
+  });
   drainDesktopPrintQueue();
 }
 
@@ -791,20 +836,50 @@ async function drainDesktopPrintQueue() {
         result = { ok: false, error: String((err && err.message) || err) };
       }
 
-      if (result && result.ok) continue;
-
       // The paper copy is finished one way or another: it printed, the user
       // dismissed the dialog, or it failed. Do NOT re-open the print dialog on
       // its own — that made the dialog reappear even after the user had already
       // clicked Print (and after the physical page had finished). Log the
       // outcome and move on to the next queued PDF instead.
-      if (result && result.cancelled) {
-        console.log(`[DesktopPdfWatch] Printing of "${job.filename}" was cancelled.`);
-      } else {
-        console.warn(
-          `[DesktopPdfWatch] Printing of "${job.filename}" did not complete` +
-            (result && result.error ? `: ${result.error}` : ".")
-        );
+      if (!result || !result.ok) {
+        if (result && result.cancelled) {
+          console.log(`[DesktopPdfWatch] Printing of "${job.filename}" was cancelled.`);
+        } else {
+          console.warn(
+            `[DesktopPdfWatch] Printing of "${job.filename}" did not complete` +
+              (result && result.error ? `: ${result.error}` : ".")
+          );
+        }
+      }
+
+      // Walk-in downloads stay on the Desktop for the entire print attempt.
+      // Remove the source now that the print has settled (printed, cancelled
+      // or failed) so the file never lingers.
+      if (job.deleteAfterPrint && job.filePath) {
+        try {
+          await fs.promises.unlink(job.filePath);
+          console.log(`[DesktopPdfWatch] Deleted "${job.filename}" after printing.`);
+        } catch (err) {
+          if (err.code !== "ENOENT") {
+            console.error(
+              `[DesktopPdfWatch] Failed to delete "${job.filename}" after printing:`,
+              err
+            );
+          }
+        }
+      }
+
+      // Lets the walk-in watcher count finished prints and stop itself once
+      // both paper copies are done.
+      if (job.onSettled) {
+        try {
+          job.onSettled(result);
+        } catch (err) {
+          console.error(
+            `[DesktopPdfWatch] Print callback threw for "${job.filename}":`,
+            err
+          );
+        }
       }
     }
   } finally {
@@ -967,20 +1042,26 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
   });
 }
 
-ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs) => {
+ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs, options) => {
   const dir = DesktopPdfDirectory();
   if (!dir) return { ok: false };
 
+  const opts = options && typeof options === "object" ? options : {};
+  const mode = opts.mode === "walkin" ? "walkin" : "email";
   const since = Number(sinceMs) || Date.now();
   StopDesktopPdfWatch();
   DesktopPdfWatch = {
+    mode,
     sinceMs: since,
     timer: setInterval(ScanDesktopPdfs, 1000),
     emitted: new Set(),
     sizes: new Map(),
     foundPolicy: false,
     foundOther: false,
+    foundCount: 0,
+    printedCount: 0,
   };
+  console.log(`[DesktopPdfWatch] Watching the Desktop (${mode} mode).`);
   return { ok: true };
 });
 

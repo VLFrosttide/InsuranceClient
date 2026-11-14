@@ -387,12 +387,129 @@ button.reply-button.reply-empty:hover {
   background: #1b2029;
   cursor: zoom-in;
 }
+/* The picture and its download overlay share one fixed box, so the progress
+   bar never changes the gallery's layout. */
+.email-attachment .attachment-preview {
+  position: relative;
+  width: 100%;
+  height: 130px;
+}
+.email-attachment .attachment-preview img {
+  height: 100%;
+}
+.email-attachment .attachment-preview img.attachment-hidden {
+  visibility: hidden;
+}
+.email-attachment .attachment-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  text-align: center;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  border: 1px dashed var(--panel-border);
+  background: #1b2029;
+}
+/* Spinner + percentage + bar shown while the image bytes are downloaded over
+   the WebSocket. The overlay fades away once the picture is ready. */
+.email-attachment .attachment-progress {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(17, 21, 28, 0.72),
+    rgba(17, 21, 28, 0.9)
+  );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+.email-attachment .attachment-progress.active {
+  opacity: 1;
+}
+.email-attachment .attachment-spinner {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.22);
+  border-top-color: var(--accent);
+  animation: attachment-spin 800ms linear infinite;
+}
+.email-attachment .attachment-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--text);
+}
+.email-attachment .attachment-progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+.email-attachment .attachment-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms linear;
+}
+/* Unknown size: an animated striped bar instead of a percentage. */
+.email-attachment .attachment-progress.indeterminate .attachment-progress-fill {
+  width: 100%;
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--accent) 0 10px,
+    rgba(255, 255, 255, 0.18) 10px 20px
+  );
+  animation: attachment-slide 900ms linear infinite;
+}
+.email-attachment .attachment-progress.complete .attachment-progress-fill {
+  background: var(--success, #3fb950);
+}
+@keyframes attachment-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes attachment-slide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 40px 0;
+  }
+}
 /* Placeholder state while the image bytes are still being fetched over the
    WebSocket (the server sends attachment metadata first, then the bytes). */
 .email-attachment img.attachment-loading {
   opacity: 0.45;
   filter: grayscale(0.6);
   cursor: progress;
+  animation: attachment-pulse 1.5s ease-in-out infinite;
+}
+@keyframes attachment-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 .email-attachment .small {
   font-size: 12px;

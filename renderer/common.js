@@ -247,6 +247,38 @@ const I18N = {
     transactionDeleted: "Transaction deleted",
     resetConfirm:
       "Reset this branch's current cash, card balance and cash from brokers to 0? This will record the kept amounts.",
+    fixShift: "Fix forgotten shift",
+    fixShiftTitle: "Close a forgotten shift",
+    fixShiftHint:
+      "The shift closes at the end of the selected day (23:59:59, midnight). The cash drawer, the card balance and Cash from Brokers are split from their movement times: the amount each held at midnight is recorded as the closed shift, and everything recorded after midnight — today's insurances included — stays in the live balances.",
+    fixShiftDate: "Shift date",
+    fixShiftSubmit: "Close shift at midnight",
+    fixShiftConfirm:
+      "Close the shift of {date} at {cutoff}?\n\nKept by the closed shift:\nCash: {keptCash}\nCard: {keptCard}\nCash from brokers: {keptBroker}\n\nStays in the live balances:\nCash: {remainCash}\nCard: {remainCard}\nCash from brokers: {remainBroker}",
+    fixShiftDone:
+      "Shift of {date} closed at midnight — kept {keptCash} cash, {keptCard} card, {keptBroker} broker cash",
+    fixShiftInvalid: "Enter a valid shift date.",
+    fixShiftFuture: "The shift end must be in the past.",
+    fixShiftAlreadyClosed:
+      "A shift has already been closed at or after this cutoff. Use the normal End shift instead.",
+    fixShiftCashBelow:
+      "Today's cash is below the midnight balance for {currency}. Nothing was changed — use the normal End shift.",
+    fixShiftCutoffNegative:
+      "The cash balance at the cutoff is negative for {currency}. Nothing was changed.",
+    fixShiftBrokerBelow:
+      "Cash from brokers is below the midnight balance for {currency}. Nothing was changed.",
+    shiftMissedWarning:
+      "No End shift is recorded for {date}. If an employee forgot to finish that shift, close it now so the day's report is correct.",
+    "shiftReminder.title": "Shift ends in 5 minutes",
+    "shiftReminder.body":
+      "Remember to finish your shift before midnight: open Current cash and press “End shift”.",
+    "shiftReminder.remaining": "Time until midnight: {time}",
+    "shiftReminder.overdue":
+      "Midnight has passed — please finish last night's shift now.",
+    "shiftReminder.endShift": "Finish shift",
+    "shiftReminder.dismiss": "Dismiss",
+    "shiftReminder.leaveFormConfirm":
+      "Leave this page? Anything not saved on the insurance form will be lost. Open Current cash to finish the shift?",
     brokerBalanceIncreased: "Broker balance increased",
     brokerBalanceReduced: "Broker balance reduced",
     brokerCreated: "Broker created",
@@ -458,6 +490,10 @@ const I18N = {
     "email.attachments": "Attachments",
     "email.noAttachments": "No attachments.",
     "email.attachment": "attachment",
+    "email.downloading": "Downloading… {percent}%",
+    "email.downloadingUnknown": "Downloading…",
+    "email.downloadRetrying": "Connection lost — retrying…",
+    "email.downloaded": "Downloaded",
     "email.zoomIn": "Zoom in",
     "email.zoomOut": "Zoom out",
     "email.resetZoom": "Reset zoom",
@@ -851,6 +887,38 @@ const I18N = {
     transactionDeleted: "Транзакцията е изтрита",
     resetConfirm:
       "Да се нулират ли наличният кеш, балансът на картата и кешът от брокери на този клон? Ще бъдат записани задържаните суми.",
+    fixShift: "Поправи забравена смяна",
+    fixShiftTitle: "Затвори забравена смяна",
+    fixShiftHint:
+      "Смяната се затваря в края на избрания ден (23:59:59, полунощ). Наличният кеш, балансът на картата и кешът от брокери се разделят по време на движенията: сумата, която всеки е държал в полунощ, се записва като приключена смяна, а всичко след полунощ — включително днешните застраховки — остава в текущите баланси.",
+    fixShiftDate: "Дата на смяната",
+    fixShiftSubmit: "Затвори смяната в полунощ",
+    fixShiftConfirm:
+      "Да се затвори ли смяната на {date} в {cutoff}?\n\nЗадържани от приключената смяна:\nКеш: {keptCash}\nКарта: {keptCard}\nКеш от брокери: {keptBroker}\n\nОстава в текущите баланси:\nКеш: {remainCash}\nКарта: {remainCard}\nКеш от брокери: {remainBroker}",
+    fixShiftDone:
+      "Смяната на {date} е затворена в полунощ — задържани {keptCash} кеш, {keptCard} карта, {keptBroker} кеш от брокери",
+    fixShiftInvalid: "Въведете валидна дата на смяната.",
+    fixShiftFuture: "Краят на смяната трябва да е в миналото.",
+    fixShiftAlreadyClosed:
+      "Смяна вече е затворена в или след този час. Използвайте обикновено „Завърши смяна“.",
+    fixShiftCashBelow:
+      "Днешният кеш е по-малък от баланса в полунощ за {currency}. Нищо не беше променено — използвайте обикновено „Завърши смяна“.",
+    fixShiftCutoffNegative:
+      "Кешовият баланс към този час е отрицателен за {currency}. Нищо не беше променено.",
+    fixShiftBrokerBelow:
+      "Кешът от брокери е по-малък от баланса в полунощ за {currency}. Нищо не беше променено.",
+    shiftMissedWarning:
+      "За {date} няма записано „Завърши смяна“. Ако служител е забравил да приключи смяната, затворете я сега, за да е верен отчетът за деня.",
+    "shiftReminder.title": "Смяната приключва след 5 минути",
+    "shiftReminder.body":
+      "Не забравяйте да завършите смяната си преди полунощ: отворете „Наличен кеш“ и натиснете „Завърши смяна“.",
+    "shiftReminder.remaining": "До полунощ: {time}",
+    "shiftReminder.overdue":
+      "Полунощ мина — моля, завършете смяната от предната нощ сега.",
+    "shiftReminder.endShift": "Завърши смяната",
+    "shiftReminder.dismiss": "Затвори",
+    "shiftReminder.leaveFormConfirm":
+      "Да се напусне ли страницата? Незаписаното във формуляра за застраховка ще бъде загубено. Да се отвори ли „Наличен кеш“, за да завършите смяната?",
     brokerBalanceIncreased: "Балансът на брокера беше увеличен",
     brokerBalanceReduced: "Балансът на брокера беше намален",
     brokerCreated: "Брокерът е създаден",
@@ -1063,6 +1131,10 @@ const I18N = {
     "email.attachments": "Прикачени файлове",
     "email.noAttachments": "Няма прикачени файлове.",
     "email.attachment": "прикачен файл",
+    "email.downloading": "Изтегляне… {percent}%",
+    "email.downloadingUnknown": "Изтегляне…",
+    "email.downloadRetrying": "Връзката прекъсна — нов опит…",
+    "email.downloaded": "Изтеглено",
     "email.zoomIn": "Увеличи",
     "email.zoomOut": "Намали",
     "email.resetZoom": "Нулирай мащаба",
@@ -1247,6 +1319,9 @@ function setLang(lang) {
   currentLang = I18N[lang] ? lang : "bg";
   localStorage.setItem("lang", currentLang);
   translatePage();
+  // The shift-reminder banner is built in JS, so it is not covered by
+  // translatePage(); re-render it in the new language while it is on screen.
+  refreshShiftReminder();
   return currentLang;
 }
 
@@ -1378,6 +1453,12 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Failed to update insurance": "err.failedUpdateInsurance",
   "Failed to annul insurance": "err.failedAnnullInsurance",
   "Failed to create insurance": "err.failedCreateInsurance",
+
+  // Admin "fix forgotten shift" (as-of reset).
+  "A shift has already been closed at or after this cutoff":
+    "fixShiftAlreadyClosed",
+  "Cutoff must be in YYYY-MM-DD HH:MM:SS format": "fixShiftInvalid",
+  "Failed to close the shift as of the cutoff": "serverError",
 };
 
 // Translate a server error message to the current language. Returns an empty
@@ -1393,6 +1474,26 @@ function translateError(message) {
   }
   if (text.startsWith("Invalid vehicle type:")) {
     return `${t("err.invalidVehicleType")} ${text.slice(text.indexOf(":") + 1).trim()}`;
+  }
+  // The as-of shift reset names the currency in these messages.
+  const asOfPrefixes = [
+    [
+      "Today's cash is below the midnight balance for ",
+      "fixShiftCashBelow",
+    ],
+    [
+      "Cash from brokers is below the midnight balance for ",
+      "fixShiftBrokerBelow",
+    ],
+    [
+      "The cash balance at the cutoff is negative for ",
+      "fixShiftCutoffNegative",
+    ],
+  ];
+  for (const [prefix, key] of asOfPrefixes) {
+    if (text.startsWith(prefix)) {
+      return fmt(t(key), { currency: text.slice(prefix.length).trim() });
+    }
   }
   return text;
 }
@@ -1840,6 +1941,238 @@ function fmt(text, vars) {
   return String(text).replace(/\{(\w+)\}/g, (m, k) =>
     vars && vars[k] !== undefined ? String(vars[k]) : m
   );
+}
+
+// ---------------------------------------------------------------------------
+// End-of-shift reminder (5 minutes before local midnight)
+//
+// Current cash is not reset automatically: a worker (or an admin) must press
+// "End shift" so the branch's drawer, card balance and cash from brokers are
+// zeroed and the day's report closes. A worker who forgets leaves last night's
+// money sitting in today's balances. This reminder runs on every authenticated
+// page (dashboard, insurance form) and stays on screen until it is acted on or
+// dismissed, with a live countdown to midnight.
+//
+// `shiftReminder.js` provides the pure timing helpers; the banner itself lives
+// here so every page gets it from one place.
+// ---------------------------------------------------------------------------
+const SHIFT_REMINDER_DISMISSED_KEY = "shiftReminderDismissedDay";
+const SHIFT_REMINDER_PENDING_VIEW_KEY = "shiftReminderOpenCurrentCash";
+
+let shiftReminderTimer = null;
+let shiftReminderTick = null;
+let shiftReminderNode = null;
+
+function shiftReminderEligible() {
+  const role = getRole();
+  if (role !== "1" && role !== "2") return false;
+  // A stale role left on the login page (after a crash, say) must not show a
+  // shift reminder over the sign-in form.
+  return typeof getToken === "function" ? Boolean(getToken()) : true;
+}
+
+function shiftReminderTodayKey(now = new Date()) {
+  if (typeof shiftReminderDayKey === "function") return shiftReminderDayKey(now);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+}
+
+function hideShiftReminder(markDismissed) {
+  if (shiftReminderTick) {
+    clearInterval(shiftReminderTick);
+    shiftReminderTick = null;
+  }
+  if (shiftReminderNode) {
+    shiftReminderNode.remove();
+    shiftReminderNode = null;
+  }
+  if (markDismissed) {
+    try {
+      localStorage.setItem(
+        SHIFT_REMINDER_DISMISSED_KEY,
+        shiftReminderTodayKey(new Date())
+      );
+    } catch (err) {
+      console.warn("Could not remember the dismissed shift reminder:", err);
+    }
+  }
+}
+
+// Update the countdown line every second; after midnight it switches to the
+// "finish last night's shift" wording instead of counting down again.
+function updateShiftReminderCountdown() {
+  if (!shiftReminderNode) return;
+  const countdown = shiftReminderNode.querySelector(
+    ".shift-reminder-countdown"
+  );
+  if (!countdown) return;
+  const seconds =
+    typeof shiftReminderSecondsLeft === "function"
+      ? shiftReminderSecondsLeft(new Date())
+      : 0;
+  if (seconds > 0) {
+    countdown.textContent = fmt(t("shiftReminder.remaining"), {
+      time: formatShiftCountdown(seconds),
+    });
+    countdown.classList.remove("overdue");
+  } else {
+    countdown.textContent = t("shiftReminder.overdue");
+    countdown.classList.add("overdue");
+  }
+}
+
+// Open Current cash so the worker can press "End shift". On the dashboard the
+// page installs `window.__openCurrentCash`; on the insurance form the request
+// is handed to the dashboard through localStorage and a page load, because the
+// form has no Current cash view of its own.
+function openCurrentCashForShiftReminder() {
+  if (typeof window.__openCurrentCash === "function") {
+    hideShiftReminder(true);
+    try {
+      window.__openCurrentCash();
+    } catch (err) {
+      console.error("Failed to open Current cash from the shift reminder:", err);
+    }
+    return;
+  }
+  // On the insurance form this leaves the page, so make the loss of unsaved
+  // form data explicit before navigating away.
+  if (!window.confirm(t("shiftReminder.leaveFormConfirm"))) return;
+  hideShiftReminder(true);
+  try {
+    localStorage.setItem(SHIFT_REMINDER_PENDING_VIEW_KEY, "1");
+  } catch (err) {
+    console.warn("Could not queue the Current cash view:", err);
+  }
+  if (window.bridge && typeof window.bridge.LoadNewPage === "function") {
+    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+  }
+}
+
+// True once the dashboard has been asked (from the reminder) to show Current
+// cash. The flag is consumed so a later reload does not jump there again.
+function consumeShiftReminderPendingView() {
+  try {
+    if (localStorage.getItem(SHIFT_REMINDER_PENDING_VIEW_KEY) === "1") {
+      localStorage.removeItem(SHIFT_REMINDER_PENDING_VIEW_KEY);
+      return true;
+    }
+  } catch (err) {
+    console.warn("Could not read the pending Current cash view:", err);
+  }
+  return false;
+}
+
+function showShiftReminder() {
+  if (!shiftReminderEligible() || shiftReminderNode) return;
+  if (typeof document === "undefined" || !document.body) return;
+
+  // One dismissal per day is enough; a page opened tomorrow asks again.
+  try {
+    const dismissed = localStorage.getItem(SHIFT_REMINDER_DISMISSED_KEY);
+    if (dismissed && dismissed === shiftReminderTodayKey(new Date())) return;
+  } catch (err) {
+    console.warn("Could not read the dismissed shift reminder:", err);
+  }
+
+  const box = el("div", null, { class: "shift-reminder", role: "alert" });
+  box.appendChild(
+    el("span", "⏰", { class: "shift-reminder-icon", "aria-hidden": "true" })
+  );
+
+  const body = el("div", null, { class: "shift-reminder-body" });
+  body.appendChild(
+    el("strong", t("shiftReminder.title"), { class: "shift-reminder-title" })
+  );
+  body.appendChild(
+    el("span", t("shiftReminder.body"), { class: "shift-reminder-text" })
+  );
+  body.appendChild(el("span", "", { class: "shift-reminder-countdown" }));
+  box.appendChild(body);
+
+  const actions = el("div", null, { class: "shift-reminder-actions" });
+  const canOpenCash =
+    typeof window.__openCurrentCash === "function" ||
+    (window.bridge && typeof window.bridge.LoadNewPage === "function");
+  if (canOpenCash) {
+    const endBtn = el("button", t("shiftReminder.endShift"), {
+      type: "button",
+      class: "small",
+    });
+    endBtn.addEventListener("click", openCurrentCashForShiftReminder);
+    actions.appendChild(endBtn);
+  }
+  const dismissBtn = el("button", t("shiftReminder.dismiss"), {
+    type: "button",
+    class: "secondary small",
+  });
+  dismissBtn.addEventListener("click", () => hideShiftReminder(true));
+  actions.appendChild(dismissBtn);
+  box.appendChild(actions);
+
+  document.body.appendChild(box);
+  shiftReminderNode = box;
+  updateShiftReminderCountdown();
+  shiftReminderTick = setInterval(updateShiftReminderCountdown, 1000);
+}
+
+// Re-render the banner after a language switch (the countdown keeps running).
+function refreshShiftReminder() {
+  if (!shiftReminderNode) return;
+  hideShiftReminder(false);
+  showShiftReminder();
+}
+
+/**
+ * Arm the night's reminder. `reference` is an optional time to measure from
+ * (defaults to now); `useNext` targets tomorrow's 23:55 even when called inside
+ * tonight's window, which is how the timer re-arms after firing without
+ * looping.
+ */
+function scheduleShiftReminder(reference, useNext) {
+  if (shiftReminderTimer) {
+    clearTimeout(shiftReminderTimer);
+    shiftReminderTimer = null;
+  }
+  if (!shiftReminderEligible() || typeof shiftMsUntilReminder !== "function") {
+    return;
+  }
+  // Resolve the reference time only after the guards: on a page without the
+  // timing helpers (or in a test harness without a Date constructor) there is
+  // nothing to schedule and no date to build.
+  const now =
+    reference === undefined
+      ? new Date()
+      : reference instanceof Date
+        ? reference
+        : new Date(reference);
+  const delay =
+    useNext && typeof shiftMsUntilNextReminder === "function"
+      ? shiftMsUntilNextReminder(now)
+      : Math.max(0, shiftMsUntilReminder(now));
+  shiftReminderTimer = setTimeout(() => {
+    shiftReminderTimer = null;
+    showShiftReminder();
+    // Arm the following night explicitly: at 23:55 `shiftMsUntilReminder`
+    // is 0, so re-using it here would fire the banner again immediately.
+    scheduleShiftReminder(undefined, true);
+  }, delay);
+}
+
+function startShiftReminder() {
+  if (!shiftReminderEligible()) return;
+  scheduleShiftReminder();
+}
+
+// Deferred scripts run before DOMContentLoaded, so waiting for it lets the
+// dashboard install window.__openCurrentCash first and the banner offer its
+// "Finish shift" shortcut right away.
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading" || document.readyState === "interactive") {
+    document.addEventListener("DOMContentLoaded", startShiftReminder);
+  } else {
+    startShiftReminder();
+  }
 }
 
 // Subscribe to queue state changes (called immediately with the last state).

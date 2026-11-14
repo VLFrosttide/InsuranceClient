@@ -211,6 +211,116 @@ function clearAttachmentTimers(entry) {
     clearTimeout(entry.retryTimer);
     entry.retryTimer = null;
   }
+  if (entry.progressTimer) {
+    clearInterval(entry.progressTimer);
+    entry.progressTimer = null;
+  }
+  if (entry.progressHideTimer) {
+    clearTimeout(entry.progressHideTimer);
+    entry.progressHideTimer = null;
+  }
+}
+
+// --- Attachment download progress UI ----------------------------------------
+// The bytes are delivered in one WebSocket message, so there is no byte stream
+// to measure. attachmentProgress.js turns the attachment's size and the time
+// the request has been running into a conservative percentage that stops at
+// 90% until the reply really arrives. Until then a spinner and the moving bar
+// make it obvious that the picture is still being downloaded, instead of a
+// thumbnail that looks frozen.
+function stopAttachmentProgress(entry) {
+  if (entry && entry.progressTimer) {
+    clearInterval(entry.progressTimer);
+    entry.progressTimer = null;
+  }
+}
+
+function paintAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  const done = isAttachmentLoaded(entry);
+  const percent = attachmentProgressPercent(
+    entry.att && entry.att.size,
+    Date.now() - (entry.progressStartedAt || Date.now()),
+    done
+  );
+  const overlay = entry.progress.el;
+  const fill = entry.progress.fill;
+  const label = entry.progress.label;
+  overlay.classList.add("active");
+  overlay.classList.toggle("indeterminate", percent === null);
+  overlay.classList.toggle("complete", done);
+  if (percent === null) {
+    // No size from the server: an animated bar is the honest option.
+    fill.style.width = "";
+    label.textContent = t("email.downloadingUnknown");
+  } else {
+    fill.style.width = `${percent}%`;
+    label.textContent = done
+      ? t("email.downloaded")
+      : fmt(t("email.downloading"), { percent });
+  }
+  if (done) stopAttachmentProgress(entry);
+}
+
+// Begin (or restart, after a retry) the moving progress bar for one image.
+function startAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  entry.progressStartedAt = Date.now();
+  stopAttachmentProgress(entry);
+  clearTimeout(entry.progressHideTimer);
+  entry.progressHideTimer = null;
+  paintAttachmentProgress(entry);
+  entry.progressTimer = setInterval(() => paintAttachmentProgress(entry), 250);
+}
+
+// The picture is queued behind the concurrency limit (or waiting for a retry):
+// show the spinner straight away so it never looks frozen before its request
+// is actually sent.
+function showQueuedAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  stopAttachmentProgress(entry);
+  const overlay = entry.progress.el;
+  overlay.classList.add("active", "indeterminate");
+  overlay.classList.remove("complete");
+  entry.progress.fill.style.width = "";
+  entry.progress.label.textContent = t("email.downloadingUnknown");
+}
+
+// The connection dropped: keep the overlay visible, but say what is happening
+// instead of leaving a bar frozen at its last value.
+function pauseAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  stopAttachmentProgress(entry);
+  const overlay = entry.progress.el;
+  overlay.classList.add("active", "indeterminate");
+  overlay.classList.remove("complete");
+  entry.progress.fill.style.width = "";
+  entry.progress.label.textContent = t("email.downloadRetrying");
+}
+
+// The bytes are here: show 100% for a moment, then fade the overlay out so it
+// does not cover the picture.
+function finishAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  stopAttachmentProgress(entry);
+  const overlay = entry.progress.el;
+  overlay.classList.add("active", "complete");
+  overlay.classList.remove("indeterminate");
+  entry.progress.fill.style.width = "100%";
+  entry.progress.label.textContent = t("email.downloaded");
+  clearTimeout(entry.progressHideTimer);
+  entry.progressHideTimer = setTimeout(() => {
+    entry.progressHideTimer = null;
+    overlay.classList.remove("active");
+  }, 450);
+}
+
+function hideAttachmentProgress(entry) {
+  if (!entry || !entry.progress) return;
+  stopAttachmentProgress(entry);
+  clearTimeout(entry.progressHideTimer);
+  entry.progressHideTimer = null;
+  entry.progress.el.classList.remove("active", "indeterminate", "complete");
 }
 
 // The server answered but could not deliver the bytes (too large / fetch
@@ -235,6 +345,7 @@ function scheduleAttachmentRetry(entry) {
   entry.retryTimer = setTimeout(() => {
     entry.retryTimer = null;
     entry.requested = true;
+    showQueuedAttachmentProgress(entry);
     pumpAttachmentQueue();
   }, delay);
 }
@@ -246,10 +357,24 @@ function giveUpOnAttachment(entry) {
   entry.inFlight = false;
   entry.requested = false;
   clearAttachmentTimers(entry);
+  hideAttachmentProgress(entry);
   if (entry.tile) {
     entry.tile.classList.remove("attachment-loading");
     entry.tile.classList.add("attachment-unavailable");
     entry.tile.disabled = true;
+  } else if (entry.img && entry.preview) {
+    // Keep the preview shell (and its overlay) in place; hide the empty image
+    // and show the filename instead, so a later successful retry can simply
+    // swap the picture back in.
+    entry.img.classList.add("attachment-hidden");
+    if (!entry.fallback) {
+      entry.fallback = el(
+        "span",
+        entry.att.filename || t("email.attachment"),
+        { class: "muted attachment-fallback" }
+      );
+      entry.preview.appendChild(entry.fallback);
+    }
   } else if (entry.img && entry.img.parentNode) {
     entry.img.replaceWith(
       el("span", entry.att.filename || t("email.attachment"), {
@@ -282,10 +407,12 @@ function sendAttachmentRequest(entry) {
   } catch (err) {
     entry.inFlight = false;
     entry.requested = false;
+    pauseAttachmentProgress(entry);
     reportError("Failed to request email attachment", err, "emailSendFailed");
     scheduleAttachmentRetry(entry);
     return false;
   }
+  startAttachmentProgress(entry);
   // Start the transfer timeout only once the request is actually sent on the
   // wire (not while waiting behind earlier attachments in the queue).
   clearTimeout(entry.timer);
@@ -294,6 +421,7 @@ function sendAttachmentRequest(entry) {
     if (entry.inFlight && !isAttachmentLoaded(entry)) {
       entry.inFlight = false;
       entry.requested = false;
+      pauseAttachmentProgress(entry);
       scheduleAttachmentRetry(entry);
       pumpAttachmentQueue();
     }
@@ -346,9 +474,9 @@ function requestAttachment(entry) {
     return;
   }
   entry.requested = true;
+  showQueuedAttachmentProgress(entry);
   pumpAttachmentQueue();
 }
-
 // Shared click behaviour for an <img> preview: open the picture in the viewer,
 // or externally (Ctrl/Cmd-click).
 function wireAttachmentImage(img, filename) {
@@ -733,18 +861,55 @@ function renderEmailSide() {
         const img = el("img");
         img.alt = att.filename || t("email.attachment");
         img.classList.add("attachment-loading");
+
+        // The preview shell holds the picture plus the download overlay
+        // (spinner, percentage and progress bar). The overlay covers the empty
+        // thumbnail while the bytes are in flight and fades out once they
+        // arrive.
+        const preview = el("div", null, { class: "attachment-preview" });
+        const progress = el("div", null, {
+          class: "attachment-progress",
+          "aria-hidden": "true",
+        });
+        const spinner = el("span", null, { class: "attachment-spinner" });
+        const progressLabel = el("span", t("email.downloadingUnknown"), {
+          class: "attachment-progress-label",
+        });
+        const progressTrack = el("div", null, {
+          class: "attachment-progress-track",
+        });
+        const progressFill = el("div", null, {
+          class: "attachment-progress-fill",
+        });
+        progressTrack.appendChild(progressFill);
+        progress.appendChild(spinner);
+        progress.appendChild(progressLabel);
+        progress.appendChild(progressTrack);
+        preview.appendChild(img);
+        preview.appendChild(progress);
+
         emailAttachmentEntries.set(att.id, {
           img,
           att,
           wrap,
+          preview,
+          progress: {
+            el: progress,
+            label: progressLabel,
+            fill: progressFill,
+          },
+          fallback: null,
           requested: false,
           attempts: 0,
           gaveUp: false,
           timer: null,
           retryTimer: null,
+          progressTimer: null,
+          progressHideTimer: null,
+          progressStartedAt: 0,
         });
         wireAttachmentImage(img, att.filename);
-        wrap.appendChild(img);
+        wrap.appendChild(preview);
       } else if (att.id != null) {
         // PDFs and any other file type: a tile that opens the file with the
         // system's default application once its bytes have been fetched.
@@ -811,6 +976,7 @@ function retryPendingAttachments() {
     entry.gaveUp = false;
     entry.attempts = 0;
     clearAttachmentTimers(entry);
+    showQueuedAttachmentProgress(entry);
   }
   pumpAttachmentQueue();
 }
@@ -933,6 +1099,13 @@ function setupEmailSocket() {
         msg.mimeType.startsWith("image/")
       ) {
         const src = `data:${msg.mimeType};base64,${msg.base64}`;
+        // A give-up leaves the filename placeholder in the preview; the bytes
+        // just arrived, so drop it and show the picture again.
+        if (entry.fallback) {
+          entry.fallback.remove();
+          entry.fallback = null;
+        }
+        entry.img.classList.remove("attachment-hidden");
         if (entry.img.parentNode) {
           entry.img.src = src;
           entry.img.classList.remove("attachment-loading");
@@ -952,7 +1125,9 @@ function setupEmailSocket() {
           else if (entry.wrap) entry.wrap.appendChild(img);
           entry.img = img;
         }
+        finishAttachmentProgress(entry);
       } else {
+        pauseAttachmentProgress(entry);
         onAttachmentFailed(entry);
       }
       pumpAttachmentQueue();
@@ -1205,10 +1380,10 @@ if (DropArea && FileInput) {
 // ---------------------------------------------------------------------------
 // Desktop PDF watcher
 // ---------------------------------------------------------------------------
-// While an email-sourced policy is being processed, the worker's tools download
-// the two policy PDFs to the Desktop. We watch for PDFs created after the email
-// card was clicked and attach them automatically; the main process performs the
-// actual 2-second polling and deletes each file once its bytes are captured.
+// While a policy is being processed, the worker's tools download the two policy
+// PDFs to the Desktop. Email policies attach them to the form; walk-in
+// insurances only get a paper copy of both. The main process performs the
+// actual polling, printing and cleanup.
 const DesktopWatchStorageKey = "desktopPdfWatchSinceMs";
 
 function desktopWatchAvailable() {
@@ -1265,10 +1440,11 @@ function attachDesktopPdf(files) {
 }
 
 function startDesktopPdfWatch() {
-  if (!OpenedFromEmail || !desktopWatchAvailable()) return;
+  if (!desktopWatchAvailable()) return;
 
-  // The moment the email card was clicked, stored by the dashboard. It is the
-  // lower bound for which Desktop PDFs count as "new" for this policy.
+  // The moment the email card or the walk-in insurance button was clicked,
+  // stored by the dashboard. It is the lower bound for which Desktop PDFs
+  // count as "new" for this policy.
   let sinceMs = Date.now();
   try {
     const raw = localStorage.getItem(DesktopWatchStorageKey);
@@ -1281,10 +1457,19 @@ function startDesktopPdfWatch() {
     console.error("[DesktopPdfWatch] Failed to read the start time:", err);
   }
 
-  window.bridge.OnDesktopPdfFound((file) => attachDesktopPdf([file]));
-  window.bridge.StartDesktopPdfWatch(sinceMs).catch((err) => {
-    console.error("[DesktopPdfWatch] Failed to start watching the Desktop:", err);
-  });
+  // Email policies attach the downloaded PDFs to the form. Walk-in insurances
+  // have no return email or attachment area: the main process simply prints
+  // both files and deletes each one once its print has finished.
+  if (OpenedFromEmail) {
+    window.bridge.OnDesktopPdfFound((file) => attachDesktopPdf([file]));
+  }
+  window.bridge
+    .StartDesktopPdfWatch(sinceMs, {
+      mode: OpenedFromEmail ? "email" : "walkin",
+    })
+    .catch((err) => {
+      console.error("[DesktopPdfWatch] Failed to start watching the Desktop:", err);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2254,3 +2439,7 @@ renderEmailSide();
 setupEmailSocket();
 setupPresenceSocket();
 startDesktopPdfWatch();
+
+// A page unload (back button, save, or any other navigation away from the
+// form) must never leave the Desktop watcher running in the main process.
+window.addEventListener("pagehide", stopDesktopPdfWatch);

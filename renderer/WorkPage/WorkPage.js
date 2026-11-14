@@ -2979,6 +2979,111 @@ function nextLocalDate(dateString) {
   return localDateString(new Date(y, m - 1, d + 1));
 }
 
+// "YYYY-MM-DD" one calendar day before the given local date string.
+function previousLocalDate(dateString) {
+  const [y, m, d] = dateString.split("-").map(Number);
+  return localDateString(new Date(y, m - 1, d - 1));
+}
+
+// Admin-only fix for a shift that was never ended (e.g. an employee forgot to
+// finish last night's shift).
+//
+// POST /currentcash/reset-asof splits all three branch balances at the cutoff
+// from their movement timestamps: the part held at midnight is recorded as
+// kept, and everything created after midnight stays in the live balances. The
+// card balance and Cash from Brokers are split exactly like the cash drawer.
+// A dry run returns the split for the confirmation; the real call applies it
+// atomically on the server.
+function fixShiftCashLabel(amounts) {
+  return ["EUR", "TRY"]
+    .map((currency) => `${money(amounts[currency] || 0)} ${currency}`)
+    .join(" · ");
+}
+
+// Ask the server for a dry-run split of the cash drawer, card balance and Cash
+// from Brokers at the shift cutoff. Nothing is written.
+async function previewForgottenShiftSplit(branch, cutoff) {
+  return api("/currentcash/reset-asof", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ branch, Cutoff: cutoff, DryRun: true }),
+  });
+}
+
+async function applyForgottenShiftSplit(branch, cutoff) {
+  return api("/currentcash/reset-asof", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ branch, Cutoff: cutoff }),
+  });
+}
+
+function openForgottenShiftFix(branch, defaultDate) {
+  const info = el("div", null, { class: "fix-shift" });
+  info.appendChild(el("p", t("fixShiftHint")));
+
+  const form = buildForm(
+    [
+      {
+        key: "date",
+        label: t("fixShiftDate"),
+        type: "date",
+        value: defaultDate,
+      },
+    ],
+    async (payload) => {
+      const shiftDate = String(payload.date || "").trim();
+      const cutoff = shiftEndOfDayTimestamp(shiftDate);
+      if (!cutoff) throw new Error(t("fixShiftInvalid"));
+      if (shiftCloseIsFuture(cutoff, new Date())) {
+        throw new Error(t("fixShiftFuture"));
+      }
+
+      let preview;
+      try {
+        preview = await previewForgottenShiftSplit(branch, cutoff);
+      } catch (err) {
+        throw new Error(translateError(err.message) || err.message);
+      }
+      const confirmed = window.confirm(
+        fmt(t("fixShiftConfirm"), {
+          date: shiftDate,
+          cutoff,
+          keptCash: fixShiftCashLabel(preview.kept.cash),
+          keptCard: money(preview.kept.card),
+          keptBroker: fixShiftCashLabel(preview.kept.brokerCash),
+          remainCash: fixShiftCashLabel(preview.remaining.cash),
+          remainCard: money(preview.remaining.card),
+          remainBroker: fixShiftCashLabel(preview.remaining.brokerCash),
+        })
+      );
+      if (!confirmed) return;
+
+      let applied;
+      try {
+        applied = await applyForgottenShiftSplit(branch, cutoff);
+      } catch (err) {
+        throw new Error(translateError(err.message) || err.message);
+      }
+      toast(
+        fmt(t("fixShiftDone"), {
+          date: shiftDate,
+          keptCash: fixShiftCashLabel(applied.kept.cash),
+          keptCard: money(applied.kept.card),
+          keptBroker: fixShiftCashLabel(applied.kept.brokerCash),
+        }),
+        "success"
+      );
+      closeModal();
+      // Show the closed day, where the new End shift rows are listed.
+      currentCashView(branch, shiftDate);
+    },
+    t("fixShiftSubmit")
+  );
+  info.appendChild(form);
+  openModal(t("fixShiftTitle"), info);
+}
+
 // Monotonic counter used to drop out-of-order renders: switching branch/date
 // starts a new load, and only the most recently started one may paint. Without
 // this, a slower earlier request can finish last and overwrite the UI with a
@@ -3265,6 +3370,19 @@ async function currentCashView(overrideBranch, overrideDate) {
   actions.appendChild(redBtn);
   actions.appendChild(resetBtn);
 
+  // Admin-only repair for a shift that was never ended. The reset is recorded
+  // at the chosen time, so the forgotten night's report is corrected while the
+  // current balances are cleared now.
+  if (isAdmin) {
+    const fixBtn = el("button", t("fixShift"), { class: "secondary" });
+    fixBtn.addEventListener("click", () => {
+      // The common case is last night's shift; another past day can still be
+      // picked in the modal.
+      openForgottenShiftFix(branch, previousLocalDate(localDateString()));
+    });
+    actions.appendChild(fixBtn);
+  }
+
   function cashForm(kind, title) {
     const form = buildForm(
       [
@@ -3533,6 +3651,35 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   const topNodes = [heading];
   if (branchSelector.children.length > 0) topNodes.push(branchSelector);
+
+  // Proactive check for last night: if yesterday had cash/card/broker activity
+  // but no End shift was recorded, the day is still open. This is exactly the
+  // "an employee forgot to finish his shift" case, so the admin gets a warning
+  // with a pre-filled fix.
+  if (isAdmin && date === previousLocalDate(localDateString())) {
+    const resetsOnDay =
+      (data.resets || []).length +
+      (data.cardResets || []).length +
+      (data.brokerCashResets || []).length;
+    const hadActivity =
+      (data.transactions || []).length > 0 ||
+      (data.expences || []).length > 0 ||
+      (data.brokerCashTransactions || []).length > 0;
+    if (hadActivity && resetsOnDay === 0) {
+      const warning = el("div", null, { class: "banner shift-missed" });
+      warning.appendChild(
+        el("p", fmt(t("shiftMissedWarning"), { date }), {
+          class: "shift-missed-text",
+        })
+      );
+      const closeBtn = el("button", t("fixShift"), { class: "small" });
+      closeBtn.addEventListener("click", () =>
+        openForgottenShiftFix(branch, date)
+      );
+      warning.appendChild(closeBtn);
+      topNodes.push(warning);
+    }
+  }
 
   Content.replaceChildren(
     ...topNodes,
@@ -5634,6 +5781,28 @@ const NAV_DEFS = {
 
 let activeNav = null;
 
+// Highlight and remember the nav entry whose loader is `load`. Used by links
+// inside views (e.g. a branch card's Manage button) and by the end-of-shift
+// reminder, so all of them behave exactly like a click on the nav button.
+function activateNav(load) {
+  const defs = NAV_DEFS[userRole] || [];
+  const idx = defs.findIndex((d) => d.load === load);
+  if (idx === -1) return false;
+  activeNav = defs[idx];
+  Array.from(Nav.children).forEach((btn, i) => {
+    btn.classList.toggle("active", i === idx);
+  });
+  return true;
+}
+
+// The shared shift reminder (common.js) runs on every page. On the dashboard
+// it calls this hook directly instead of reloading the page.
+window.__openCurrentCash = function openCurrentCashFromReminder() {
+  if (!activateNav(currentCashView)) return false;
+  runLoader(() => currentCashView());
+  return true;
+};
+
 function renderHeader() {
   HeaderTitle.textContent = t("nav.dashboard");
   HeaderSub.textContent = `${username} · ${roleLabel(userRole)}`;
@@ -5686,6 +5855,15 @@ function renderHeader() {
         return;
       }
 
+      // The walk-in form starts the Desktop PDF watcher when it loads. This is
+      // the moment the button was clicked, so PDFs downloaded right after the
+      // click are picked up (and printed) by the watcher.
+      try {
+        localStorage.setItem("desktopPdfWatchSinceMs", String(Date.now()));
+      } catch (err) {
+        console.error("Failed to store the Desktop watch start time:", err);
+      }
+
       window.bridge.LoadNewPage("renderer/AddInsurance/AddInsurance.html");
     });
     Nav.appendChild(addBtn);
@@ -5734,6 +5912,18 @@ async function init() {
   loadBrokerCodes();
   loadEnabledBranches();
 
+  // The shift reminder's "Finish shift" button on the insurance form stores a
+  // request to open Current cash and loads this page. Honor it instead of the
+  // default first tab, then let the reminder add its dashboard-only shortcut.
+  if (
+    typeof consumeShiftReminderPendingView === "function" &&
+    consumeShiftReminderPendingView() &&
+    window.__openCurrentCash()
+  ) {
+    if (typeof refreshShiftReminder === "function") refreshShiftReminder();
+    return;
+  }
+
   const defs = NAV_DEFS[userRole] || [];
   if (defs.length) {
     activeNav = defs[0];
@@ -5741,6 +5931,9 @@ async function init() {
     if (first) first.classList.add("active");
     await runLoader(defs[0].load);
   }
+  // If the reminder is already on screen, re-render it now that the dashboard
+  // hook exists so it offers the one-click "Finish shift" action.
+  if (typeof refreshShiftReminder === "function") refreshShiftReminder();
 }
 
 LogoutButton.addEventListener("click", () => {

@@ -24,12 +24,13 @@ contextBridge.exposeInMainWorld("bridge", {
     return ipcRenderer.invoke("PrintAttachment", file);
   },
 
-  // Desktop PDF watcher: while an email-sourced policy is being processed, the
-  // worker's tools download the two policy PDFs to the Desktop. The main process
-  // polls every two seconds, streams the new PDFs back here and then deletes
-  // them from the Desktop.
-  StartDesktopPdfWatch: (sinceMs) =>
-    ipcRenderer.invoke("StartDesktopPdfWatch", sinceMs),
+  // Desktop PDF watcher: while a policy is being processed, the worker's tools
+  // download the two policy PDFs to the Desktop. The main process polls the
+  // Desktop and either streams the new PDFs back here (email policies) or
+  // prints them both and deletes them (walk-in insurances).
+  // options: { mode: "email" | "walkin" }
+  StartDesktopPdfWatch: (sinceMs, options) =>
+    ipcRenderer.invoke("StartDesktopPdfWatch", sinceMs, options),
   StopDesktopPdfWatch: () => ipcRenderer.invoke("StopDesktopPdfWatch"),
   OnDesktopPdfFound: (callback) => {
     const listener = (event, file) => callback(file);

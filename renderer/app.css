@@ -283,6 +283,85 @@ h3 {
   }
 }
 
+/* End-of-shift reminder (fires five minutes before midnight, common.js).
+   Unlike a toast it stays on screen until the worker finishes the shift or
+   dismisses it, and its bottom-right position keeps it clear of the toast. */
+.shift-reminder {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2000;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: min(560px, 92vw);
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: #3a2a10;
+  border: 1px solid #b8860b;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65),
+    0 0 0 4px rgba(240, 136, 62, 0.18);
+  animation: shift-reminder-in 260ms ease-out,
+    shift-reminder-pulse 1.6s ease-in-out 260ms 3;
+}
+.shift-reminder-icon {
+  flex: 0 0 auto;
+  font-size: 26px;
+  line-height: 1;
+}
+.shift-reminder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.shift-reminder-title {
+  font-size: 16px;
+  color: #ffd27d;
+}
+.shift-reminder-text {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.shift-reminder-countdown {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #ffb84d;
+}
+.shift-reminder-countdown.overdue {
+  color: #ff8a80;
+}
+.shift-reminder-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+@keyframes shift-reminder-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes shift-reminder-pulse {
+  0%,
+  100% {
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65),
+      0 0 0 4px rgba(240, 136, 62, 0.18);
+  }
+  50% {
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65),
+      0 0 0 7px rgba(240, 136, 62, 0.32);
+  }
+}
+
 .banner {
   background: #25334d;
   border-left: 4px solid var(--accent);
