@@ -27,6 +27,11 @@ const emailCards = new Map(); // thread key -> { emails, email (newest), node }
 let emailSocket = null;
 let pendingClaimEmail = null;
 
+// What the worker typed into the search bar of the email card tab. Kept here
+// (not in the DOM) so a re-render - a new email arriving, a card being
+// completed - keeps the filter and the field's text.
+let emailSearchQuery = "";
+
 // Sender address -> broker code (the ID shown in the brokers table). The
 // broker list endpoint includes every broker's Code and email addresses, and
 // workers are allowed to read it, so the card can show the code without a new
@@ -167,13 +172,17 @@ function applyEmailCardLabels(entry) {
   );
   entry.node.classList.toggle("email-card-forward", isForward && !answered);
   entry.node.classList.toggle("email-card-answered", answered);
+  // An answered card is low priority: the last reply was the employee's and
+  // the conversation now waits for the client.
+  entry.node.classList.toggle("email-card-low-priority", answered);
 
-  // The broker code (ID) sits above the subject in its own accent chip, so it
-  // stands out from the title instead of reading as part of it.
+  // The broker code sits above the subject in its own accent chip, so it
+  // stands out from the title instead of reading as part of it. Only the
+  // number is shown; the "ID" label is redundant in the chip.
   const code = brokerCodeForEmail(entry.email);
   entry.brokerCode = code;
   if (entry.codeNode) {
-    entry.codeNode.textContent = code ? `${t("brokerId")} ${code}` : "";
+    entry.codeNode.textContent = code;
     entry.codeNode.style.display = code ? "" : "none";
     entry.codeNode.title = code ? t("email.brokerCodeTitle") : "";
   }
@@ -199,6 +208,7 @@ function syncEmailCardKey(entry) {
   if (key === entry.key) return;
   emailConversationReKey(localStorage, entry.key, key);
   emailAnsweredReKey(localStorage, entry.key, key);
+  emailWaitSinceReKey(localStorage, entry.key, key);
   emailCards.delete(entry.key);
   entry.key = key;
   emailCards.set(key, entry);
@@ -208,8 +218,14 @@ function syncEmailCardKey(entry) {
 // earlier ones it quotes) so the add-insurance form can show the history even
 // when the Gmail thread is not available. Employee replies are added by the
 // form itself when they are sent.
+//
+// Storage only begins once the conversation has a reply: either an employee
+// answered the request, or the broker wrote back on their original email. A
+// lone original email is the request itself (already shown on the card and in
+// the form), not a conversation history.
 function recordEmailConversation(entry) {
   if (!entry || !entry.email) return;
+  if (!entry.answeredAt && entry.replyCount <= 0) return;
   for (const message of emailConversationMessagesFromThread(entry.email)) {
     emailConversationRecord(localStorage, entry.key, message);
   }
@@ -242,9 +258,11 @@ function updateEmailCard(entry) {
   entry.email = newest;
   entry.threadId = emailThreadIdOf(entry.emails);
   entry.subjectKey = emailSubjectKey(newest);
-  // Waiting time starts when the conversation first arrived, so a reply does
-  // not reset the card's age and push it to the end of the dashboard.
-  entry.arrivalMs = entry.emails.reduce(
+  // When the conversation first reached this PC. A reply does not normally
+  // reset the card's age (that would push it to the end of the dashboard), but
+  // a low-priority card that the client answers starts counting again from
+  // that answer - see the revival handling below.
+  const firstSeenMs = entry.emails.reduce(
     (min, email) =>
       Math.min(min, emailFirstSeenMs(localStorage, email.messageId)),
     Number.POSITIVE_INFINITY
@@ -271,6 +289,7 @@ function updateEmailCard(entry) {
   const localAnswered = emailAnsweredFor(localStorage, entry.key);
   const wasAnswered = Boolean(entry.answeredAt);
   let answeredAt = 0;
+  let revived = false;
   if (serverAnsweredAt) {
     answeredAt = serverAnsweredAt;
     emailMarkAnswered(localStorage, entry.key, {
@@ -283,11 +302,31 @@ function updateEmailCard(entry) {
   } else if (localAnswered) {
     // A new email arrived after the reply: the broker answered.
     emailClearAnswered(localStorage, entry.key);
+    revived = true;
   }
   entry.answeredAt = answeredAt;
   entry.answeredBy =
     (newest.answeredBy || (localAnswered && localAnswered.by)) || "";
-  if (wasAnswered && !answeredAt) markEmailRevived(entry);
+
+  // The last reply determines the card's priority:
+  // - an employee reply leaves the card low priority (answered, awaiting the
+  //   broker), parked out of the queue and hidden after two hours;
+  // - a client answer after that reply brings it back as a normal card, with
+  //   its waiting time counted from the answer itself - not from the first
+  //   email that created the card.
+  if (answeredAt) {
+    emailClearWaitSince(localStorage, entry.key);
+  } else if (wasAnswered || revived) {
+    emailSetWaitSince(
+      localStorage,
+      entry.key,
+      emailFirstSeenMs(localStorage, newest.messageId)
+    );
+    markEmailRevived(entry);
+  }
+  const waitSinceMs = emailWaitSinceFor(localStorage, entry.key);
+  entry.waitSinceMs = waitSinceMs > firstSeenMs ? waitSinceMs : 0;
+  entry.arrivalMs = entry.waitSinceMs || firstSeenMs;
 
   recordEmailConversation(entry);
   applyEmailCardLabels(entry);
@@ -295,13 +334,91 @@ function updateEmailCard(entry) {
 }
 
 
-function renderEmailCardsIfVisible() {
-  if (activeNav && activeNav.load === workerDashboard) {
-    Content.replaceChildren(
-      el("h2", t("unreadEmails")),
-      emailCardsContainer()
-    );
+// The tab body: heading, search bar and the cards. Used by the tab loader and
+// when the dashboard has to be built from scratch (e.g. an email arrives while
+// another tab is open, then this tab is shown again).
+function emailCardsDashboard() {
+  return [el("h2", t("unreadEmails")), emailSearchBar(), emailCardsContainer()];
+}
+
+// Search bar of the email card tab. It filters the cards currently on the
+// dashboard by their content; the query lives in emailSearchQuery so typing
+// only rebuilds the cards, not the field itself. Escape or ✕ clears it.
+function emailSearchBar() {
+  const wrapper = el("div", null, { class: "email-search" });
+  const field = el("div", null, { class: "email-search-field" });
+
+  const searchInput = el("input", null, {
+    type: "text",
+    id: "EmailSearchInput",
+    class: "email-search-input",
+    placeholder: t("email.searchPlaceholder"),
+    "aria-label": t("email.searchPlaceholder"),
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  searchInput.value = emailSearchQuery;
+
+  const clearBtn = el("button", "✕", {
+    class: "email-search-clear",
+    type: "button",
+    title: t("email.searchClear"),
+    "aria-label": t("email.searchClear"),
+  });
+  clearBtn.style.display = emailSearchQuery ? "" : "none";
+
+  function applyQuery(value) {
+    emailSearchQuery = value;
+    searchInput.value = value;
+    clearBtn.style.display = value ? "" : "none";
+    refreshEmailCardsOnly();
   }
+
+  searchInput.addEventListener("input", () => applyQuery(searchInput.value));
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !emailSearchQuery) return;
+    event.preventDefault();
+    applyQuery("");
+  });
+  clearBtn.addEventListener("click", () => {
+    applyQuery("");
+    searchInput.focus();
+  });
+
+  field.appendChild(searchInput);
+  field.appendChild(clearBtn);
+  wrapper.appendChild(field);
+  return wrapper;
+}
+
+// Re-render only the cards, so a click in the search field keeps the caret
+// where the worker left it instead of recreating the field.
+function refreshEmailCardsOnly() {
+  const cards = document.getElementById("EmailCards");
+  if (cards) cards.replaceWith(emailCardsContainer());
+}
+
+// Whether one card matches what was typed. The locally stored conversation is
+// searched too: replies typed by the employee live only there, not in the
+// email bodies the card holds.
+function emailCardMatchesQuery(entry) {
+  // Nothing typed: skip the (per-card) storage reads entirely.
+  if (emailSearchTokens(emailSearchQuery).length === 0) return true;
+  const conversation = emailConversationFor(localStorage, entry.key).map(
+    (message) =>
+      [message && message.from, message && message.text].filter(Boolean).join(" ")
+  );
+  return emailCardMatchesSearch(entry, emailSearchQuery, conversation);
+}
+
+function renderEmailCardsIfVisible() {
+  if (!activeNav || activeNav.load !== workerDashboard) return;
+  const cards = document.getElementById("EmailCards");
+  if (cards) {
+    cards.replaceWith(emailCardsContainer());
+    return;
+  }
+  Content.replaceChildren(...emailCardsDashboard());
 }
 
 function emailCardsContainer() {
@@ -314,10 +431,39 @@ function emailCardsContainer() {
     return container;
   }
 
+  const now = Date.now();
+  // A card whose last reply is the employee's is low priority: it leaves the
+  // queue for the answered block. When the client has still not answered two
+  // hours later the card is hidden entirely (the node is kept, not destroyed,
+  // so a new email in the conversation brings it straight back).
+  const visible = Array.from(emailCards.values()).filter((entry) => {
+    const hidden =
+      Boolean(entry.answeredAt) &&
+      isLowPriorityEmailHidden(entry.answeredAt, now);
+    entry.hiddenLowPriority = hidden;
+    return !hidden;
+  });
+  const hiddenLowPriority = emailCards.size - visible.length;
+
+  // Only the cards matching the search bar; a blank search matches every card.
+  // Card nodes are never destroyed: an unmatched card is simply left out of the
+  // grid, so it reappears as soon as the search is cleared or broadened.
+  const searching = emailSearchTokens(emailSearchQuery).length > 0;
+  const entries = searching ? visible.filter(emailCardMatchesQuery) : visible;
+  if (searching && entries.length === 0) {
+    container.appendChild(
+      el(
+        "p",
+        t("email.searchNoResults").replace("{q}", emailSearchQuery.trim()),
+        { class: "muted" }
+      )
+    );
+    return container;
+  }
+
   // Oldest first: the card that has waited longest is the one to process next.
-  // Answered cards leave the queue and stay in their own block at the bottom
-  // right until the broker replies.
-  const entries = Array.from(emailCards.values());
+  // Low-priority cards stay in their own block at the bottom right until the
+  // client answers (or they are hidden).
   const active = entries
     .filter((entry) => !entry.answeredAt)
     .sort((a, b) => compareEmailArrival(a.arrivalMs, b.arrivalMs));
@@ -328,9 +474,15 @@ function emailCardsContainer() {
   const activeGrid = el("div", null, { class: "email-cards" });
   if (active.length === 0) {
     activeGrid.appendChild(
-      el("p", t(answered.length ? "email.allAnswered" : "noUnreadEmails"), {
-        class: "muted",
-      })
+      el(
+        "p",
+        t(
+          answered.length || hiddenLowPriority
+            ? "email.allAnswered"
+            : "noUnreadEmails"
+        ),
+        { class: "muted" }
+      )
     );
   }
   for (const entry of active) activeGrid.appendChild(entry.node);
@@ -339,7 +491,9 @@ function emailCardsContainer() {
   if (answered.length) {
     const block = el("div", null, { class: "email-answered" });
     block.appendChild(
-      el("h3", t("email.answeredSection"), { class: "email-answered-heading" })
+      el("h3", t("email.lowPrioritySection"), {
+        class: "email-answered-heading",
+      })
     );
     const grid = el("div", null, {
       class: "email-cards email-cards-answered",
@@ -347,6 +501,16 @@ function emailCardsContainer() {
     for (const entry of answered) grid.appendChild(entry.node);
     block.appendChild(grid);
     container.appendChild(block);
+  }
+
+  if (hiddenLowPriority > 0) {
+    container.appendChild(
+      el(
+        "p",
+        t("email.lowPriorityHidden").replace("{n}", hiddenLowPriority),
+        { class: "muted email-low-priority-hidden" }
+      )
+    );
   }
 
   refreshEmailCardAges();
@@ -367,6 +531,7 @@ function emailWaitingLabel(arrivalMs, now) {
 // Also re-translates the labels, so it runs on every dashboard render.
 function refreshEmailCardAges() {
   const now = Date.now();
+  let lowPriorityVisibilityChanged = false;
   for (const entry of emailCards.values()) {
     // Re-translate the badge/title too: this runs on every dashboard render,
     // including the one after a language change.
@@ -376,12 +541,21 @@ function refreshEmailCardAges() {
     // must never turn red as overdue.
     const overdue = !answered && isEmailOverdue(entry.arrivalMs, now);
     entry.node.classList.toggle("email-card-overdue", overdue);
+
+    // Hide a low-priority card once it has waited two hours for the client.
+    // Only a change needs a re-render (the card must leave or rejoin the DOM).
+    const hidden = answered && isLowPriorityEmailHidden(entry.answeredAt, now);
+    if (hidden !== Boolean(entry.hiddenLowPriority)) {
+      entry.hiddenLowPriority = hidden;
+      lowPriorityVisibilityChanged = true;
+    }
+
     if (answered) {
       entry.timeNode.textContent = t("email.answeredAt").replace(
         "{t}",
         formatEmailArrival(entry.answeredAt, now)
       );
-      entry.waitNode.textContent = t("email.awaitingBroker");
+      entry.waitNode.textContent = t("email.lowPriorityAwaiting");
       entry.timeWrap.title = entry.answeredBy
         ? `${t("email.answered")} · ${entry.answeredBy}`
         : t("email.answered");
@@ -397,6 +571,7 @@ function refreshEmailCardAges() {
       entry.busyLabelNode.textContent = t("email.opening");
     }
   }
+  if (lowPriorityVisibilityChanged) renderEmailCardsIfVisible();
 }
 
 
@@ -417,8 +592,8 @@ function createEmailCard(key, email) {
   // updateEmailCard, which also sets the card's coloured edge.
   const badgeNode = el("span", null, { class: "email-card-badge" });
   badgeNode.style.display = "none";
-  // Broker code chip: its own line above the subject, so the ID stands out
-  // from the title. Hidden until a code is known for the sender.
+  // Broker code chip: its own line above the subject, so the broker's number
+  // stands out from the title. Hidden until a code is known for the sender.
   const codeNode = el("span", null, { class: "email-card-broker" });
   codeNode.style.display = "none";
   const titleNode = el("span", null, { class: "email-card-title" });
@@ -461,6 +636,8 @@ function createEmailCard(key, email) {
     replyCount: 0,
     answeredAt: 0,
     answeredBy: "",
+    hiddenLowPriority: false,
+    waitSinceMs: 0,
     brokerCode: "",
     reviveTimer: null,
     node: card,
@@ -562,6 +739,7 @@ function removeEmailMessage(messageId) {
   );
   if (entry.emails.length === 0) {
     emailClearAnswered(localStorage, entry.key);
+    emailClearWaitSince(localStorage, entry.key);
     if (entry.reviveTimer) clearTimeout(entry.reviveTimer);
     emailCards.delete(entry.key);
   } else {
@@ -604,6 +782,7 @@ function markEmailIrrelevant(entry) {
   // Dismissed for good: the answered marker no longer applies. The
   // conversation history is kept (it is harmless and helps future context).
   emailClearAnswered(localStorage, entry.key);
+  emailClearWaitSince(localStorage, entry.key);
   removeEmailCard(entry.key);
   toast(t("email.irrelevantMarked"), "success");
 }
@@ -711,6 +890,15 @@ function openEmailInNewForm(email) {
     ? {
         ...email,
         threadMessageIds: entry.emails.map((item) => item.messageId),
+        // Every email of the conversation (metadata only) so the form can list
+        // and print attachments that arrived with an earlier reply, not just
+        // the files of the newest email.
+        threadEmails: entry.emails.map((item) => ({
+          messageId: item.messageId,
+          from: item.from || "",
+          date: item.date || "",
+          attachments: Array.isArray(item.attachments) ? item.attachments : [],
+        })),
         // The form stores the conversation under the same key and shows the
         // broker code the card already resolved.
         conversationKey: entry.key,
@@ -1481,7 +1669,16 @@ function renderTable(items, columns, actions, rowClass, onRowClick, options) {
   const thead = el("thead");
   const headRow = el("tr");
   columns.forEach((c) => {
-    const th = el("th", c.label + (c.headerSuffix ? ` ${c.headerSuffix}` : ""));
+    // A column may replace its plain label with a live node: the brokers
+    // table's "Name" header doubles as a filter input. Everything else keeps
+    // the ordinary text label.
+    const headerNode =
+      typeof c.headerRender === "function" ? c.headerRender() : null;
+    const th = el(
+      "th",
+      headerNode ? null : c.label + (c.headerSuffix ? ` ${c.headerSuffix}` : "")
+    );
+    if (headerNode) th.appendChild(headerNode);
     if (typeof c.onHeaderClick === "function") {
       th.classList.add("sortable");
       th.addEventListener("click", () => c.onHeaderClick());
@@ -3744,6 +3941,13 @@ async function cardView() {
 // "desc" (highest first) or "asc" (lowest first).
 let brokerSort = { key: null, dir: "desc" };
 
+// Text typed into the brokers table's "Name" column header, which doubles as a
+// name filter (see brokerNameFilterHeader). Kept outside the DOM so sorting the
+// table or refreshing it (an edited balance, a new broker) keeps the filter.
+let brokerNameFilter = "";
+// Whether the header shows its input while the filter is still empty.
+let brokerNameFilterInputOpen = false;
+
 // Broker IDs (the Code shown in the ID column) are decimal-looking codes such
 // as "1.9" or "1,12" (the comma is the local decimal separator). They have to
 // sort by their numeric value, so 1.12 comes before 1.9 - a plain text
@@ -3846,6 +4050,85 @@ async function toggleBrokerCutOff(b) {
   brokersView();
 }
 
+// The "Name" column header of the brokers table doubles as a name filter:
+// clicking the label replaces it with a text input, and the already-rendered
+// rows are narrowed to the brokers whose name matches what is typed (see
+// brokerNameMatches - case- and Cyrillic/Latin-insensitive, so "lesovo" finds
+// "ГКПП Лесово"). Escape or the ✕ clears it and restores the plain label.
+// `onChange` re-applies the filter to the table; the input itself is never
+// rebuilt while typing, so the caret never jumps.
+function brokerNameFilterHeader(onChange) {
+  const opened = brokerNameFilterInputOpen || Boolean(brokerNameFilter);
+  const holder = el("span", null, {
+    class: opened ? "broker-name-filter open" : "broker-name-filter",
+  });
+
+  const label = el("button", t("name"), {
+    class: "broker-name-filter-label",
+    type: "button",
+    title: t("brokerNameFilterHint"),
+    "aria-label": t("brokerNameFilterHint"),
+  });
+
+  const field = el("span", null, { class: "broker-name-filter-field" });
+  const searchInput = el("input", null, {
+    type: "text",
+    id: "BrokerNameFilterInput",
+    class: "broker-name-filter-input",
+    placeholder: t("brokerNameFilterPlaceholder"),
+    "aria-label": t("brokerNameFilterPlaceholder"),
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  searchInput.value = brokerNameFilter;
+
+  const clearBtn = el("button", "✕", {
+    class: "broker-name-filter-clear",
+    type: "button",
+    title: t("brokerNameFilterClear"),
+    "aria-label": t("brokerNameFilterClear"),
+  });
+  clearBtn.style.display = brokerNameFilter ? "" : "none";
+
+  function setOpen(value) {
+    brokerNameFilterInputOpen = value;
+    holder.classList.toggle("open", value);
+  }
+
+  function apply(value) {
+    brokerNameFilter = value;
+    searchInput.value = value;
+    clearBtn.style.display = value ? "" : "none";
+    if (typeof onChange === "function") onChange();
+  }
+
+  label.addEventListener("click", () => {
+    setOpen(true);
+    searchInput.focus();
+  });
+  searchInput.addEventListener("input", () => apply(searchInput.value));
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    apply("");
+    setOpen(false);
+  });
+  // Leaving an empty field puts the plain "Name" header back.
+  searchInput.addEventListener("blur", () => {
+    if (!brokerNameFilter) setOpen(false);
+  });
+  clearBtn.addEventListener("click", () => {
+    apply("");
+    searchInput.focus();
+  });
+
+  field.appendChild(searchInput);
+  field.appendChild(clearBtn);
+  holder.appendChild(label);
+  holder.appendChild(field);
+  return holder;
+}
+
 async function brokersView() {
   const isAdmin = userRole === "1";
   // Admins also ask for the soft-deleted brokers (data.deleted) so the panel can
@@ -3901,6 +4184,28 @@ async function brokersView() {
   }
 
   const tableHolder = el("div");
+  // Shown under the table when the Name filter matches no broker. It lives
+  // outside the table, so the header input survives an empty result.
+  const filterStatus = el("p", null, {
+    class: "muted broker-name-filter-status",
+  });
+  filterStatus.style.display = "none";
+
+  // One entry per rendered broker row, in table order (renderTable appends one
+  // row per item), so the name filter can hide and show rows in place instead of
+  // rebuilding the table - which would recreate the header input.
+  let filterRows = [];
+
+  const applyBrokerNameFilter = () => {
+    const query = brokerNameFilter.trim();
+    const shown = applyBrokerNameFilterToRows(filterRows, query);
+    const noMatches = Boolean(query) && filterRows.length > 0 && shown === 0;
+    filterStatus.textContent = noMatches
+      ? t("brokerNameNoMatches").replace("{q}", query)
+      : "";
+    filterStatus.style.display = noMatches ? "" : "none";
+  };
+
   const buildTable = () => {
     const brokers = data.brokers || [];
     const sortedBrokers = brokerSort.key
@@ -3917,10 +4222,10 @@ async function brokersView() {
               ? "asc"
               : "desc",
         };
-        tableHolder.replaceChildren(buildTable());
+        renderTableArea();
       },
     });
-    return renderTable(
+    const table = renderTable(
       sortedBrokers,
       [
         // Cutting a broker off is an admin action, so the column is not shown
@@ -3937,6 +4242,9 @@ async function brokersView() {
         {
           key: "Name",
           label: t("name"),
+          // The header itself is the broker-name filter: clicking the label
+          // opens an input that narrows the table as it is typed.
+          headerRender: () => brokerNameFilterHeader(applyBrokerNameFilter),
           // Only admins may open a broker's pricing by clicking its name.
           // Workers just see the plain name (row click opens balance history).
           onClick: isAdmin ? (b) => brokerPricingEditor(b) : undefined,
@@ -4009,8 +4317,26 @@ async function brokersView() {
       (b) => brokerHistoryView(b),
       { revealActions: true }
     );
+
+    // Remember each rendered row with the broker name it shows, so the header
+    // filter can hide and show rows without rebuilding the table.
+    filterRows = [];
+    if (table && table.tagName === "TABLE") {
+      const rows = Array.from(table.querySelectorAll("tbody tr"));
+      rows.forEach((row, index) => {
+        const broker = sortedBrokers[index] || {};
+        filterRows.push({ name: String(broker.Name || ""), row });
+      });
+    }
+    return table;
   };
-  tableHolder.appendChild(buildTable());
+
+  const renderTableArea = () => {
+    tableHolder.replaceChildren(buildTable(), filterStatus);
+    applyBrokerNameFilter();
+  };
+
+  renderTableArea();
 
   // The heading explains the row and cell colours on hover: the highlights are
   // easy to see but their meaning is not obvious from the table alone.
@@ -4916,6 +5242,32 @@ function brokerNameMatches(storedBroker, query) {
   return true;
 }
 
+// Whether a broker row stays visible for the brokers table's Name filter.
+// An empty filter shows every row; otherwise every typed word must match the
+// broker's name (script- and case-insensitive, see brokerNameMatches).
+function brokerRowMatchesNameFilter(name, query) {
+  const text = String(query === undefined || query === null ? "" : query).trim();
+  if (!text) return true;
+  return brokerNameMatches(name, text);
+}
+
+// Hide/show already-rendered broker rows for the Name filter. `rows` holds
+// { name, row } entries in table order; returns how many rows stay visible. The
+// rows are toggled in place (never rebuilt), so the header input keeps its
+// value and the caret stays where the worker left it.
+function applyBrokerNameFilterToRows(rows, query) {
+  const list = Array.isArray(rows) ? rows : [];
+  const text = String(query === undefined || query === null ? "" : query).trim();
+  let shown = 0;
+  for (const entry of list) {
+    if (!entry || !entry.row) continue;
+    const match = brokerRowMatchesNameFilter(entry.name, text);
+    entry.row.classList.toggle("broker-name-filtered-out", !match);
+    if (match) shown++;
+  }
+  return shown;
+}
+
 
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
   // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&annulled=&payment=
@@ -5650,10 +6002,7 @@ async function reconcileView() {
 // Worker views
 // ---------------------------------------------------------------------------
 async function workerDashboard() {
-  Content.replaceChildren(
-    el("h2", t("unreadEmails")),
-    emailCardsContainer()
-  );
+  Content.replaceChildren(...emailCardsDashboard());
 }
 
 async function workerClients() {

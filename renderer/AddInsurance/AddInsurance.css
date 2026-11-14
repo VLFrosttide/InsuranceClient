@@ -536,6 +536,16 @@ button.reply-button.reply-empty:hover {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Print button under each email attachment; disabled until the bytes arrive. */
+.email-attachment .attachment-print {
+  align-self: flex-start;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+/* Group label when the conversation's attachments come from several emails. */
+.attachment-group-label {
+  margin-top: 14px;
+}
 
 /* Picture viewer (zoom + print) */
 #ImageViewer {

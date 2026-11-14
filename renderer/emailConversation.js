@@ -17,6 +17,10 @@
 // Gmail thread cannot be read (offline, server without the thread endpoint).
 // The answered map survives the navigation to AddInsurance and back, so the
 // card can be dimmed and parked at the bottom until the broker answers.
+//
+// Stored history starts only once the conversation has a reply - an employee
+// answer or the broker writing back on their original message (see
+// emailConversationHasReplies). The original email alone is never history.
 
 const EMAIL_CONVERSATIONS_KEY = "emailConversations";
 const EMAIL_ANSWERED_KEY = "emailAnsweredThreads";
@@ -208,6 +212,87 @@ function emailConversationMessagesFromThread(email) {
       source: "thread",
     };
   });
+}
+
+/**
+ * Whether a conversation already has a reply, i.e. whether its history may be
+ * stored and shown. The broker's original email on its own is not a
+ * conversation: the history begins once an employee answers, or once the
+ * client writes back on their original message (a second client message).
+ *
+ * @param {Array<{direction?: string}>} messages  Oldest first.
+ * @returns {boolean}
+ */
+function emailConversationHasReplies(messages) {
+  if (!Array.isArray(messages)) return false;
+  let clientMessages = 0;
+  for (const message of messages) {
+    if (!message) continue;
+    // A message typed by the employee is a reply by definition.
+    if (message.direction === "employee") return true;
+    clientMessages++;
+  }
+  return clientMessages > 1;
+}
+
+/**
+ * The attachments of a whole conversation, grouped per email (newest first),
+ * each attachment carrying the messageId it belongs to.
+ *
+ * The form asks the server for the bytes with that id, so a file attached to
+ * an earlier reply is fetched from the right message instead of being lost
+ * (the newest email of a thread does not necessarily carry it).
+ *
+ * @param {{messageId?: string, from?: string, date?: string,
+ *   attachments?: Array}} primary  The card's newest email.
+ * @param {Array} [threadEmails]  Every email of the conversation, in any order.
+ * @returns {Array<{messageId: string, from: string, date: string, index: number,
+ *   isLatest: boolean, attachments: Array}>} Only emails that carry files.
+ */
+function emailConversationAttachmentGroups(primary, threadEmails) {
+  const emails = [];
+  const seenMessages = new Set();
+  const add = (email) => {
+    const id = String((email && email.messageId) || "").trim();
+    if (!id || seenMessages.has(id)) return;
+    seenMessages.add(id);
+    emails.push(email);
+  };
+  add(primary);
+  for (const email of Array.isArray(threadEmails) ? threadEmails : []) {
+    add(email);
+  }
+  if (emails.length === 0) return [];
+
+  // Newest first: the primary email is the newest one by definition, the
+  // others are ordered by their Date header (missing/unusable dates go last).
+  const rest = emails.slice(1).sort((a, b) => {
+    const at = Date.parse((a && a.date) || "");
+    const bt = Date.parse((b && b.date) || "");
+    return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+  });
+  const ordered = [emails[0], ...rest];
+
+  const seenAttachments = new Set();
+  return ordered
+    .map((email, index) => {
+      const attachments = [];
+      for (const att of (email && email.attachments) || []) {
+        const id = String((att && att.id) || "").trim();
+        if (!id || seenAttachments.has(id)) continue;
+        seenAttachments.add(id);
+        attachments.push({ ...att, messageId: email.messageId });
+      }
+      return {
+        messageId: String(email.messageId || ""),
+        from: String(email.from || ""),
+        date: String(email.date || ""),
+        index,
+        isLatest: index === 0,
+        attachments,
+      };
+    })
+    .filter((group) => group.attachments.length > 0);
 }
 
 function emailAnsweredLoadMap(storage) {

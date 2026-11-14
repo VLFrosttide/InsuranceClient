@@ -73,6 +73,13 @@ function makeNode(tag, text, attrs) {
     setAttribute(name, value) {
       node.attrs[name] = value;
     },
+    // renderTable marks sortable headers with classList.add.
+    classList: {
+      add(name) {
+        const list = node.className.split(/\s+/).filter(Boolean);
+        if (!list.includes(name)) node.className = list.concat(name).join(" ");
+      },
+    },
     click() {
       for (const fn of node.listeners.click || []) {
         fn({ target: { closest: () => null } });
@@ -248,6 +255,46 @@ function bodyButtons(actions, options) {
     const table = renderTable([{ id: 1 }], [{ key: "id" }], () => []);
     const row = table.children[1].children[0];
     eq(row.children.length, 1, "only the data cell");
+  });
+
+  // Some headers are more than a label: the brokers table's "Name" header is a
+  // filter input (headerRender). Plain columns keep their text label.
+  await check("a column can render its own header node", () => {
+    const marker = makeNode("span", "Filter");
+    const table = renderTable(
+      [{ id: 1 }],
+      [
+        { key: "id", label: "Name", headerRender: () => marker },
+        { key: "other", label: "Code" },
+      ]
+    );
+    const headRow = table.children[0].children[0];
+    eq(headRow.children[0].text, "", "no label text when a node is given");
+    eq(headRow.children[0].children, [marker], "the node is inside the cell");
+    eq(headRow.children[1].text, "Code", "a plain column keeps its label");
+  });
+
+  await check("a header node never replaces a sortable label", () => {
+    const marker = makeNode("span", "Filter");
+    let sorted = 0;
+    const table = renderTable(
+      [{ id: 1 }],
+      [
+        {
+          key: "id",
+          label: "Name",
+          headerSuffix: " ▼",
+          headerRender: () => marker,
+          onHeaderClick: () => sorted++,
+        },
+      ]
+    );
+    const th = table.children[0].children[0].children[0];
+    eq(th.text, "", "no label text");
+    eq(th.children, [marker], "node kept");
+    eq(th.className.split(" ").includes("sortable"), true, "still sortable");
+    th.click();
+    eq(sorted, 1, "the header click still sorts");
   });
 
 

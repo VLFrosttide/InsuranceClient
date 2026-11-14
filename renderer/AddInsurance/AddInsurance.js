@@ -385,9 +385,13 @@ function giveUpOnAttachment(entry) {
 }
 
 function sendAttachmentRequest(entry) {
-  if (!emailSocket || !emailSocket.isReady() || !PendingEmail || !PendingEmail.messageId) {
+  if (!emailSocket || !emailSocket.isReady() || !PendingEmail) {
     return false;
   }
+  // A file may belong to an earlier reply rather than the newest email: ask
+  // the server for it by the message that actually carries it.
+  const messageId = entry.messageId || PendingEmail.messageId;
+  if (!messageId) return false;
   if (entry.inFlight || entry.gaveUp || isAttachmentLoaded(entry)) {
     return false;
   }
@@ -401,7 +405,7 @@ function sendAttachmentRequest(entry) {
   try {
     emailSocket.send({
       type: "get_attachment",
-      messageId: PendingEmail.messageId,
+      messageId,
       id: entry.att.id,
     });
   } catch (err) {
@@ -660,6 +664,9 @@ function renderEmailSegment(segment, index, thread) {
 //   - the emails quoted inside the newest email (works fully offline),
 //   - the server's Gmail thread endpoint (exact client + employee messages),
 //   - the replies sent from this form, stored locally when they are sent.
+// It only starts once the conversation has a reply (an employee answer or the
+// broker writing back on their original email); the original email alone is
+// the request itself, already shown next to the history.
 let conversationRequested = false;
 
 function conversationKey() {
@@ -721,9 +728,13 @@ function conversationMessages() {
   for (const message of quoted) add(message);
   for (const message of stored) add(message);
 
-  return Array.from(byContent.values()).sort(
+  const messages = Array.from(byContent.values()).sort(
     (a, b) => Number(a.at || 0) - Number(b.at || 0)
   );
+
+  // The history begins with the first reply. Until then the form is showing
+  // only the original request, which is already displayed next to it.
+  return emailConversationHasReplies(messages) ? messages : [];
 }
 
 function renderConversationHistory() {
@@ -789,6 +800,17 @@ async function loadConversationHistory() {
     const messages =
       data && Array.isArray(data.messages) ? data.messages : [];
     const key = conversationKey();
+    const stored = key ? emailConversationFor(localStorage, key) : [];
+    // The stored history starts with the first reply (an employee answer or
+    // the broker writing back). A thread that only holds the original email
+    // must not create one, so opening the card leaves nothing behind.
+    if (
+      !emailConversationHasReplies(messages) &&
+      !emailConversationHasReplies(stored)
+    ) {
+      renderConversationHistory();
+      return;
+    }
     for (const message of messages) {
       const dateMs = Date.parse(message.date);
       const at =
@@ -810,6 +832,161 @@ async function loadConversationHistory() {
       ConversationStatus.textContent = t("add.conversationUnavailable");
     }
   }
+}
+
+// All attachments of the conversation, grouped by the email that carried them
+// (newest first). A file sent with a reply is just as usable as one from the
+// newest email: every attachment carries its messageId, so the bytes are
+// fetched from the right Gmail message.
+function emailAttachmentGroups() {
+  if (!PendingEmail) return [];
+  if (typeof emailConversationAttachmentGroups === "function") {
+    return emailConversationAttachmentGroups(
+      PendingEmail,
+      PendingEmail.threadEmails
+    );
+  }
+  // Fallback for an older emailConversation.js: newest email only.
+  const attachments = PendingEmail.attachments || [];
+  return attachments.length
+    ? [
+        {
+          messageId: PendingEmail.messageId || "",
+          from: PendingEmail.from || "",
+          date: PendingEmail.date || "",
+          index: 0,
+          isLatest: true,
+          attachments,
+        },
+      ]
+    : [];
+}
+
+// One attachment of an email: the image preview or the file tile, its name and
+// size, and a Print button (enabled once the bytes have been fetched).
+function renderEmailAttachment(att, messageId) {
+  const wrap = el("div", null, { class: "email-attachment" });
+  const isImage = isImageAttachment(att);
+  let entry = null;
+
+  if (isImage && att.id != null) {
+    // The card only carries attachment metadata; the image bytes are
+    // fetched lazily via get_attachment and filled in on its reply.
+    const img = el("img");
+    img.alt = att.filename || t("email.attachment");
+    img.classList.add("attachment-loading");
+
+    // The preview shell holds the picture plus the download overlay
+    // (spinner, percentage and progress bar). The overlay covers the empty
+    // thumbnail while the bytes are in flight and fades out once they
+    // arrive.
+    const preview = el("div", null, { class: "attachment-preview" });
+    const progress = el("div", null, {
+      class: "attachment-progress",
+      "aria-hidden": "true",
+    });
+    const spinner = el("span", null, { class: "attachment-spinner" });
+    const progressLabel = el("span", t("email.downloadingUnknown"), {
+      class: "attachment-progress-label",
+    });
+    const progressTrack = el("div", null, {
+      class: "attachment-progress-track",
+    });
+    const progressFill = el("div", null, {
+      class: "attachment-progress-fill",
+    });
+    progressTrack.appendChild(progressFill);
+    progress.appendChild(spinner);
+    progress.appendChild(progressLabel);
+    progress.appendChild(progressTrack);
+    preview.appendChild(img);
+    preview.appendChild(progress);
+
+    entry = {
+      img,
+      att,
+      messageId,
+      wrap,
+      preview,
+      progress: {
+        el: progress,
+        label: progressLabel,
+        fill: progressFill,
+      },
+      fallback: null,
+      requested: false,
+      attempts: 0,
+      gaveUp: false,
+      timer: null,
+      retryTimer: null,
+      progressTimer: null,
+      progressHideTimer: null,
+      progressStartedAt: 0,
+      base64: null,
+      printBtn: null,
+    };
+    emailAttachmentEntries.set(att.id, entry);
+    wireAttachmentImage(img, att.filename);
+    wrap.appendChild(preview);
+  } else if (att.id != null) {
+    // PDFs and any other file type: a tile that opens the file with the
+    // system's default application once its bytes have been fetched.
+    const tile = el("button", attachmentTypeLabel(att), {
+      class: "attachment-file attachment-loading",
+      type: "button",
+      title: att.filename || t("email.attachment"),
+    });
+    entry = {
+      tile,
+      att,
+      messageId,
+      requested: false,
+      attempts: 0,
+      gaveUp: false,
+      timer: null,
+      retryTimer: null,
+      base64: null,
+      printBtn: null,
+    };
+    emailAttachmentEntries.set(att.id, entry);
+    tile.addEventListener("click", () => openAttachmentExternal(entry));
+    wrap.appendChild(tile);
+  } else {
+    wrap.appendChild(
+      el("span", att.filename || t("email.attachment"), { class: "muted" })
+    );
+  }
+
+  if (att.filename)
+    wrap.appendChild(el("div", att.filename, { class: "muted small" }));
+  if (att.size)
+    wrap.appendChild(
+      el("div", fileSizeLabel(att.size), { class: "muted small" })
+    );
+
+  // Print the attachment, whether it is a picture or a PDF/document. It stays
+  // disabled until the bytes have actually arrived. Only files with an id can
+  // be fetched from the server, so a nameless placeholder gets no button.
+  if (entry) {
+    const printBtn = el("button", t("add.printFile"), {
+      class: "secondary small attachment-print",
+      type: "button",
+      title: t("add.printFile"),
+    });
+    printBtn.disabled = true;
+    printBtn.addEventListener("click", () => {
+      if (!entry.base64) return;
+      printAttachment({
+        filename: entry.att.filename || "attachment",
+        mimeType: entry.att.mimeType || "application/octet-stream",
+        base64: entry.base64,
+      });
+    });
+    entry.printBtn = printBtn;
+    wrap.appendChild(printBtn);
+  }
+
+  return wrap;
 }
 
 function renderEmailSide() {
@@ -847,104 +1024,34 @@ function renderEmailSide() {
   });
   EmailSideBody.appendChild(threadNode);
 
-  const attachments = PendingEmail.attachments || [];
-  if (attachments.length) {
-    const heading = el("h3", t("email.attachments"));
-    EmailSideBody.appendChild(heading);
-    const gallery = el("div", null, { class: "email-attachments" });
-    for (const att of attachments) {
-      const wrap = el("div", null, { class: "email-attachment" });
-      const isImage = isImageAttachment(att);
-      if (isImage && att.id != null) {
-        // The card only carries attachment metadata; the image bytes are
-        // fetched lazily via get_attachment and filled in on its reply.
-        const img = el("img");
-        img.alt = att.filename || t("email.attachment");
-        img.classList.add("attachment-loading");
-
-        // The preview shell holds the picture plus the download overlay
-        // (spinner, percentage and progress bar). The overlay covers the empty
-        // thumbnail while the bytes are in flight and fades out once they
-        // arrive.
-        const preview = el("div", null, { class: "attachment-preview" });
-        const progress = el("div", null, {
-          class: "attachment-progress",
-          "aria-hidden": "true",
-        });
-        const spinner = el("span", null, { class: "attachment-spinner" });
-        const progressLabel = el("span", t("email.downloadingUnknown"), {
-          class: "attachment-progress-label",
-        });
-        const progressTrack = el("div", null, {
-          class: "attachment-progress-track",
-        });
-        const progressFill = el("div", null, {
-          class: "attachment-progress-fill",
-        });
-        progressTrack.appendChild(progressFill);
-        progress.appendChild(spinner);
-        progress.appendChild(progressLabel);
-        progress.appendChild(progressTrack);
-        preview.appendChild(img);
-        preview.appendChild(progress);
-
-        emailAttachmentEntries.set(att.id, {
-          img,
-          att,
-          wrap,
-          preview,
-          progress: {
-            el: progress,
-            label: progressLabel,
-            fill: progressFill,
-          },
-          fallback: null,
-          requested: false,
-          attempts: 0,
-          gaveUp: false,
-          timer: null,
-          retryTimer: null,
-          progressTimer: null,
-          progressHideTimer: null,
-          progressStartedAt: 0,
-        });
-        wireAttachmentImage(img, att.filename);
-        wrap.appendChild(preview);
-      } else if (att.id != null) {
-        // PDFs and any other file type: a tile that opens the file with the
-        // system's default application once its bytes have been fetched.
-        const tile = el("button", attachmentTypeLabel(att), {
-          class: "attachment-file attachment-loading",
-          type: "button",
-          title: att.filename || t("email.attachment"),
-        });
-        const entry = {
-          tile,
-          att,
-          requested: false,
-          attempts: 0,
-          gaveUp: false,
-          timer: null,
-          retryTimer: null,
-          base64: null,
-        };
-        emailAttachmentEntries.set(att.id, entry);
-        tile.addEventListener("click", () => openAttachmentExternal(entry));
-        wrap.appendChild(tile);
-      } else {
-        wrap.appendChild(
-          el("span", att.filename || t("email.attachment"), { class: "muted" })
+  // Every attachment of the whole conversation, grouped by the email that
+  // carried it (newest first). A file sent with an earlier reply stays listed
+  // and printable instead of being lost when a newer email arrives.
+  const attachmentGroups = emailAttachmentGroups();
+  if (attachmentGroups.length) {
+    EmailSideBody.appendChild(el("h3", t("email.attachments")));
+    const multiple = attachmentGroups.length > 1;
+    // Label the pieces when they come from more than one email, and also when
+    // the only files arrived with an earlier reply (so it is clear they are
+    // not part of the newest message).
+    const showLabels = multiple || !attachmentGroups[0].isLatest;
+    for (const group of attachmentGroups) {
+      if (showLabels) {
+        const label = group.isLatest
+          ? t("email.latestMessage")
+          : t("email.earlierMessage").replace("{n}", group.index);
+        EmailSideBody.appendChild(
+          el("div", group.from ? `${label} · ${group.from}` : label, {
+            class: "email-message-label attachment-group-label",
+          })
         );
       }
-      if (att.filename)
-        wrap.appendChild(el("div", att.filename, { class: "muted small" }));
-      if (att.size)
-        wrap.appendChild(
-          el("div", fileSizeLabel(att.size), { class: "muted small" })
-        );
-      gallery.appendChild(wrap);
+      const gallery = el("div", null, { class: "email-attachments" });
+      for (const att of group.attachments) {
+        gallery.appendChild(renderEmailAttachment(att, group.messageId));
+      }
+      EmailSideBody.appendChild(gallery);
     }
-    EmailSideBody.appendChild(gallery);
   } else {
     EmailSideBody.appendChild(
       el("p", t("email.noAttachments"), { class: "muted" })
@@ -955,11 +1062,10 @@ function renderEmailSide() {
 }
 
 function requestEmailAttachments() {
-  if (!emailSocket || !PendingEmail || !PendingEmail.messageId) return;
-  for (const att of PendingEmail.attachments || []) {
-    if (att.id == null) continue;
-    const entry = emailAttachmentEntries.get(att.id);
-    if (!entry) continue;
+  if (!emailSocket || !PendingEmail) return;
+  // Every attachment tile/preview of the conversation was just rendered; ask
+  // for the bytes of each. Each entry carries its own messageId.
+  for (const entry of emailAttachmentEntries.values()) {
     requestAttachment(entry);
   }
 }
@@ -1082,6 +1188,7 @@ function setupEmailSocket() {
           // transient failure (e.g. the connection recovered on a reconnect).
           entry.tile.classList.remove("attachment-unavailable");
           entry.tile.disabled = false;
+          if (entry.printBtn) entry.printBtn.disabled = false;
         } else {
           onAttachmentFailed(entry);
         }
@@ -1099,6 +1206,10 @@ function setupEmailSocket() {
         msg.mimeType.startsWith("image/")
       ) {
         const src = `data:${msg.mimeType};base64,${msg.base64}`;
+        // Keep the bytes as well, so the Print button can print the picture
+        // exactly like a dropped file.
+        entry.base64 = msg.base64;
+        if (entry.printBtn) entry.printBtn.disabled = false;
         // A give-up leaves the filename placeholder in the preview; the bytes
         // just arrived, so drop it and show the picture again.
         if (entry.fallback) {

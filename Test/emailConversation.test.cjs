@@ -171,6 +171,49 @@ check("changing a card key moves its history and answered state", () => {
   );
 });
 
+check("history starts only once there is a reply", () => {
+  eq(M.emailConversationHasReplies([]), false, "empty conversation");
+  eq(
+    M.emailConversationHasReplies([
+      { direction: "client", text: "Please issue the policy." },
+    ]),
+    false,
+    "the original email alone is not history"
+  );
+  ok(
+    M.emailConversationHasReplies([
+      { direction: "client", text: "Please issue the policy." },
+      { direction: "client", text: "Any update?" },
+    ]),
+    "the client replied to the original message"
+  );
+  ok(
+    M.emailConversationHasReplies([
+      { direction: "client", text: "Please issue the policy." },
+      { direction: "employee", text: "Attached." },
+    ]),
+    "an employee reply starts the history"
+  );
+  ok(
+    M.emailConversationHasReplies([{ direction: "employee", text: "Attached." }]),
+    "an employee-only conversation is history"
+  );
+});
+
+check("a lone original email does not start the history", () => {
+  const email = {
+    messageId: "m1",
+    threadId: "t1",
+    subject: "Policy",
+    from: "Broker <broker@example.com>",
+    date: "Mon, 10 Nov 2026 09:00:00 +0200",
+    body: "Please issue the policy.",
+  };
+  const messages = M.emailConversationMessagesFromThread(email);
+  eq(messages.length, 1, "one message");
+  eq(M.emailConversationHasReplies(messages), false, "not history yet");
+});
+
 check("the quoted emails become labelled history messages", () => {
   const email = {
     messageId: "m3",
@@ -192,11 +235,73 @@ check("the quoted emails become labelled history messages", () => {
   eq(messages[0].direction, "client", "newest is the client");
   eq(messages[1].direction, "employee", "our reply is recognised");
   eq(messages[2].direction, "client", "earlier client email");
+  ok(M.emailConversationHasReplies(messages), "the reply starts the history");
   ok(
     messages.every((m) => m.source === "thread"),
     "source marked as quoted"
   );
   eq(messages[0].id, "m3:0", "stable id");
+});
+
+check("attachments of replies keep the message that carries them", () => {
+  const primary = {
+    messageId: "m3",
+    from: "Broker <b@example.com>",
+    date: "Mon, 10 Nov 2026 12:00:00 +0200",
+    attachments: [],
+  };
+  const threadEmails = [
+    {
+      messageId: "m1",
+      from: "Broker <b@example.com>",
+      date: "Mon, 10 Nov 2026 09:00:00 +0200",
+      attachments: [{ id: "att-m1-0", filename: "request.pdf" }],
+    },
+    {
+      messageId: "m2",
+      from: "Insurance <office@example.com>",
+      date: "Mon, 10 Nov 2026 10:00:00 +0200",
+      attachments: [{ id: "att-m2-0", filename: "policy.pdf" }],
+    },
+    primary,
+  ];
+  const groups = M.emailConversationAttachmentGroups(primary, threadEmails);
+  eq(
+    groups.map((group) => group.messageId),
+    ["m2", "m1"],
+    "newest attachment-carrying emails first"
+  );
+  eq(groups[0].index, 1, "position in the conversation");
+  eq(groups[0].isLatest, false, "it came with an earlier reply");
+  eq(groups[0].attachments[0].id, "att-m2-0", "file kept");
+  eq(
+    groups[0].attachments[0].messageId,
+    "m2",
+    "file knows the message to fetch it from"
+  );
+  eq(groups[1].attachments[0].filename, "request.pdf", "older reply kept");
+});
+
+check("attachment groups dedupe emails and files", () => {
+  const primary = {
+    messageId: "m1",
+    from: "b@example.com",
+    date: "Mon, 10 Nov 2026 09:00:00 +0200",
+    attachments: [
+      { id: "att-1", filename: "a.pdf" },
+      { id: "att-1", filename: "a.pdf" },
+      { filename: "no-id.pdf" },
+    ],
+  };
+  const groups = M.emailConversationAttachmentGroups(primary, [
+    primary,
+    { messageId: "m1", attachments: [{ id: "att-1", filename: "a.pdf" }] },
+    { messageId: "m2", attachments: [{ id: "att-1", filename: "a.pdf" }] },
+    { messageId: "m3" },
+  ]);
+  eq(groups.length, 1, "one group");
+  eq(groups[0].attachments.length, 1, "one file");
+  eq(groups[0].isLatest, true, "newest email");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

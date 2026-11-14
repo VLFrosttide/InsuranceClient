@@ -24,6 +24,11 @@ const {
   isEmailOverdue,
   formatEmailArrival,
   compareEmailArrival,
+  isLowPriorityEmailHidden,
+  emailWaitSinceFor,
+  emailSetWaitSince,
+  emailClearWaitSince,
+  emailWaitSinceReKey,
 } = CTX;
 
 let passed = 0;
@@ -132,6 +137,42 @@ check("arrival time shows HH:mm today and dd.mm HH:mm on older days", () => {
 check("cards sort oldest first", () => {
   const arrivals = [NOW - 1 * MIN, NOW - 30 * MIN, NOW - 5 * MIN];
   eq(arrivals.slice().sort(compareEmailArrival), [NOW - 30 * MIN, NOW - 5 * MIN, NOW - 1 * MIN], "order");
+});
+
+check("a low-priority card is hidden only after two hours", () => {
+  eq(isLowPriorityEmailHidden(0, NOW), false, "not answered");
+  eq(isLowPriorityEmailHidden(NOW - 119 * MIN, NOW), false, "1 h 59 min");
+  eq(isLowPriorityEmailHidden(NOW - 120 * MIN, NOW), true, "exactly 2 h");
+  eq(isLowPriorityEmailHidden(NOW - 121 * MIN, NOW), true, "2 h 1 min");
+});
+
+const WAIT_KEY = "emailWaitSince";
+check("a revived conversation counts its wait from the answer", () => {
+  const storage = memoryStorage();
+  eq(emailWaitSinceFor(storage, "thread:t1", NOW), 0, "not set");
+  emailSetWaitSince(storage, "thread:t1", NOW - 30 * MIN, NOW);
+  eq(emailWaitSinceFor(storage, "thread:t1", NOW), NOW - 30 * MIN, "stored");
+  // A clock moved backwards must not produce a negative wait.
+  emailSetWaitSince(storage, "thread:t1", NOW + 10 * MIN, NOW);
+  eq(emailWaitSinceFor(storage, "thread:t1", NOW), NOW, "clamped to now");
+});
+
+check("waiting times are cleared, moved and pruned", () => {
+  const storage = memoryStorage();
+  emailSetWaitSince(storage, "thread:old", NOW - 5 * MIN, NOW);
+  emailWaitSinceReKey(storage, "thread:old", "thread:new");
+  eq(emailWaitSinceFor(storage, "thread:new", NOW), NOW - 5 * MIN, "moved");
+  eq(emailWaitSinceFor(storage, "thread:old", NOW), 0, "old key gone");
+  emailClearWaitSince(storage, "thread:new");
+  eq(emailWaitSinceFor(storage, "thread:new", NOW), 0, "cleared");
+
+  const expired = memoryStorage({
+    [WAIT_KEY]: JSON.stringify({
+      "thread:stale": NOW - 31 * 24 * 60 * MIN,
+    }),
+  });
+  eq(emailWaitSinceFor(expired, "thread:stale", NOW), 0, "expired");
+  eq(JSON.parse(expired.data[WAIT_KEY]), {}, "pruned from storage");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

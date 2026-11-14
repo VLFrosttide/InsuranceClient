@@ -326,6 +326,79 @@ tr.row-numeric-reason td {
   min-width: 180px;
 }
 
+/* Brokers table: the "Name" column header doubles as a broker-name filter.
+   Clicking the label replaces it with an input; matching rows stay visible and
+   the rest are hidden in place (rows are never rebuilt, so the caret keeps its
+   position while typing). */
+.broker-name-filter {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+.broker-name-filter-label {
+  flex: 1 1 auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.broker-name-filter-label:hover {
+  color: var(--accent);
+}
+.broker-name-filter-field {
+  position: relative;
+  display: none;
+  align-items: center;
+  flex: 1 1 auto;
+}
+.broker-name-filter.open .broker-name-filter-label {
+  display: none;
+}
+.broker-name-filter.open .broker-name-filter-field {
+  display: flex;
+}
+.broker-name-filter-input {
+  width: 100%;
+  min-width: 120px;
+  padding: 3px 24px 3px 6px;
+  font-size: 12px;
+}
+.broker-name-filter-clear {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.broker-name-filter-clear:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+/* A broker row hidden by the header filter. `display: none` on a table row
+   removes it from the layout without rebuilding the table. */
+tr.broker-name-filtered-out {
+  display: none;
+}
+.broker-name-filter-status {
+  margin-top: 8px;
+}
+
 .actions {
   flex-wrap: wrap;
   gap: 6px;
@@ -469,6 +542,50 @@ pre {
   gap: 18px;
   margin-bottom: 18px;
 }
+/* Search bar above the cards: filters them by their content (subject, sender,
+   body, broker code and the stored replies). The ✕ sits inside the field. */
+.email-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  max-width: 420px;
+}
+.email-search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+}
+.email-search-input {
+  width: 100%;
+  /* Leave room for the clear button inside the field. */
+  padding-right: 32px;
+}
+.email-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.email-search-clear:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
 .email-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -582,8 +699,8 @@ pre {
   background: rgba(163, 113, 247, 0.16);
   border-color: rgba(163, 113, 247, 0.45);
 }
-/* Broker code (ID): a compact accent chip on its own line above the title, so
-   it stands out from the subject instead of reading as part of it. */
+/* Broker code: a compact accent chip on its own line above the title, so the
+   number stands out from the subject instead of reading as part of it. */
 .email-card-broker {
   display: inline-block;
   margin-bottom: 8px;
@@ -625,6 +742,18 @@ pre {
 .email-card-answered .email-card-waiting {
   background: rgba(63, 185, 80, 0.14);
   color: #9be3a6;
+}
+/* Low priority (the last reply is the employee's): the parked card also gets a
+   dashed edge, so it is visually distinct from a fresh request at a glance. */
+.email-card.email-card-low-priority {
+  border-left-style: dashed;
+}
+/* Note under the cards: low-priority cards that have been waiting two hours
+   without an answer from the client are hidden until the client replies. */
+.email-low-priority-hidden {
+  margin: 8px 0 0;
+  text-align: right;
+  font-size: 12px;
 }
 /* Revived: an answered card whose broker has replied. A short, calm highlight
    says "this one is active again" without being flashy. */
