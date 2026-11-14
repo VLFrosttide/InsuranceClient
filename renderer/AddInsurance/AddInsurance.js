@@ -2502,10 +2502,15 @@ let presenceStatus = null; // last status sent to the server
 let lastActivityAt = Date.now();
 
 function sendPresence(status) {
+  // Remember what this page wants the server to know even while the socket is
+  // down: the next heartbeat re-sends it as soon as the connection is back.
+  presenceStatus = status;
   if (!presenceSocket) return;
+  if (typeof presenceSocket.isReady === "function" && !presenceSocket.isReady()) {
+    return;
+  }
   try {
     presenceSocket.send({ type: "presence", status });
-    presenceStatus = status;
   } catch (err) {
     console.error("Failed to send presence status:", err);
   }
@@ -2534,9 +2539,15 @@ function setupPresenceSocket() {
     InsuranceForm.addEventListener("input", markActivity);
     InsuranceForm.addEventListener("change", markActivity);
   }
+  // Re-send the status on every tick, not only when it changes. The server
+  // treats a repeated status as a heartbeat (it only re-broadcasts a real
+  // change), so this costs one tiny frame - and it keeps the worker shown as
+  // "working" (orange) on the board even when a single update was lost or when
+  // an "online" reported by another session of the same worker (a dashboard
+  // page, a second PC) arrived after it. Sending only on change left the
+  // worker stuck on "online" for the whole time the form was open.
   setInterval(() => {
-    const status = presenceStatusFor("working", lastActivityAt);
-    if (status !== presenceStatus) sendPresence(status);
+    sendPresence(presenceStatusFor("working", lastActivityAt));
   }, PRESENCE_CHECK_MS);
 }
 

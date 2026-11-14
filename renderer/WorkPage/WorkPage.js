@@ -1209,10 +1209,15 @@ function renderPresence(workers) {
 }
 
 function sendPresence(status) {
+  // Remember the status this page wants the server to know even while the
+  // socket is down: the next heartbeat re-sends it once the link is back.
+  presenceStatus = status;
   if (!presenceSocket) return;
+  if (typeof presenceSocket.isReady === "function" && !presenceSocket.isReady()) {
+    return;
+  }
   try {
     presenceSocket.send({ type: "presence", status });
-    presenceStatus = status;
   } catch (err) {
     console.error("Failed to send presence status:", err);
   }
@@ -1230,9 +1235,12 @@ function setupPresenceSocket() {
     // WebSocket connection for both emails and presence.
     presenceSocket = emailSocket;
     trackUserActivity(markActivity);
+    // Heartbeat: re-assert "online"/"afk" on every tick even when it did not
+    // change. The server only re-broadcasts a real change, so this is cheap -
+    // and it heals the board after a lost frame or a stray status from another
+    // session of the same worker.
     setInterval(() => {
-      const status = presenceStatusFor("online", lastActivityAt);
-      if (status !== presenceStatus) sendPresence(status);
+      sendPresence(presenceStatusFor("online", lastActivityAt));
     }, 15 * 1000);
     return;
   }
@@ -1257,8 +1265,9 @@ function setupPresenceSocket() {
   if (userRole === "2") {
     trackUserActivity(markActivity);
     setInterval(() => {
-      const status = presenceStatusFor("online", lastActivityAt);
-      if (status !== presenceStatus) sendPresence(status);
+      // Same heartbeat as above: a repeated status keeps the board correct
+      // instead of relying on the single update sent when the page loaded.
+      sendPresence(presenceStatusFor("online", lastActivityAt));
     }, 15 * 1000);
   }
 }
