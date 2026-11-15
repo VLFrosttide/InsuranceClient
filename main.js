@@ -141,9 +141,106 @@ const ShowContextMenu = async (targetWin, params) => {
   menu.popup({ window: targetWin, x: params.x, y: params.y });
 };
 
-// Auto-update from GitHub Releases. Only runs in the packaged app.
+// ---------------------------------------------------------------------------
+// Auto-update: download state + banner
+// ---------------------------------------------------------------------------
+// electron-updater downloads a new release in the background (autoDownload is
+// on). The renderer draws a banner along the top of the window with the live
+// percentage and, once the download has finished, the "Restart now / Later"
+// buttons - those replaced the native modal dialog, which interrupted whatever
+// the worker was typing.
+//
+// The state lives here, not in a page: every page change destroys the renderer,
+// so a freshly loaded page asks for the current state (UpdateGetState) and then
+// follows the broadcasts.
+const UpdateState = {
+  phase: "idle", // "idle" | "downloading" | "ready"
+  version: null, // release being downloaded / waiting to be installed
+  percent: null, // 0-100; null while the total size is still unknown
+  transferred: 0,
+  total: 0,
+  bytesPerSecond: 0,
+  demo: false, // set by INSURANCE_UPDATE_DEMO, see SetupUpdateDemo below
+  dismissedVersion: null, // the worker chose "Later" for this version
+};
+
+const UpdateStateSnapshot = () => ({
+  phase: UpdateState.phase,
+  version: UpdateState.version,
+  percent: UpdateState.percent,
+  transferred: UpdateState.transferred,
+  total: UpdateState.total,
+  bytesPerSecond: UpdateState.bytesPerSecond,
+  demo: UpdateState.demo,
+});
+
+// Merge a patch into the state and push it to every open window.
+const SetUpdateState = (patch) => {
+  Object.assign(UpdateState, patch);
+  BroadcastToWindows("UpdateState", UpdateStateSnapshot());
+};
+
+// Unpackaged builds never download a release, so during `npm start` the banner
+// would never appear. INSURANCE_UPDATE_DEMO=1 walks the real states (0 -> 100 %
+// and then "ready") with a fake version, so the look can be checked without
+// publishing anything; its buttons are inert.
+const SetupUpdateDemo = () => {
+  const version = `${APP_VERSION}-demo`;
+  UpdateState.demo = true;
+  let percent = 0;
+  SetUpdateState({
+    phase: "downloading",
+    version,
+    percent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+  });
+  const timer = setInterval(() => {
+    percent = Math.min(100, percent + 4);
+    SetUpdateState({
+      percent,
+      transferred: percent,
+      total: 100,
+      bytesPerSecond: 1250 * 1024,
+    });
+    if (percent >= 100) {
+      clearInterval(timer);
+      SetUpdateState({ phase: "ready" });
+    }
+  }, 400);
+  console.log(`Auto-update: DEMO mode, simulating version ${version}.`);
+};
+
+// Auto-update from GitHub Releases. Only runs in the packaged app, but the IPC
+// handlers are registered on every build so the renderer can always ask for the
+// state (an unpackaged build simply never leaves "idle").
 const SetupAutoUpdater = () => {
-  if (!app.isPackaged) return;
+  ipcMain.handle("UpdateGetState", () => UpdateStateSnapshot());
+
+  // "Restart now" in the banner. The reply is returned before the restart so
+  // the renderer can still report a failure.
+  ipcMain.handle("UpdateInstall", () => {
+    if (UpdateState.phase !== "ready") return { ok: false, error: "not-ready" };
+    // The demo has no downloaded installer behind it.
+    if (UpdateState.demo) return { ok: false, error: "demo" };
+    setImmediate(() => autoUpdater.quitAndInstall());
+    return { ok: true };
+  });
+
+  // "Later" in the banner: take it off the screen for this version.
+  // autoInstallOnAppQuit then installs the update the next time the app closes,
+  // and a newer release asks again.
+  ipcMain.handle("UpdateDismiss", () => {
+    UpdateState.dismissedVersion = UpdateState.version;
+    SetUpdateState({ phase: "idle" });
+    return { ok: true };
+  });
+
+  if (!app.isPackaged) {
+    if (process.env.INSURANCE_UPDATE_DEMO === "1") SetupUpdateDemo();
+    return;
+  }
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -155,13 +252,53 @@ const SetupAutoUpdater = () => {
   });
   autoUpdater.on("update-available", (info) => {
     console.log(`Auto-update: version ${info.version} available, downloading…`);
+    // "Later" was chosen for exactly this release: keep it off the screen.
+    if (UpdateState.dismissedVersion === info.version) return;
+    SetUpdateState({
+      phase: "downloading",
+      version: info.version,
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      bytesPerSecond: 0,
+    });
   });
   autoUpdater.on("update-not-available", () => {
     console.log("Auto-update: already up to date.");
   });
 
+  // The progress event fires for every chunk; the banner only needs a few
+  // updates per second (its CSS keeps the line moving in between), so the
+  // broadcasts are throttled. The final 100 % is always sent.
+  let lastProgressAt = 0;
+  autoUpdater.on("download-progress", (progress) => {
+    const total = Number(progress && progress.total) || 0;
+    const transferred = Number(progress && progress.transferred) || 0;
+    const reported = Number(progress && progress.percent);
+    const percent = Number.isFinite(reported)
+      ? reported
+      : total > 0
+        ? (transferred / total) * 100
+        : null;
+    const rounded =
+      percent === null ? null : Math.max(0, Math.min(100, Math.round(percent)));
+    const now = Date.now();
+    if (rounded !== 100 && now - lastProgressAt < 250) return;
+    lastProgressAt = now;
+    SetUpdateState({
+      phase: "downloading",
+      percent: rounded,
+      transferred,
+      total,
+      bytesPerSecond: Number(progress && progress.bytesPerSecond) || 0,
+    });
+  });
+
   autoUpdater.on("error", (err) => {
     console.error("Auto-update error:", err);
+    // Never leave the banner stuck at "downloading 37 %": an error that stops
+    // the download takes it off the screen.
+    if (UpdateState.phase === "downloading") SetUpdateState({ phase: "idle" });
   });
 
   // "Restart now" on an update must not be blocked by the unsent-policies
@@ -170,41 +307,15 @@ const SetupAutoUpdater = () => {
     closeConfirmed = true;
   });
 
-  // Remember which version the user was already asked about, so a periodic
-  // re-check (which re-emits "update-downloaded" for the cached download) does
-  // not nag them again after they chose "Later". A newer release still prompts.
-  let promptedVersion = null;
-  let promptOpen = false;
-
-  autoUpdater.on("update-downloaded", async (info) => {
-    if (promptOpen || info.version === promptedVersion) return;
-    promptedVersion = info.version;
-    promptOpen = true;
-
-    const options = {
-      type: "info",
-      buttons: ["Restart now", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "Update available",
-      message: `Version ${info.version} has been downloaded.`,
-      detail:
-        "Restart the application to apply the update. If you choose Later, it will be installed automatically the next time the app is closed.",
-    };
-    try {
-      // Async dialog so the main process (IPC, printing, …) is not blocked
-      // while the prompt is waiting for the user. `win` may be destroyed by the
-      // time the download finishes, so fall back to a parent-less dialog.
-      const { response } =
-        win && !win.isDestroyed()
-          ? await dialog.showMessageBox(win, options)
-          : await dialog.showMessageBox(options);
-      if (response === 0) autoUpdater.quitAndInstall();
-    } catch (err) {
-      console.error("Auto-update: failed to show the update prompt:", err);
-    } finally {
-      promptOpen = false;
-    }
+  // The download has finished: the banner turns into the "Restart now / Later"
+  // prompt. This used to be a native modal dialog, which interrupted whatever
+  // the worker was typing. A periodic re-check re-emits this event for the
+  // cached download, so "Later" is remembered per version and a newer release
+  // asks again.
+  autoUpdater.on("update-downloaded", (info) => {
+    console.log(`Auto-update: version ${info.version} downloaded.`);
+    if (info.version === UpdateState.dismissedVersion) return;
+    SetUpdateState({ phase: "ready", version: info.version, percent: 100 });
   });
 
   // Check for new releases while the app keeps running, so users do not have

@@ -10,6 +10,9 @@
   --danger: #e5534b;
   --success: #3fb950;
   --warning: #d29922;
+  /* Height of the auto-update banner at the top of the window. While the banner
+     is visible the page is pushed down by exactly this much. */
+  --update-banner-h: 48px;
 }
 
 * {
@@ -472,6 +475,243 @@ h3 {
   .pw-toggle,
   .pw-toggle .pw-eye-slash {
     transition: none;
+  }
+}
+
+/* Auto-update banner ----------------------------------------------------------
+   A strip along the top of the window while a new release downloads (and until
+   the worker restarts afterwards). It is `position: fixed`; the
+   `html.update-banner-open` class (set by renderUpdateBanner in common.js)
+   reserves its height so nothing is covered: the page starts below it, the
+   sticky #PageHeader stops under it and toasts move clear of it.
+   Layering: above the sticky header (100), below the modal backdrop and the
+   picture viewer (1000) and the toasts / outbox badge (9000+). */
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--update-banner-h);
+  padding: 0 18px;
+  background: linear-gradient(180deg, #26314a, #1f2735);
+  border-bottom: 1px solid var(--panel-border);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+  font-size: 13px;
+  color: var(--text);
+  animation: update-banner-in 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.update-banner.hidden {
+  display: none;
+}
+/* Reserve the strip: #App on the dashboard (padding inside its 100vh height, so
+   no scrollbar appears), the body on the form and login pages. */
+html.update-banner-open #App,
+html.update-banner-open body:not(:has(#App)) {
+  padding-top: var(--update-banner-h);
+}
+html.update-banner-open #PageHeader {
+  top: var(--update-banner-h);
+}
+html.update-banner-open .toast {
+  top: calc(var(--update-banner-h) + 16px);
+}
+
+.update-banner-icon {
+  flex: 0 0 auto;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+.update-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.update-banner-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.update-banner-actions:empty {
+  display: none;
+}
+
+/* Progress line along the bottom edge of the strip. */
+.update-banner-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+}
+.update-banner-fill {
+  position: relative;
+  width: 0;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 0 2px 2px 0;
+  background: linear-gradient(90deg, var(--accent-hover), #82b1ff);
+  box-shadow: 0 0 10px rgba(79, 140, 255, 0.55);
+  transition: width 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* A light sweep travelling along the filled part, so the line keeps moving
+   between the throttled progress updates and never looks stalled. */
+.update-banner-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0),
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0)
+  );
+  animation: update-sweep 1.5s linear infinite;
+}
+/* Total size unknown: a segment sweeps across the track instead of standing at
+   a percentage nobody measured. */
+.update-banner.indeterminate .update-banner-fill {
+  width: 32%;
+  transition: none;
+  animation: update-indeterminate 1.5s ease-in-out infinite;
+}
+@keyframes update-banner-in {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes update-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes update-indeterminate {
+  from {
+    transform: translateX(-105%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+/* Download finished: the strip turns green and offers the two choices that used
+   to live in a native dialog. */
+.update-banner.ready {
+  background: linear-gradient(180deg, #1e3a27, #1b2b21);
+  border-bottom-color: rgba(63, 185, 80, 0.6);
+}
+.update-banner.ready .update-banner-icon {
+  color: var(--success);
+}
+.update-banner.ready .update-banner-text {
+  color: #d7f5dd;
+}
+.update-banner.ready .update-banner-fill {
+  width: 100%;
+  border-radius: 0;
+  background: linear-gradient(90deg, var(--success), #7ee787);
+  animation: update-ready-glow 2.2s ease-in-out infinite;
+}
+/* The line is complete: stop the sweep, a finished bar should look settled. */
+.update-banner.ready .update-banner-fill::after {
+  animation: none;
+  opacity: 0;
+}
+
+/* Buttons are pill-shaped and carry the colour of the line they finish
+   (green = downloaded). They pop in one after the other so the change of state
+   is noticed even by someone looking at the middle of the form. */
+.update-banner button {
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  animation: update-btn-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.update-banner .update-btn-primary {
+  background: var(--success);
+  color: #0b1c10;
+  animation: update-btn-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both,
+    update-btn-glow 2.4s ease-in-out 300ms infinite;
+}
+.update-banner .update-btn-primary:hover {
+  background: #4cc95c;
+}
+.update-banner .update-btn-later {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  animation-delay: 70ms;
+}
+.update-banner .update-btn-later:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.update-banner button:disabled {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--muted);
+  animation: none;
+}
+@keyframes update-btn-in {
+  from {
+    opacity: 0;
+    transform: translateY(-7px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes update-btn-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(63, 185, 80, 0);
+  }
+}
+@keyframes update-ready-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(63, 185, 80, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(63, 185, 80, 0.85);
+  }
+}
+/* The movement is decoration: with reduced motion the banner keeps its colours,
+   the percentage and the buttons, and an unknown-size download is shown as a
+   still, faint line instead of a sweeping one. */
+@media (prefers-reduced-motion: reduce) {
+  .update-banner,
+  .update-banner button,
+  .update-banner-fill,
+  .update-banner-fill::after,
+  .update-banner.indeterminate .update-banner-fill,
+  .update-banner.ready .update-banner-fill {
+    animation: none;
+    transition: none;
+  }
+  .update-banner.indeterminate .update-banner-fill {
+    width: 100%;
+    transform: none;
+    opacity: 0.55;
   }
 }
 

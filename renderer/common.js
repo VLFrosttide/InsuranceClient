@@ -605,6 +605,18 @@ const I18N = {
     "outbox.empty": "Nothing queued.",
     "outbox.emailQueued":
       "This email's policy is queued and will be sent automatically.",
+    // Auto-update banner (renderUpdateBanner below).
+    "update.downloading": "Downloading update {version}… {percent}%",
+    "update.downloadingUnknown": "Downloading update {version}…",
+    "update.unknownVersion": "a new version",
+    "update.ready": "Update {version} is ready to install",
+    "update.readyHint":
+      "Restart to apply it now, or it will be installed when the app is closed.",
+    "update.restartNow": "Restart now",
+    "update.later": "Later",
+    "update.restarting": "Restarting…",
+    "update.restartFailed":
+      "Could not restart — close and open the app manually to apply the update.",
     // Server error messages (mapped to translation keys in translateError below).
     "err.invalidCredentials": "Invalid username or password",
     "err.usernamePasswordRequired": "Username and password are required",
@@ -1287,6 +1299,18 @@ const I18N = {
     "outbox.empty": "Няма чакащи заявки.",
     "outbox.emailQueued":
       "Полицата за този имейл чака изпращане и ще бъде изпратена автоматично.",
+    // Банер за автоматична актуализация (виж renderUpdateBanner по-долу).
+    "update.downloading": "Изтегля се актуализация {version}… {percent}%",
+    "update.downloadingUnknown": "Изтегля се актуализация {version}…",
+    "update.unknownVersion": "нова версия",
+    "update.ready": "Актуализация {version} е готова за инсталиране",
+    "update.readyHint":
+      "Рестартирайте, за да я приложите сега, или тя ще се инсталира при затваряне на програмата.",
+    "update.restartNow": "Рестартирай сега",
+    "update.later": "По-късно",
+    "update.restarting": "Рестартиране…",
+    "update.restartFailed":
+      "Рестартирането не успя — затворете и отворете програмата ръчно, за да се приложи актуализацията.",
 
     // Превод на съобщенията за грешки от сървъра (виж translateError по-долу).
     "err.invalidCredentials": "Грешно потребителско име или парола",
@@ -1405,6 +1429,8 @@ function setLang(lang) {
   // The shift-reminder banner is built in JS, so it is not covered by
   // translatePage(); re-render it in the new language while it is on screen.
   refreshShiftReminder();
+  // Same for the auto-update banner, which may be on screen during a download.
+  refreshUpdateBanner();
   return currentLang;
 }
 
@@ -2663,6 +2689,202 @@ function initOutboxUi() {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-update banner
+//
+// While electron-updater downloads a release (main process), a strip across the
+// top of the window shows the live percentage with a progress line along its
+// bottom edge. When the download has finished the strip turns green and carries
+// the "Restart now" / "Later" buttons - they replaced the native dialog, which
+// interrupted whatever the worker was typing.
+//
+// The state is owned by the main process (SetupAutoUpdater in main.js) because a
+// page change destroys this renderer: every page asks for the current state on
+// load and then follows the broadcasts, so the banner is already on screen when
+// the next page appears.
+// ---------------------------------------------------------------------------
+let updateBannerNode = null;
+let updateBannerState = null;
+let updateBannerPhase = null;
+
+function updateBannerAvailable() {
+  return !!(window.bridge && typeof window.bridge.UpdateGetState === "function");
+}
+
+// Whole percent downloaded so far, or null while the total size is unknown.
+function updateBannerPercent(state) {
+  const raw = state ? state.percent : null;
+  if (raw === null || raw === undefined) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+// The release name from the main process, with a readable stand-in so a missing
+// version never leaves a literal "{version}" in the banner.
+function updateBannerVersion(state) {
+  const version = state && state.version ? String(state.version).trim() : "";
+  return version || t("update.unknownVersion");
+}
+
+// Build the banner once. Later updates only rewrite its text and classes, so the
+// entrance animation does not restart on every progress tick.
+function ensureUpdateBanner() {
+  if (updateBannerNode || !document.body) return;
+  const box = el("div", null, {
+    id: "UpdateBanner",
+    class: "update-banner hidden",
+    role: "status",
+    "aria-live": "polite",
+    "aria-atomic": "true",
+  });
+  box.appendChild(
+    el("span", "↓", { class: "update-banner-icon", "aria-hidden": "true" })
+  );
+  box.appendChild(el("span", "", { class: "update-banner-text" }));
+  box.appendChild(el("div", null, { class: "update-banner-actions" }));
+  const track = el("div", null, {
+    class: "update-banner-track",
+    "aria-hidden": "true",
+  });
+  track.appendChild(el("div", "", { class: "update-banner-fill" }));
+  box.appendChild(track);
+  document.body.appendChild(box);
+  updateBannerNode = box;
+}
+
+// "Restart now" / "Later" - only in the finished state. Rebuilt when the phase
+// changes (and on a language switch), not on every progress update.
+function renderUpdateBannerActions(box, ready) {
+  const actions = box.querySelector(".update-banner-actions");
+  if (!actions) return;
+  actions.replaceChildren();
+  if (!ready) return;
+  if (!window.bridge || typeof window.bridge.UpdateInstall !== "function") return;
+
+  const restart = el("button", t("update.restartNow"), {
+    type: "button",
+    class: "update-btn-primary",
+  });
+  const later = el("button", t("update.later"), {
+    type: "button",
+    class: "update-btn-later",
+  });
+
+  restart.addEventListener("click", async () => {
+    restart.disabled = true;
+    later.disabled = true;
+    restart.textContent = t("update.restarting");
+    try {
+      const result = await window.bridge.UpdateInstall();
+      if (result && result.ok === false) {
+        throw new Error(result.error || "Restart refused");
+      }
+      // The main process quits and installs the update; nothing else to do here.
+    } catch (err) {
+      console.error("Could not restart for the update:", err);
+      restart.disabled = false;
+      later.disabled = false;
+      restart.textContent = t("update.restartNow");
+      toast(t("update.restartFailed"), "error");
+    }
+  });
+
+  later.addEventListener("click", () => {
+    // The banner goes away for this version and the update installs the next
+    // time the app closes (autoInstallOnAppQuit in main.js). A newer release
+    // asks again.
+    Promise.resolve(window.bridge.UpdateDismiss()).catch((err) =>
+      console.error("Could not dismiss the update banner:", err)
+    );
+  });
+
+  actions.appendChild(restart);
+  actions.appendChild(later);
+}
+
+function renderUpdateBanner() {
+  const state = updateBannerState;
+  const phase =
+    state && state.phase === "ready"
+      ? "ready"
+      : state && state.phase === "downloading"
+        ? "downloading"
+        : "idle";
+  const visible = phase !== "idle";
+
+  ensureUpdateBanner();
+  // The banner covers the top of the window, so the page header (and toasts) are
+  // pushed below it while it is on screen - see app.css.
+  if (document.documentElement && document.documentElement.classList) {
+    document.documentElement.classList.toggle("update-banner-open", visible);
+  }
+
+  const box = updateBannerNode;
+  if (!box) return;
+  box.classList.toggle("hidden", !visible);
+  if (!visible) {
+    updateBannerPhase = null;
+    return;
+  }
+
+  const phaseChanged = updateBannerPhase !== phase;
+  updateBannerPhase = phase;
+  const ready = phase === "ready";
+  box.classList.toggle("ready", ready);
+  box.classList.toggle("downloading", !ready);
+
+  const percent = ready ? 100 : updateBannerPercent(state);
+  const version = updateBannerVersion(state);
+
+  const icon = box.querySelector(".update-banner-icon");
+  if (icon) icon.textContent = ready ? "✔" : "↓";
+  const text = box.querySelector(".update-banner-text");
+  if (text) {
+    text.textContent = ready
+      ? fmt(t("update.ready"), { version })
+      : percent === null
+        ? fmt(t("update.downloadingUnknown"), { version })
+        : fmt(t("update.downloading"), { version, percent });
+  }
+  box.title = ready ? t("update.readyHint") : "";
+
+  // The progress line. A download whose total size is unknown sweeps instead of
+  // standing at a percentage nobody measured.
+  box.classList.toggle("indeterminate", !ready && percent === null);
+  const fill = box.querySelector(".update-banner-fill");
+  if (fill) fill.style.width = ready || percent === null ? "" : `${percent}%`;
+
+  if (phaseChanged) renderUpdateBannerActions(box, ready);
+}
+
+function applyUpdateBannerState(state) {
+  updateBannerState = state || null;
+  renderUpdateBanner();
+}
+
+// Re-render after a language switch: the text and the button labels are
+// translated (the progress itself does not change).
+function refreshUpdateBanner() {
+  if (!updateBannerNode) return;
+  updateBannerPhase = null; // rebuild the buttons with the new labels
+  renderUpdateBanner();
+}
+
+// The banner lives on every page, so this runs wherever common.js is loaded. A
+// plain browser (no preload bridge) simply never shows it.
+function initUpdateBanner() {
+  if (!updateBannerAvailable()) return;
+  window.bridge.OnUpdateState(applyUpdateBannerState);
+  window.bridge
+    .UpdateGetState()
+    .then((state) => {
+      // A broadcast may already have described a newer moment; it wins.
+      if (!updateBannerState) applyUpdateBannerState(state);
+    })
+    .catch((err) => console.error("Failed to read the update state:", err));
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket helper for unread-email workflows.
 //
 // The server authenticates the socket with the same Bearer token used by the
@@ -3289,3 +3511,5 @@ class UnreadEmailSocket {
 translatePage();
 // Queued-requests badge on every page (scripts are deferred: body exists).
 initOutboxUi();
+// Auto-update banner (hidden unless a release is being downloaded / is ready).
+initUpdateBanner();

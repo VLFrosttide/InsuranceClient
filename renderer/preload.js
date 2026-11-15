@@ -71,6 +71,20 @@ contextBridge.exposeInMainWorld("bridge", {
     return () => ipcRenderer.removeListener("OutboxDelivered", listener);
   },
 
+  // Auto-update banner. The download state is owned by the main process (a page
+  // change destroys this renderer), so a page asks for it on load and then
+  // follows the broadcasts. `state` is
+  // { phase: "idle" | "downloading" | "ready", version, percent, total, … }.
+  UpdateGetState: () => ipcRenderer.invoke("UpdateGetState"),
+  // "Restart now" / "Later" on the finished download.
+  UpdateInstall: () => ipcRenderer.invoke("UpdateInstall"),
+  UpdateDismiss: () => ipcRenderer.invoke("UpdateDismiss"),
+  OnUpdateState: (callback) => {
+    const listener = (event, state) => callback(state);
+    ipcRenderer.on("UpdateState", listener);
+    return () => ipcRenderer.removeListener("UpdateState", listener);
+  },
+
   // Bulins border-insurance web form (WebContentsView). Opening an email or a
   // walk-in insurance shows this form instead of the in-app form; the main
   // process scrapes every page the worker visits.
