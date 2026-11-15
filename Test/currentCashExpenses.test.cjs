@@ -2,13 +2,15 @@
 
 // Node test for the EXPENSES section of the Current cash tab.
 //
-// An expense is money that left a branch's drawer BY HAND: a manual "Reduce"
-// from the Current cash screen (rent, supplies, a payout ...). The very same
-// ledger also holds the reductions the insurances routes write when a policy
-// moves money - the refund of an annulled policy, the money a deletion gives
-// back, the reversal of an edit or a price correction. Those lower the drawer
-// as well, but they are policy movements, not money the branch spent, so they
-// must never be counted as expenses.
+// An expense is money that left a branch's drawer as a SPEND: a manual
+// "Expense" entry from the Current cash screen (rent, supplies, a payout ...).
+// The very same ledger also holds the reductions the insurances routes write
+// when a policy moves money - the refund of an annulled policy, the money a
+// deletion gives back, the reversal of an edit or a price correction. Those
+// lower the drawer as well, but they are policy movements, not money the branch
+// spent, so they must never be counted as expenses. Money HANDED OVER to a
+// person (Type = 'handover') is a third kind: it leaves the drawer too, but the
+// branch did not spend it, so it is never an expense either.
 //
 // It loads the REAL server module (InsuranceServer/Requests/CurrentCash.js, see
 // Test/serverPath.cjs) in a vm against an in-memory fake MySQL, so the
@@ -103,7 +105,7 @@ const POLICY_REASONS = [
   "Price change 1234567",
 ];
 
-const row = (id, type, amount, currency, reason) => ({
+const row = (id, type, amount, currency, reason, recipient = null) => ({
   id,
   Branch: "Офис Харманли",
   Type: type,
@@ -111,6 +113,7 @@ const row = (id, type, amount, currency, reason) => ({
   Currency: currency,
   Username: "worker1",
   Reason: reason,
+  Recipient: recipient,
   CreatedAt: "2026-10-14 10:00:00",
 });
 
@@ -160,6 +163,27 @@ const row = (id, type, amount, currency, reason) => ({
     );
   });
 
+  check("money handed over to a person is not an expense", () => {
+    const rows = [
+      row(1, "reduce", 20, "TRY", "Supplies"),
+      // A hand-over takes money out of the drawer, but the branch did not spend
+      // it, so it is its own ledger type and never an expense.
+      row(2, "handover", 40, "EUR", "Runner to the safe", "Ivan"),
+      row(3, "reduce", 5.55, "EUR", "Rent"),
+    ];
+    const split = CC.splitExpences(rows);
+    eq(
+      split.expences.map((r) => r.id),
+      [1, 3],
+      "the hand-over is left out"
+    );
+    eq(
+      split.totalExpences,
+      { EUR: 5.55, TRY: 20 },
+      "and it is not part of the total either"
+    );
+  });
+
   check("the expenses total is per currency", () => {
     const split = CC.splitExpences([
       row(1, "reduce", 20, "TRY", "Supplies"),
@@ -192,6 +216,7 @@ const row = (id, type, amount, currency, reason) => ({
     row(3, "increase", 50, "EUR", "Top up"),
     row(4, "reduce", 10, "EUR", "Delete 654321"),
     row(5, "reduce", 5.55, "EUR", "Rent"),
+    row(6, "handover", 40, "EUR", "Runner to the safe", "Ivan"),
   ];
 
   // Only the statements GET /currentcash issues are understood; anything else is
@@ -210,6 +235,7 @@ const row = (id, type, amount, currency, reason) => ({
       if (s.startsWith("SELECT * FROM cash_resets")) return [[]];
       if (s.startsWith("SELECT * FROM card_resets")) return [[]];
       if (s.startsWith("SELECT * FROM broker_cash_resets")) return [[]];
+      if (s.startsWith("SELECT * FROM insurance")) return [[]];
       if (s.startsWith("SELECT COALESCE(MAX(LastMovementId), 0) AS Marker")) {
         return [[{ Marker: 0 }]];
       }
@@ -269,8 +295,13 @@ const row = (id, type, amount, currency, reason) => ({
     });
     eq(
       res.body.transactions.map((r) => r.id),
-      [1, 2, 3, 4, 5],
-      "every entry, annulments and increases included"
+      [1, 2, 3, 4, 5, 6],
+      "every entry: annulments, increases and the hand-over"
+    );
+    eq(
+      res.body.transactions.find((r) => r.id === 6).Recipient,
+      "Ivan",
+      "the hand-over names the person who took the money"
     );
   });
 

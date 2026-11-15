@@ -1379,9 +1379,10 @@ function fillBalanceCard(card, balances) {
   card.appendChild(list);
 }
 
-// Row tint for an increase / reduction: a soft green for money in, a soft red
-// for money out, a step stronger once the amount passes the currency's notable
-// amount (100 EUR / 5 500 TRY).
+// Row tint for a cash-ledger movement: a soft green for money in, a soft red
+// for money spent out of the drawer, a muted amber for money HANDED OVER to a
+// person (out of the drawer, but not an expense), and a step stronger once the
+// amount passes the currency's notable amount (100 EUR / 5 500 TRY).
 function movementRowClass(type, amount, currency) {
   const big = isNotableAmount(amount, currency);
   const kind = String(type);
@@ -1390,6 +1391,9 @@ function movementRowClass(type, amount, currency) {
   }
   if (kind === "reduce") {
     return big ? "row-reduce row-large-reduce" : "row-reduce";
+  }
+  if (kind === "handover") {
+    return big ? "row-handover row-large-handover" : "row-handover";
   }
   return "";
 }
@@ -1419,6 +1423,18 @@ function amountCellClass(item) {
   return isNotableAmount(item && item.Amount, item && item.Currency)
     ? "amount-notable"
     : "";
+}
+
+// The cash ledger's technical Type values, as the tables show them to a user:
+// "increase" -> Increase, "reduce" -> Expense, "handover" -> Hand over. An
+// unknown value is shown as it is, so a new type is never hidden. (Broker
+// movements have their own movementTypeLabel further down.)
+function cashTypeLabel(type) {
+  const kind = String(type ?? "");
+  if (kind === "increase") return t("increase");
+  if (kind === "reduce") return t("expense");
+  if (kind === "handover") return t("handOver");
+  return kind;
 }
 
 function openModal(title, bodyNode) {
@@ -1769,9 +1785,12 @@ function renderTable(items, columns, actions, rowClass, onRowClick, options) {
             wrap.appendChild(btn);
             return;
           }
-          const btn = el("button", a.label, {
-            class: `small ${a.class || "secondary"}`,
-          });
+          const actionAttrs = { class: `small ${a.class || "secondary"}` };
+          if (a.title) actionAttrs.title = a.title;
+          // Only the visible label is used for a normal action button, so the
+          // title doubles as its tooltip (the cut-off action uses one).
+          const btn = el("button", a.label, actionAttrs);
+          if (a.title) btn.setAttribute("aria-label", a.label);
           btn.addEventListener("click", () => a.onClick(item));
           wrap.appendChild(btn);
         });
@@ -1783,6 +1802,102 @@ function renderTable(items, columns, actions, rowClass, onRowClick, options) {
   }
   table.appendChild(tbody);
   return table;
+}
+
+// ---------------------------------------------------------------------------
+// Sortable tables
+//
+// A thin wrapper around renderTable: every column with a key is sortable
+// unless it sets `sortable: false`. The first click sorts descending (highest
+// or newest first), the second click flips it. The sort state lives in the
+// caller, so re-rendering a page (a new date, a refresh) keeps the chosen
+// order. Columns may give `sortValue` when the displayed text is not what
+// should be compared (e.g. a role label vs its number) and `sortType`
+// ("text" | "number" | "date") when the value needs explicit handling.
+// ---------------------------------------------------------------------------
+function tableSortValue(row, column) {
+  if (!row) return null;
+  const value =
+    typeof column.sortValue === "function"
+      ? column.sortValue(row)
+      : row[column.sortKey || column.key];
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value).trim();
+  if (text === "") return null;
+  if (column.sortType === "number") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (column.sortType === "date") {
+    const t = Date.parse(text.replace(" ", "T"));
+    return Number.isNaN(t) ? null : t;
+  }
+  if (column.sortType === "text") return text;
+  // No explicit type: numbers sort numerically, everything else as text.
+  const n = Number(value);
+  return Number.isFinite(n) ? n : text;
+}
+
+function sortTableRows(items, columns, sort) {
+  const list = Array.isArray(items) ? [...items] : [];
+  if (!sort || !sort.key) return list;
+  const column = columns.find((c) => (c.sortKey || c.key) === sort.key);
+  if (!column) return list;
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return list.sort((a, b) => {
+    const av = tableSortValue(a, column);
+    const bv = tableSortValue(b, column);
+    // Empty values sink to the bottom in both directions.
+    if (av === null || bv === null) {
+      return av === bv ? 0 : av === null ? 1 : -1;
+    }
+    if (typeof av === "number" && typeof bv === "number") {
+      return sign * (av - bv);
+    }
+    return (
+      sign *
+      String(av).localeCompare(String(bv), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
+  });
+}
+
+function sortableTable(items, columns, actions, rowClass, onRowClick, options) {
+  const opts = options || {};
+  const state = opts.sort || { key: null, dir: "desc" };
+  const holder = el("div", null, { class: "sortable-table" });
+  const render = () => {
+    const headerColumns = columns.map((c) => {
+      const key = c.sortKey || c.key;
+      if (!key || c.sortable === false) return c;
+      return {
+        ...c,
+        headerSuffix:
+          state.key !== key ? "" : state.dir === "desc" ? "▼" : "▲",
+        onHeaderClick: () => {
+          state.dir =
+            state.key === key && state.dir === "desc" ? "asc" : "desc";
+          state.key = key;
+          render();
+        },
+      };
+    });
+    holder.replaceChildren(
+      renderTable(
+        sortTableRows(items, columns, state),
+        headerColumns,
+        actions,
+        rowClass,
+        onRowClick,
+        opts
+      )
+    );
+  };
+  render();
+  return holder;
 }
 
 // A collapsible table section: the heading stays visible - with the number of
@@ -2630,6 +2745,11 @@ async function adminDashboard() {
   Content.replaceChildren(el("h2", t("overview")), branchesSection);
 }
 
+// Sort state of the users table. Kept outside the DOM so saving a user,
+// restoring one or switching languages keeps the chosen order.
+let userSort = { key: null, dir: "desc" };
+let deletedUserSort = { key: null, dir: "desc" };
+
 async function adminUsers() {
   // ?includeDeleted=1 also returns the soft-deleted accounts (data.deleted), so
   // the panel can offer Restore; the live list itself never contains them.
@@ -2661,23 +2781,39 @@ async function adminUsers() {
   addUserBtn.addEventListener("click", () => registerUserForm());
   toolbar.appendChild(addUserBtn);
 
-  const table = renderTable(
+  const table = sortableTable(
     data.users,
     [
-      { key: "Username", label: t("username") },
-      { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
-      { key: "Balance", label: t("balance"), format: (v) => money(v) },
+      { key: "Username", label: t("username"), sortType: "text" },
+      {
+        key: "Role",
+        label: t("role"),
+        format: (v) => roleLabel(v),
+        sortType: "number",
+      },
+      {
+        key: "Balance",
+        label: t("balance"),
+        format: (v) => money(v),
+        sortType: "number",
+      },
       {
         key: "BrokerId",
+        sortKey: "BrokerName",
         label: t("brokerName"),
         format: (v) => brokerNameOf(v) || "—",
+        sortValue: (u) => brokerNameOf(u.BrokerId),
+        sortType: "text",
       },
       {
         key: "BrokerId",
+        sortKey: "MainBroker",
         label: t("mainBroker"),
         format: (_v, u) => mainBrokerOf(u) || "—",
+        sortValue: (u) => mainBrokerOf(u),
+        sortType: "text",
       },
-      { key: "Status", label: t("status") },
+      { key: "Status", label: t("status"), sortType: "text" },
     ],
     (u) => [
       {
@@ -2818,7 +2954,7 @@ async function adminUsers() {
     ],
     null,
     null,
-    { revealActions: true }
+    { revealActions: true, sort: userSort }
   );
   // Live accounts first; the soft-deleted ones (if any) are listed separately so
   // they can be restored without cluttering the table above.
@@ -2826,17 +2962,23 @@ async function adminUsers() {
   if (deletedUsers.length) {
     children.push(el("h3", t("deletedUsers")));
     children.push(
-      renderTable(
+      sortableTable(
         deletedUsers,
         [
-          { key: "Username", label: t("username") },
-          { key: "Role", label: t("role"), format: (v) => roleLabel(v) },
+          { key: "Username", label: t("username"), sortType: "text" },
+          {
+            key: "Role",
+            label: t("role"),
+            format: (v) => roleLabel(v),
+            sortType: "number",
+          },
           {
             key: "DeletedAt",
             label: t("deleted"),
             format: (v) => formatDateTime(v),
+            sortType: "date",
           },
-          { key: "DeletedBy", label: t("deletedBy") },
+          { key: "DeletedBy", label: t("deletedBy"), sortType: "text" },
         ],
         (u) => [
           {
@@ -2847,7 +2989,7 @@ async function adminUsers() {
         ],
         () => "row-deleted",
         null,
-        { revealActions: true }
+        { revealActions: true, sort: deletedUserSort }
       )
     );
   }
@@ -3296,6 +3438,65 @@ function openForgottenShiftFix(branch, defaultDate) {
 // stale branch, mixing up the daily report.
 let currentCashSeq = 0;
 
+// The currencies the drawer tracks. Every cash movement (including a hand-over)
+// records one of these; a new movement defaults to EUR, while TRY can be picked
+// explicitly and is deducted from the TRY balance.
+const CASH_CURRENCY_OPTIONS = [
+  { label: "EUR", value: "EUR" },
+  { label: "TRY", value: "TRY" },
+];
+
+// Sort state of the four ledger tables in the Current cash tab. Kept outside
+// the DOM so changing the day (which rebuilds the view) or sorting one table
+// never loses the order the other tables were left in.
+const cashTableSort = {
+  transactions: { key: null, dir: "desc" },
+  expenses: { key: null, dir: "desc" },
+  brokerCash: { key: null, dir: "desc" },
+  cardInsurances: { key: null, dir: "desc" },
+  resets: { key: null, dir: "desc" },
+};
+
+// True when a per-currency balance object holds anything besides zero.
+function hasNonZeroCash(balances) {
+  return Object.values(balances || {}).some((value) => Number(value) !== 0);
+}
+
+// Sum the per-branch money rows the daily endpoint returns (each row carries
+// Branch, EUR and TRY) into one per-currency object.
+function cashRowsTotal(rows) {
+  const total = { EUR: 0, TRY: 0 };
+  for (const row of rows || []) {
+    total.EUR += Number(row && row.EUR) || 0;
+    total.TRY += Number(row && row.TRY) || 0;
+  }
+  total.EUR = Math.round(total.EUR * 100) / 100;
+  total.TRY = Math.round(total.TRY * 100) / 100;
+  return total;
+}
+
+// Make a Current cash balance card a shortcut to its table. Cards with a zero
+// balance stay inert: there is nothing to look at in the ledger. The card is
+// also keyboard reachable, since it now behaves like a button.
+function activateCashCard(card, section, active) {
+  if (!card || !section || !active) return;
+  card.classList.add("clickable");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  const open = () => {
+    section.open = true;
+    if (typeof section.scrollIntoView === "function") {
+      section.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+  card.addEventListener("click", open);
+  card.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    open();
+  });
+}
+
 async function currentCashView(overrideBranch, overrideDate) {
   const seq = ++currentCashSeq;
 
@@ -3320,16 +3521,22 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   // tzOffset (minutes east of UTC) lets the server work out the same "today".
   const tzOffset = -now.getTimezoneOffset();
-  const [data, daily] = await Promise.all([
+  const dailyQuery =
+    `/currentcash/daily?date=${encodeURIComponent(date)}` +
+    `&tzOffset=${tzOffset}`;
+  const [data, daily, dailyAll] = await Promise.all([
     api(
       `/currentcash?branch=${encodeURIComponent(branch)}` +
         `&date=${encodeURIComponent(date)}` +
         `&tzOffset=${tzOffset}`
     ),
-    api(
-      `/currentcash/daily?date=${encodeURIComponent(date)}` +
-        `&tzOffset=${tzOffset}&branch=${encodeURIComponent(branch)}`
-    ),
+    // Branch-scoped daily figures: the Drawers card needs this branch's
+    // available cash, broker top-ups and card payments.
+    api(`${dailyQuery}&branch=${encodeURIComponent(branch)}`),
+    // Country-wide daily figures for the Daily report card. The counts were
+    // always country-wide; this call makes the money statistic country-wide
+    // too instead of showing the selected branch only.
+    api(dailyQuery),
   ]);
 
   // A newer load (branch or date switch) started while this one was in flight;
@@ -3367,17 +3574,21 @@ async function currentCashView(overrideBranch, overrideDate) {
   // Workers see their own drawer's balance and card balance here, with the
   // money brokers handed over sitting between them: cash from brokers is kept
   // apart from the drawer, but it does belong to this branch. Admins get the
-  // drawer money broken out per branch inside the daily report instead, so the
-  // Balance and Card balance cards are omitted for them.
+  // drawer money broken out inside the Drawers card instead, so the Balance and
+  // Card balance cards are omitted for them.
   const cardsRow = el("div", null, { class: "cash-cards" });
   const leftCol = el("div", null, { class: "cash-cards-left" });
+  // Kept in variables (rather than only inside the blocks below) so each card
+  // can be wired to its ledger section once the sections exist.
+  let balanceCard = null;
+  let cardCard = null;
   if (!isAdmin) {
-    const balance = el("div", null, { class: "balance-card" });
-    balance.appendChild(el("h3", t("balance")));
+    balanceCard = el("div", null, { class: "balance-card" });
+    balanceCard.appendChild(el("h3", t("balance")));
 
     // Show each currency only when its balance is above/below 0.
-    fillBalanceCard(balance, data.balances);
-    leftCol.appendChild(balance);
+    fillBalanceCard(balanceCard, data.balances);
+    leftCol.appendChild(balanceCard);
   }
 
   // Cash from brokers: the money brokers handed over at this branch since its
@@ -3391,16 +3602,17 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   if (!isAdmin) {
     // The branch's card balance - cleared together with the cash by "Reset to 0".
-    const cardCard = el("div", null, { class: "balance-card" });
+    cardCard = el("div", null, { class: "balance-card" });
     cardCard.appendChild(el("h3", t("cardBalance")));
     cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
     leftCol.appendChild(cardCard);
   }
   cardsRow.appendChild(leftCol);
 
-  // Expenses: the money this branch took out of its drawer by hand on the
-  // picked day (the manual reductions). A card so the day's total can be read
-  // at a glance; the individual entries stay in the collapsible list below.
+  // Expenses: the money this branch spent out of its drawer on the picked day
+  // (the "Expense" entries). A card so the day's total can be read at a glance;
+  // the individual entries stay in the collapsible list below. Hand-overs are
+  // not spends and are never part of this figure.
   // Note: the server still spells its payload fields `totalExpences` /
   // `expences`, so those keep the old spelling here - only the UI text is
   // corrected.
@@ -3412,44 +3624,23 @@ async function currentCashView(overrideBranch, overrideDate) {
   fillBalanceCard(expensesCard, data.totalExpences);
   cardsRow.appendChild(expensesCard);
 
-  // Country-wide daily report for the picked day. It is independent of the
-  // branch selector above: insurances and cash are counted across all branches.
-  const dailyCard = el("div", null, { class: "balance-card daily-report" });
-  dailyCard.appendChild(el("h3", t("dailyReport")));
-  const dailyStat = (label, value, hint) => {
-    const attrs = { class: "daily-report-row" };
+  // A row inside a report card. `extraClass` lets a sub-figure be indented
+  // under the total it belongs to.
+  const dailyStat = (label, value, hint, extraClass) => {
+    const attrs = {
+      class: extraClass
+        ? `daily-report-row ${extraClass}`
+        : "daily-report-row",
+    };
     if (hint) attrs.title = hint;
     const row = el("div", null, attrs);
     row.appendChild(el("span", label, { class: "muted" }));
     row.appendChild(el("span", value));
     return row;
   };
-  // A per-branch money entry: one row per branch, each showing the branch name
-  // and its per-currency amounts.
-  const dailyBranchStat = (label, rows, hint) => {
-    const attrs = { class: "daily-report-row" };
-    if (hint) attrs.title = hint;
-    const row = el("div", null, attrs);
-    row.appendChild(el("span", label, { class: "muted" }));
-    const list = el("div", null, { class: "daily-report-branches" });
-    const items = rows || [];
-    for (const entry of items) {
-      const line = el("div", null, { class: "daily-report-branch" });
-      line.appendChild(
-        el("span", entry.Branch || t("unassignedBranch"), { class: "muted" })
-      );
-      line.appendChild(
-        el(
-          "span",
-          renderCashBalances({ EUR: entry.EUR, TRY: entry.TRY })
-        )
-      );
-      list.appendChild(line);
-    }
-    if (items.length === 0) list.appendChild(el("span", money(0)));
-    row.appendChild(list);
-    return row;
-  };
+  // The two halves of the Daily report card.
+  const dailyGroup = (label) =>
+    el("h4", label, { class: "daily-report-group" });
   // The country-wide figure is the distance between the day's lowest and
   // highest policy number, so name the two policies that set those ends: a
   // single mistyped or out-of-series number is what makes the figure jump, and
@@ -3493,70 +3684,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     row.appendChild(box);
     return row;
   };
-  dailyCard.appendChild(
-    dailyStat(t("totalInsurances"), String(daily.totalInsurances ?? 0))
-  );
-  dailyCard.appendChild(
-    dailyStat(t("brokerInsurances"), String(daily.brokerInsurances ?? 0))
-  );
-  dailyCard.appendChild(
-    dailyStat(t("walkInInsurances"), String(daily.walkInInsurances ?? 0))
-  );
-  dailyCard.appendChild(
-    dailyRangeStat(
-      t("countryWideInsurances"),
-      daily.countryWideInsurances ?? 0,
-      daily.countryWideRange,
-      t("countryWideInsurancesHint")
-    )
-  );
-
-  if (isAdmin) {
-    // Card payments and broker-balance totals are daily, per-branch figures:
-    // each branch's card money and its broker-balance-funded money for the day.
-    dailyCard.appendChild(
-      dailyBranchStat(
-        t("cardPayments"),
-        daily.cardPayments || [],
-        t("cardPaymentsHint")
-      )
-    );
-    dailyCard.appendChild(
-      dailyBranchStat(
-        t("brokerBalanceTotal"),
-        daily.brokerBalance || [],
-        t("brokerBalanceTotalHint")
-      )
-    );
-  } else {
-    // Total daily cash is a per-currency net (walk-in cash + manual increases −
-    // manual reductions), rendered exactly like the balance card above. Hovering
-    // over it explains precisely what it means and what it consists of.
-    dailyCard.appendChild(
-      dailyStat(
-        t("totalDailyCash"),
-        renderCashBalances(daily.totalDailyCash || {}),
-        t("totalDailyCashHint")
-      )
-    );
-  }
-
-  // Total cash from brokers: the money brokers handed over that day (top-ups
-  // of a broker balance). Shown to admins and workers alike, right above the
-  // branch's available cash.
-  dailyCard.appendChild(
-    dailyStat(
-      t("totalCashFromBrokers"),
-      renderCashBalances(daily.cashFromBrokers || {}),
-      t("totalCashFromBrokersHint")
-    )
-  );
-
-  // The selected branch's cash drawer balance at the end of the picked day. It
-  // is walked back from the live balance, so choosing an older date shows how
-  // much cash that branch actually had available on that day. Kept at the
-  // bottom of the report.
-  dailyCard.appendChild(
+  // Drawers: the three places this branch's money can sit at the end of the
+  // picked day. It was previously mixed into the Daily report card; keeping it
+  // apart lets the report talk only about insurances.
+  const drawersCard = el("div", null, { class: "balance-card drawers-card" });
+  drawersCard.appendChild(el("h3", t("drawers")));
+  drawersCard.appendChild(
     dailyStat(
       fmt(t("availableCashBranch"), {
         branch: branch || t("unknownBranch"),
@@ -3565,15 +3698,131 @@ async function currentCashView(overrideBranch, overrideDate) {
       t("availableCashHint")
     )
   );
+  drawersCard.appendChild(
+    dailyStat(
+      t("manualBrokerIncreases"),
+      renderCashBalances(daily.cashFromBrokers || {}),
+      t("manualBrokerIncreasesHint")
+    )
+  );
+  // Card payments come back as one row per branch (only the selected branch
+  // when a branch is passed), so sum the rows into a single per-currency line.
+  drawersCard.appendChild(
+    dailyStat(
+      t("cardPayments"),
+      renderCashBalances(cashRowsTotal(daily.cardPayments)),
+      t("cardPaymentsHint")
+    )
+  );
+  cardsRow.appendChild(drawersCard);
+
+  // Daily report: country-wide insurance statistics for the picked day. It is
+  // independent of the branch selector above - insurances and money are
+  // counted across ALL branches. The two halves are the number of insurances
+  // and the money they brought in.
+  const walkInCash = dailyAll.totalDailyCash || { EUR: 0, TRY: 0 };
+  const walkInCard = cashRowsTotal(dailyAll.cardPayments);
+  const brokerInsuranceMoney = cashRowsTotal(dailyAll.brokerBalance);
+  const totalInsuranceMoney = {
+    EUR:
+      Math.round(
+        ((Number(walkInCash.EUR) || 0) +
+          walkInCard.EUR +
+          brokerInsuranceMoney.EUR) *
+          100
+      ) / 100,
+    TRY:
+      Math.round(
+        ((Number(walkInCash.TRY) || 0) +
+          walkInCard.TRY +
+          brokerInsuranceMoney.TRY) *
+          100
+      ) / 100,
+  };
+
+  const dailyCard = el("div", null, { class: "balance-card daily-report" });
+  dailyCard.appendChild(el("h3", t("dailyReport")));
+
+  // Insurance number statistics.
+  dailyCard.appendChild(dailyGroup(t("insuranceNumberStatistics")));
+  dailyCard.appendChild(
+    dailyStat(t("totalInsurances"), String(dailyAll.totalInsurances ?? 0))
+  );
+  dailyCard.appendChild(
+    dailyStat(
+      t("brokerInsurances"),
+      String(dailyAll.brokerInsurances ?? 0),
+      undefined,
+      "daily-report-sub"
+    )
+  );
+  dailyCard.appendChild(
+    dailyStat(
+      t("walkInInsurances"),
+      String(dailyAll.walkInInsurances ?? 0),
+      undefined,
+      "daily-report-sub"
+    )
+  );
+  dailyCard.appendChild(
+    dailyRangeStat(
+      t("countryWideInsurances"),
+      dailyAll.countryWideInsurances ?? 0,
+      dailyAll.countryWideRange,
+      t("countryWideInsurancesHint")
+    )
+  );
+
+  // Insurance money statistics: the day's total, split by where the money came
+  // from.
+  dailyCard.appendChild(dailyGroup(t("insuranceMoneyStatistics")));
+  dailyCard.appendChild(
+    dailyStat(
+      t("totalDailyCash"),
+      renderCashBalances(totalInsuranceMoney),
+      t("totalDailyCashHint")
+    )
+  );
+  dailyCard.appendChild(
+    dailyStat(
+      t("balanceFromBrokerInsurances"),
+      renderCashBalances(brokerInsuranceMoney),
+      t("balanceFromBrokerInsurancesHint"),
+      "daily-report-sub"
+    )
+  );
+  dailyCard.appendChild(
+    dailyStat(
+      t("balanceFromWalkInsCash"),
+      renderCashBalances(walkInCash),
+      t("balanceFromWalkInsCashHint"),
+      "daily-report-sub"
+    )
+  );
+  dailyCard.appendChild(
+    dailyStat(
+      t("balanceFromWalkInsCard"),
+      renderCashBalances(walkInCard),
+      t("balanceFromWalkInsCardHint"),
+      "daily-report-sub"
+    )
+  );
 
   cardsRow.appendChild(dailyCard);
 
   const actions = el("div", null, { class: "row" });
   const incBtn = el("button", t("increase"));
-  const redBtn = el("button", t("reduce"), { class: "secondary" });
+  // "Expense": money the branch spent - it leaves the drawer AND counts as an
+  // expense and in Total daily cash (the server records it as Type "reduce").
+  const expenseBtn = el("button", t("expense"), { class: "secondary" });
+  // "Hand over": money given to a person. It leaves the drawer (Available cash)
+  // but is not a sale and not an expense, so Total daily cash and the expenses
+  // stay untouched. The person who took it is recorded with the entry.
+  const handOverBtn = el("button", t("handOver"), { class: "secondary" });
   const resetBtn = el("button", t("resetTo0"), { class: "danger" });
   actions.appendChild(incBtn);
-  actions.appendChild(redBtn);
+  actions.appendChild(expenseBtn);
+  actions.appendChild(handOverBtn);
   actions.appendChild(resetBtn);
 
   // Admin-only repair for a shift that was never ended. The reset is recorded
@@ -3589,22 +3838,39 @@ async function currentCashView(overrideBranch, overrideDate) {
     actions.appendChild(fixBtn);
   }
 
+  // The move-cash form shared by the three buttons. `kind` is the API path
+  // segment AND the ledger type the server records: "increase", "reduce" (the
+  // "Expense" button) or "handover". A hand-over additionally asks who received
+  // the money - the server requires it.
   function cashForm(kind, title) {
+    const spec = [
+      { key: "amount", label: t("amount"), type: "number", value: "" },
+      {
+        key: "currency",
+        label: t("currency"),
+        type: "select",
+        options: CASH_CURRENCY_OPTIONS,
+        // A new movement (hand-over included) defaults to euros.
+        value: "EUR",
+      },
+      { key: "reason", label: t("reason"), value: "" },
+    ];
+    if (kind === "handover") {
+      spec.push({
+        key: "Recipient",
+        label: t("handedTo"),
+        value: "",
+        placeholder: t("handedToPlaceholder"),
+      });
+    }
+    const submitLabel =
+      kind === "increase"
+        ? t("increase")
+        : kind === "handover"
+        ? t("handOver")
+        : t("expense");
     const form = buildForm(
-      [
-        { key: "amount", label: t("amount"), type: "number", value: "" },
-        {
-          key: "currency",
-          label: t("currency"),
-          type: "select",
-          options: [
-            { label: "EUR", value: "EUR" },
-            { label: "TRY", value: "TRY" },
-          ],
-          value: "EUR",
-        },
-        { key: "reason", label: t("reason"), value: "" },
-      ],
+      spec,
       async (payload) => {
         // Attach the branch and the client's local creation time before sending.
         // The server stores CreatedAt as sent, instead of stamping it with the
@@ -3620,21 +3886,26 @@ async function currentCashView(overrideBranch, overrideDate) {
         toast(
           kind === "increase"
             ? t("currentCashIncreased")
-            : t("currentCashReduced"),
+            : kind === "handover"
+            ? t("cashHandedOver")
+            : t("expenseRecorded"),
           "success"
         );
         closeModal();
         currentCashView(branch, date);
       },
-      kind === "increase" ? t("increase") : t("reduce")
+      submitLabel
     );
     openModal(title, form);
   }
   incBtn.addEventListener("click", () =>
     cashForm("increase", t("currentCashIncreased"))
   );
-  redBtn.addEventListener("click", () =>
-    cashForm("reduce", t("currentCashReduced"))
+  expenseBtn.addEventListener("click", () =>
+    cashForm("reduce", t("recordExpense"))
+  );
+  handOverBtn.addEventListener("click", () =>
+    cashForm("handover", t("handOverCash"))
   );
   resetBtn.addEventListener("click", async () => {
     if (!confirm(t("resetConfirm"))) return;
@@ -3658,36 +3929,46 @@ async function currentCashView(overrideBranch, overrideDate) {
   });
 
   function openTransactionEditor(tx) {
+    // A hand-over keeps its own type: it may be corrected (amount, currency,
+    // reason, who took the money), but it cannot be turned into an expense or an
+    // increase - that would move money between Total daily cash and the expenses
+    // without any matching ledger row. So its type select is left out and the
+    // server keeps 'handover' (see PATCH /currentcash/transactions/:id).
+    const isHandover = String(tx.Type || "") === "handover";
+    const spec = [];
+    if (!isHandover) {
+      spec.push({
+        key: "type",
+        label: t("type"),
+        type: "select",
+        options: [
+          { label: t("increase"), value: "increase" },
+          { label: t("expense"), value: "reduce" },
+        ],
+        value: tx.Type,
+      });
+    }
+    spec.push(
+      { key: "amount", label: t("amount"), type: "number", value: tx.Amount },
+      {
+        key: "currency",
+        label: t("currency"),
+        type: "select",
+        options: CASH_CURRENCY_OPTIONS,
+        value: tx.Currency || "EUR",
+      },
+      { key: "reason", label: t("reason"), value: tx.Reason }
+    );
+    if (isHandover) {
+      spec.push({
+        key: "Recipient",
+        label: t("handedTo"),
+        value: tx.Recipient || "",
+        placeholder: t("handedToPlaceholder"),
+      });
+    }
     const form = buildForm(
-      [
-        {
-          key: "type",
-          label: t("type"),
-          type: "select",
-          options: [
-            { label: t("increase"), value: "increase" },
-            { label: t("reduce"), value: "reduce" },
-          ],
-          value: tx.Type,
-        },
-        {
-          key: "amount",
-          label: t("amount"),
-          type: "number",
-          value: tx.Amount,
-        },
-        {
-          key: "currency",
-          label: t("currency"),
-          type: "select",
-          options: [
-            { label: "EUR", value: "EUR" },
-            { label: "TRY", value: "TRY" },
-          ],
-          value: tx.Currency || "EUR",
-        },
-        { key: "reason", label: t("reason"), value: tx.Reason },
-      ],
+      spec,
       async (payload) => {
         // Stamp the correction's own ledger entries with the worker's local
         // time (the original transaction keeps its CreatedAt).
@@ -3706,23 +3987,39 @@ async function currentCashView(overrideBranch, overrideDate) {
     openModal(`${t("editTransaction")} #${tx.id}`, form);
   }
 
-  const txTable = renderTable(
+  const txTable = sortableTable(
     data.transactions,
     [
-      { key: "Type", label: t("type") },
+      {
+        key: "Type",
+        label: t("type"),
+        format: (v) => cashTypeLabel(v),
+        sortValue: (tx) => cashTypeLabel(tx.Type),
+        sortType: "text",
+      },
       {
         key: "Amount",
         label: t("amount"),
         format: (v) => money(v),
         cellClass: amountCellClass,
+        sortType: "number",
       },
-      { key: "Currency", label: t("currency") },
-      { key: "Username", label: t("user") },
-      { key: "Reason", label: t("reason") },
+      { key: "Currency", label: t("currency"), sortType: "text" },
+      { key: "Username", label: t("user"), sortType: "text" },
+      { key: "Reason", label: t("reason"), sortType: "text" },
+      // Only a hand-over carries it, but the column is shown for every row so
+      // the ledger reads as one table: it says who walked away with the money.
+      {
+        key: "Recipient",
+        label: t("handedTo"),
+        format: (v) => v || "",
+        sortType: "text",
+      },
       {
         key: "CreatedAt",
         label: t("created"),
         format: (v) => formatDateTime(v),
+        sortType: "date",
       },
     ],
     // The author can correct their own entry ("Edit"); an admin can delete any
@@ -3749,20 +4046,24 @@ async function currentCashView(overrideBranch, overrideDate) {
       }
       return rowActions;
     },
-    // Soft green for money in, soft red for money out; an amount above the
-    // currency's notable amount (100 EUR / 5 500 TRY) is tinted a step stronger.
-    (tx) => cashLedgerRowClass(tx.Type, tx.Amount, tx.Currency, tx.Reason)
+    // Soft green for money in, soft red for money spent, muted amber for money
+    // handed over to a person; an amount above the currency's notable amount
+    // (100 EUR / 5 500 TRY) is tinted a step stronger.
+    (tx) => cashLedgerRowClass(tx.Type, tx.Amount, tx.Currency, tx.Reason),
+    undefined,
+    { sort: cashTableSort.transactions }
   );
-  // Expenses: the money that LEFT this branch's drawer by hand on the picked
-  // day. The server lists only the manual reductions - the refunds of annulled
-  // or deleted insurances reduce the drawer as well, but they are policy
-  // movements, not money the branch spent, so they are not expenses and stay
-  // out of both the list and the total.
+  // Expenses: the money that LEFT this branch's drawer as a spend on the picked
+  // day. The server lists only the manual reductions ("Expense" entries) - the
+  // refunds of annulled or deleted insurances reduce the drawer as well, but
+  // they are policy movements, not money the branch spent, so they are not
+  // expenses and stay out of both the list and the total. Hand-overs are a
+  // separate ledger type and are left out too.
   const expensesTotal = el(
     "p",
     `${t("totalExpenses")}: ${renderCashBalances(data.totalExpences || {})}`
   );
-  const expensesTable = renderTable(
+  const expensesTable = sortableTable(
     data.expences,
     [
       {
@@ -3770,48 +4071,96 @@ async function currentCashView(overrideBranch, overrideDate) {
         label: t("amount"),
         format: (v) => money(v),
         cellClass: amountCellClass,
+        sortType: "number",
       },
-      { key: "Currency", label: t("currency") },
-      { key: "Reason", label: t("reason") },
-      { key: "Username", label: t("user") },
+      { key: "Currency", label: t("currency"), sortType: "text" },
+      { key: "Reason", label: t("reason"), sortType: "text" },
+      { key: "Username", label: t("user"), sortType: "text" },
       {
         key: "CreatedAt",
         label: t("created"),
         format: (v) => formatDateTime(v),
+        sortType: "date",
       },
     ],
     null,
     // Every expense is a reduction, so the red hue always applies; one above the
     // currency's notable amount (100 EUR / 5 500 TRY) is tinted a step stronger.
-    (tx) => cashLedgerRowClass("reduce", tx.Amount, tx.Currency, tx.Reason)
+    (tx) => cashLedgerRowClass("reduce", tx.Amount, tx.Currency, tx.Reason),
+    undefined,
+    { sort: cashTableSort.expenses }
   );
 
   // Every top-up a broker made at this branch on the picked day, in the order
   // it was received. Top-ups recorded before broker money was separated from
   // current cash were given a branch by the server's one-time migration, so they
   // are listed here too; a top-up the migration could not match stays out.
-  const brokerCashTable = renderTable(
+  const brokerCashTable = sortableTable(
     data.brokerCashTransactions,
     [
-      { key: "BrokerName", label: t("broker") },
+      { key: "BrokerName", label: t("broker"), sortType: "text" },
       {
         key: "Amount",
         label: t("amount"),
         format: (v) => money(v),
         cellClass: amountCellClass,
+        sortType: "number",
       },
-      { key: "Currency", label: t("currency") },
-      { key: "Username", label: t("user") },
-      { key: "Reason", label: t("reason") },
+      { key: "Currency", label: t("currency"), sortType: "text" },
+      { key: "Username", label: t("user"), sortType: "text" },
+      { key: "Reason", label: t("reason"), sortType: "text" },
       {
         key: "CreatedAt",
         label: t("created"),
         format: (v) => formatDateTime(v),
+        sortType: "date",
       },
     ],
     null,
     // Broker top-ups are money in, so they carry the green hue.
-    (tx) => cashLedgerRowClass("increase", tx.Amount, tx.Currency, tx.Reason)
+    (tx) => cashLedgerRowClass("increase", tx.Amount, tx.Currency, tx.Reason),
+    undefined,
+    { sort: cashTableSort.brokerCash }
+  );
+
+  // Walk-in policies paid by card on the picked day. This is the list behind
+  // the branch's Card balance: the server returns exactly the policies whose
+  // stored price made up that balance (no broker-funded policies, no other
+  // day). A soft-deleted policy is left out, like everywhere else.
+  const cardInsurancesTable = sortableTable(
+    data.cardInsurances,
+    [
+      { key: "BlancNumber", label: t("blankNo"), sortType: "text" },
+      { key: "PolicyNumber", label: t("policyNumber"), sortType: "text" },
+      { key: "CarNumber", label: t("carNumber"), sortType: "text" },
+      {
+        key: "Price",
+        label: t("price"),
+        // The stored price, not the displayed +2 card fee: these rows explain
+        // the card balance, which is built from the stored price.
+        format: (_v, item) => money(item.Price),
+        sortType: "number",
+      },
+      { key: "CurrencyType", label: t("currency"), sortType: "text" },
+      { key: "Author", label: t("author"), sortType: "text" },
+      {
+        key: "CreationDate",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+        sortType: "date",
+      },
+      {
+        key: "Annulled",
+        label: t("status"),
+        format: (_v, item) => insuranceStatusLabel(item),
+        sortValue: (item) => insuranceStatusLabel(item),
+        sortType: "text",
+      },
+    ],
+    undefined,
+    (item) => annulledRowClass(item),
+    undefined,
+    { sort: cashTableSort.cardInsurances }
   );
 
   // A "Reset to 0" clears the cash drawer (one `cash_resets` row per currency)
@@ -3827,16 +4176,30 @@ async function currentCashView(overrideBranch, overrideDate) {
     ...r,
     Currency: t("cashFromBrokers"),
   }));
-  const resetTable = renderTable(
+  const resetTable = sortableTable(
     [...(data.resets || []), ...cardResets, ...brokerCashResets].sort((a, b) =>
       String(b.CreatedAt || "").localeCompare(String(a.CreatedAt || ""))
     ),
     [
-      { key: "Username", label: t("user") },
-      { key: "Currency", label: t("currency") },
-      { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
-      { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
-    ]
+      { key: "Username", label: t("user"), sortType: "text" },
+      { key: "Currency", label: t("currency"), sortType: "text" },
+      {
+        key: "KeptAmount",
+        label: t("kept"),
+        format: (v) => money(v),
+        sortType: "number",
+      },
+      {
+        key: "CreatedAt",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+        sortType: "date",
+      },
+    ],
+    undefined,
+    undefined,
+    undefined,
+    { sort: cashTableSort.resets }
   );
 
   // Day picker for the history below; changing it reloads the transactions
@@ -3887,32 +4250,76 @@ async function currentCashView(overrideBranch, overrideDate) {
     }
   }
 
+  // One section per ledger table, kept in variables so the balance cards above
+  // can open and scroll to them.
+  const transactionsSection = collapsibleSection(
+    t("transactions"),
+    (data.transactions || []).length,
+    [txTable]
+  );
+  const expensesSection = collapsibleSection(
+    t("expenses"),
+    (data.expences || []).length,
+    [
+      expensesTotal,
+      el("p", t("expensesHint"), { class: "muted" }),
+      expensesTable,
+    ]
+  );
+  const brokerCashSection = collapsibleSection(
+    t("transactionsCashFromBrokers"),
+    (data.brokerCashTransactions || []).length,
+    [brokerCashTable]
+  );
+  const cardInsurancesSection = collapsibleSection(
+    t("cardInsurances"),
+    (data.cardInsurances || []).length,
+    [cardInsurancesTable]
+  );
+  const resetsSection = collapsibleSection(
+    t("resets"),
+    (data.resets || []).length +
+      cardResets.length +
+      brokerCashResets.length,
+    [resetTable]
+  );
+
+  // A card is a shortcut to its table, but only when it has something to show:
+  // a zero balance leaves the card inert.
+  activateCashCard(
+    balanceCard,
+    transactionsSection,
+    hasNonZeroCash(data.balances)
+  );
+  activateCashCard(
+    brokerCashCard,
+    brokerCashSection,
+    hasNonZeroCash(data.brokerCash)
+  );
+  activateCashCard(
+    cardCard,
+    // The card balance is the sum of the walk-in card policies of the picked
+    // day, so the card opens exactly that list.
+    cardInsurancesSection,
+    Number(data.cardBalance) !== 0
+  );
+  activateCashCard(
+    expensesCard,
+    expensesSection,
+    hasNonZeroCash(data.totalExpences)
+  );
+
   Content.replaceChildren(
     ...topNodes,
     cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
     dateRow,
-    collapsibleSection(t("transactions"), (data.transactions || []).length, [
-      txTable,
-    ]),
-    collapsibleSection(t("expenses"), (data.expences || []).length, [
-      expensesTotal,
-      el("p", t("expensesHint"), { class: "muted" }),
-      expensesTable,
-    ]),
-    collapsibleSection(
-      t("transactionsCashFromBrokers"),
-      (data.brokerCashTransactions || []).length,
-      [brokerCashTable]
-    ),
-    collapsibleSection(
-      t("resets"),
-      (data.resets || []).length +
-        cardResets.length +
-        brokerCashResets.length,
-      [resetTable]
-    )
+    transactionsSection,
+    expensesSection,
+    brokerCashSection,
+    cardInsurancesSection,
+    resetsSection
   );
 }
 
@@ -4020,24 +4427,27 @@ function brokerHasNoEmail(b) {
   return emails.length === 0;
 }
 
-// The "cut off" button shown in the leftmost column of the brokers list. It is
-// an admin action: the column is never rendered for workers, and for admins it
-// is always enabled, so a broker can be cut off (or re-enabled) at any time.
-function brokerCutOffButton(b) {
-  if (userRole !== "1") return null;
-
+// The "cut off" action shown in the brokers table's Actions column. It is an
+// admin action: the whole action list is built only for admins, so a broker can
+// be cut off (or re-enabled) at any time.
+function brokerCutOffAction(b) {
   const cutOff = Boolean(b.cutOff);
-  const btn = el(
-    "button",
-    cutOff ? t("brokerCutOffRestore") : t("brokerCutOff"),
-    {
-      class: `small ${cutOff ? "danger" : "secondary"}`,
-      type: "button",
-    }
-  );
-  btn.title = t("brokerCutOffHint");
-  btn.addEventListener("click", () => toggleBrokerCutOff(b));
-  return btn;
+  return {
+    label: cutOff ? t("brokerCutOffRestore") : t("brokerCutOff"),
+    class: cutOff ? "danger" : "secondary",
+    title: t("brokerCutOffHint"),
+    onClick: (broker) => toggleBrokerCutOff(broker),
+  };
+}
+
+// The last payment a broker made (the newest manual top-up): amount, currency
+// and date. A broker without a top-up shows a dash.
+function brokerLastPaymentLabel(b) {
+  if (!b || !b.LastPaymentAt) return "—";
+  const currency = b.LastPaymentCurrency ? ` ${b.LastPaymentCurrency}` : "";
+  return `${money(b.LastPaymentAmount)}${currency} · ${formatDateTime(
+    b.LastPaymentAt
+  )}`;
 }
 
 async function toggleBrokerCutOff(b) {
@@ -4237,17 +4647,6 @@ async function brokersView() {
     const table = renderTable(
       sortedBrokers,
       [
-        // Cutting a broker off is an admin action, so the column is not shown
-        // to workers at all.
-        ...(isAdmin
-          ? [
-              {
-                key: "cutoff",
-                label: t("cutOff"),
-                render: (_value, b) => brokerCutOffButton(b),
-              },
-            ]
-          : []),
         {
           key: "Name",
           label: t("name"),
@@ -4273,6 +4672,14 @@ async function brokersView() {
           ...sortHeader("CashBalance"),
         },
         {
+          // The newest manual top-up of the broker's balance (amount + date),
+          // so a broker who has not paid for a long time is obvious at a glance.
+          key: "LastPaymentAt",
+          label: t("lastPayment"),
+          format: (_v, b) => brokerLastPaymentLabel(b),
+          ...sortHeader("LastPaymentAt"),
+        },
+        {
           key: "batches",
           label: t("blancBatches"),
           format: (v) => formatBlancBatches(v),
@@ -4286,34 +4693,37 @@ async function brokersView() {
           ...sortHeader("InactivePolicies"),
         },
       ],
-      [
+      (b) => [
         {
           label: t("increase"),
           class: "broker-adjust broker-adjust-increase",
-          onClick: (b) => brokerAdjust(b, "increase"),
+          onClick: (broker) => brokerAdjust(broker, "increase"),
         },
-        {
-          label: t("reduce"),
-          class: "broker-adjust broker-adjust-reduce secondary",
-          onClick: (b) => brokerAdjust(b, "reduce"),
-        },
+        // A worker may top a broker up, but reducing a broker's balance stays an
+        // admin correction.
         ...(isAdmin
           ? [
               {
+                label: t("reduce"),
+                class: "broker-adjust broker-adjust-reduce secondary",
+                onClick: (broker) => brokerAdjust(broker, "reduce"),
+              },
+              brokerCutOffAction(b),
+              {
                 label: t("edit"),
                 class: "secondary",
-                onClick: (b) => brokerEditForm(b),
+                onClick: (broker) => brokerEditForm(broker),
               },
               {
                 label: t("blancBatches"),
                 class: "secondary",
-                onClick: (b) => brokerBatchesView(b),
+                onClick: (broker) => brokerBatchesView(broker),
               },
               {
                 label: t("delete"),
                 class: "danger",
                 hover: true,
-                onClick: (b) => deleteBroker(b, () => brokersView()),
+                onClick: (broker) => deleteBroker(broker, () => brokersView()),
               },
             ]
           : []),
@@ -5903,8 +6313,16 @@ function reconRenderResults(result) {
   return wrap;
 }
 
+// The last reconciled report, kept in memory. The Reconcile tab is rebuilt on
+// every nav switch; without this the spreadsheet would be parsed and the whole
+// insurance list fetched again just to show the same result. The chosen File is
+// kept too, so Run still works after coming back. Nothing is written to disk:
+// the cache lives only as long as this dashboard window, and a newly chosen
+// file invalidates it until Run is pressed again.
+let reconcileCache = null;
+
 async function reconcileView() {
-  let selectedFile = null;
+  let selectedFile = reconcileCache ? reconcileCache.file : null;
 
   const fileInput = el("input", null, { type: "file" });
   fileInput.accept =
@@ -5916,14 +6334,25 @@ async function reconcileView() {
   dropZone.appendChild(
     el("span", t("reconcile.dropHint2"), { class: "muted" })
   );
-  const fileName = el("span", t("reconcile.noFile"), { class: "muted" });
+  const fileName = el(
+    "span",
+    reconcileCache ? reconcileCache.fileName : t("reconcile.noFile"),
+    { class: "muted" }
+  );
   dropZone.appendChild(fileName);
+  if (reconcileCache) dropZone.classList.add("has-file");
 
   const setFile = (file) => {
     if (!file) return;
     if (!/\.(xlsx|xlsm|xltx|xltm)$/i.test(file.name)) {
       toast(t("reconcile.invalidFile"), "error");
       return;
+    }
+    // A different file has not been reconciled yet: drop the old result so it
+    // is never mistaken for this file's report.
+    if (!reconcileCache || reconcileCache.file !== file) {
+      reconcileCache = null;
+      result.replaceChildren();
     }
     selectedFile = file;
     fileName.textContent = file.name;
@@ -5955,11 +6384,13 @@ async function reconcileView() {
   });
 
   const today = new Date();
+  const todayString = `${today.getFullYear()}-${reconPad(
+    today.getMonth() + 1
+  )}-${reconPad(today.getDate())}`;
+  // Restore the date the cached report was run for, so it and the field agree.
   const dateInput = input(
     "date",
-    `${today.getFullYear()}-${reconPad(today.getMonth() + 1)}-${reconPad(
-      today.getDate()
-    )}`
+    reconcileCache ? reconcileCache.dbDate : todayString
   );
   const dateField = field(t("reconcile.dbDate"), dateInput);
 
@@ -5969,6 +6400,11 @@ async function reconcileView() {
   controls.appendChild(runBtn);
 
   const result = el("div");
+  // Coming back to the tab shows the previous report immediately, without
+  // reading the file again or fetching the insurance list.
+  if (reconcileCache && reconcileCache.report) {
+    result.appendChild(reconRenderResults(reconcileCache.report));
+  }
 
   // Runs the selected file through the full pipeline: parse the first sheet,
   // reconcile against the database and render the comparison.
@@ -5978,6 +6414,14 @@ async function reconcileView() {
     try {
       const sheetRows = await readXlsxFirstSheet(await file.arrayBuffer());
       const report = await reconcileReport(sheetRows, dateInput.value);
+      // Keep the successful result (and the File that produced it) so a tab
+      // switch can restore it without reading the spreadsheet again.
+      reconcileCache = {
+        file,
+        fileName: file.name,
+        dbDate: dateInput.value,
+        report,
+      };
       result.replaceChildren(reconRenderResults(report));
     } catch (err) {
       result.replaceChildren();

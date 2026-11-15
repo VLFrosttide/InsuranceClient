@@ -219,6 +219,15 @@ async function query(sql, params = []) {
   ) {
     return [[]];
   }
+  // The brokers list also asks for each broker's newest manual top-up (the
+  // "Last payment" column). This fake has no such rows.
+  if (
+    s.startsWith(
+      "SELECT m.BrokerId, m.Amount, m.Currency, m.CreatedAt FROM broker_balance_movements m"
+    )
+  ) {
+    return [[]];
+  }
   throw new Error("unexpected SQL in test: " + s);
 }
 

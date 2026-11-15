@@ -115,8 +115,29 @@ async function query(sql, params = []) {
     }
     return [{ affectedRows: 1 }];
   }
+  if (
+    s.startsWith(
+      "INSERT INTO cash_transactions (Branch, Type, Amount, Currency, Username, Reason, Recipient, CreatedAt)"
+    )
+  ) {
+    // A hand-over: it also names the person who took the money.
+    tables.cash_transactions.push({
+      id: tables.cash_transactions.length + 1,
+      Branch: p[0],
+      Type: p[1],
+      Amount: p[2],
+      Currency: p[3],
+      Username: p[4],
+      Reason: p[5],
+      Recipient: p[6],
+      CreatedAt: p[7],
+      Deleted: 0,
+    });
+    return [{ insertId: tables.cash_transactions.length }];
+  }
   if (s.startsWith("INSERT INTO cash_transactions")) {
     tables.cash_transactions.push({
+      id: tables.cash_transactions.length + 1,
       Branch: p[0],
       Type: p[1],
       Amount: p[2],
@@ -124,6 +145,7 @@ async function query(sql, params = []) {
       Username: p[4],
       Reason: p[5],
       CreatedAt: p[6],
+      Deleted: 0,
     });
     return [{ insertId: tables.cash_transactions.length }];
   }
@@ -382,9 +404,19 @@ async function query(sql, params = []) {
   }
 
   // --- daily report aggregates ------------------------------------------------
-  if (s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount ELSE -Amount END), 2) AS Net")) {
-    // With `Branch = ?` this is getCurrentCashAsOf's window after the requested
-    // day; without it, the country-wide Total daily cash of that day.
+  // Two queries share this shape:
+  //   getCurrentCashAsOf - the branch's movements after the requested day
+  //                        (increase +, everything else out);
+  //   Total daily cash   - the country-wide net of the day (increase +,
+  //                        reduce -, hand-over ignored - see the Hand over note
+  //                        in Requests/CurrentCash.js).
+  const walkBackSql = s.startsWith(
+    "SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount ELSE -Amount END), 2) AS Net"
+  );
+  const dailyNetSql = s.startsWith(
+    "SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount WHEN Type = 'reduce' THEN -Amount ELSE 0 END), 2) AS Net"
+  );
+  if (walkBackSql || dailyNetSql) {
     const scoped = s.includes("Branch = ?");
     const from = scoped ? p[1] : p[0];
     const to = scoped ? p[2] : p[1];
@@ -395,7 +427,14 @@ async function query(sql, params = []) {
       if (r.Deleted) continue;
       if (scoped && r.Branch !== p[0]) continue;
       if (r.CreatedAt < from || r.CreatedAt >= to) continue;
-      const signed = r.Type === "increase" ? Number(r.Amount) : -Number(r.Amount);
+      let signed;
+      if (r.Type === "increase") signed = Number(r.Amount);
+      else if (r.Type === "handover") {
+        // A hand-over is not a sale and not an expense: it is left out of Total
+        // daily cash, but it did leave the drawer, so the walk-back counts it.
+        if (dailyNetSql) continue;
+        signed = -Number(r.Amount);
+      } else signed = -Number(r.Amount);
       totals[r.Currency] = round((totals[r.Currency] || 0) + signed);
     }
     return [Object.entries(totals).map(([Currency, Net]) => ({ Currency, Net }))];
@@ -1092,7 +1131,7 @@ const ledger = () =>
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
-    eq(seen.length, 7, "transactions + resets + cash from brokers queried");
+    eq(seen.length, 8, "transactions + resets + cash from brokers + card insurances queried");
     // The day's history: cash movements, cash resets, card resets and the
     // Cash from Brokers resets.
     const dayScoped = seen.filter((q) =>
@@ -1102,6 +1141,17 @@ const ledger = () =>
     for (const q of dayScoped) {
       eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
+    // The walk-in card policies are day-scoped on their CREATION date, like the
+    // daily card payments figure they explain.
+    const cardInsurancesQuery = seen.find(
+      (q) => /FROM insurance/.test(q.s) && q.s.includes("PaymentType = 'Card'")
+    );
+    ok(cardInsurancesQuery, "walk-in card insurances queried");
+    eq(
+      cardInsurancesQuery.params,
+      [BRANCH, today, CC.addDays(today, 1)],
+      "card insurance day bounds: " + cardInsurancesQuery.s
+    );
     // The branch's live Cash from Brokers: the reset marker and the top-up sum.
     const branchScoped = seen.filter(
       (q) =>
@@ -1782,6 +1832,79 @@ const ledger = () =>
       "the drawer balance of that day, without the broker money");
   });
 
+
+  // ---------------------------------------------------------------------------
+  console.log("\nHand over - money given to a person");
+  // ---------------------------------------------------------------------------
+
+  await check(
+    "a hand-over lowers the drawer but is neither an expense nor daily cash",
+    async () => {
+      resetTables();
+      await CC.recordCashMovement(
+        fakeDb, BRANCH, USER, "increase", 100, "walk-in", "EUR", "2026-10-20 08:00:00"
+      );
+      await CC.recordCashMovement(
+        fakeDb, BRANCH, USER, "reduce", 10, "pens", "EUR", "2026-10-20 09:00:00"
+      );
+      await CC.recordCashHandover(
+        fakeDb, BRANCH, USER, 40, "Runner to the safe", "Ivan", "EUR",
+        "2026-10-20 10:00:00"
+      );
+
+      eq(
+        await CC.getCurrentCash(fakeDb, BRANCH),
+        { EUR: 50, TRY: 0 },
+        "the drawer drops by all three movements"
+      );
+      eq(
+        tables.total_cash_transactions.length,
+        2,
+        "a hand-over writes no Total cash ledger row"
+      );
+      eq(
+        tables.cash_transactions.map((r) => [r.Type, r.Amount, r.Recipient ?? null]),
+        [
+          ["increase", 100, null],
+          ["reduce", 10, null],
+          ["handover", 40, "Ivan"],
+        ],
+        "the ledger row names the person who took the money"
+      );
+
+      const ledger = routeCaller("/currentcash");
+      let r = await ledger({ branch: BRANCH, date: "2026-10-20", tzOffset: "0" });
+      eq(
+        r.body.expences.map((t) => t.Amount),
+        [10],
+        "the hand-over is not an expense"
+      );
+      eq(
+        r.body.totalExpences,
+        { EUR: 10, TRY: 0 },
+        "the expenses total keeps only what was spent"
+      );
+      eq(
+        r.body.transactions.map((t) => t.Type),
+        ["increase", "reduce", "handover"],
+        "but it is listed in the day's Transactions"
+      );
+
+      const daily = routeCaller("/currentcash/daily");
+      r = await daily({ date: "2026-10-20", tzOffset: "0" });
+      eq(
+        r.body.totalDailyCash,
+        { EUR: 90, TRY: 0 },
+        "100 in - 10 spent; the hand-over is left out"
+      );
+      r = await daily({ date: "2026-10-20", tzOffset: "0", branch: BRANCH });
+      eq(
+        r.body.availableCash,
+        { EUR: 50, TRY: 0 },
+        "Available cash does lose the hand-over"
+      );
+    }
+  );
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

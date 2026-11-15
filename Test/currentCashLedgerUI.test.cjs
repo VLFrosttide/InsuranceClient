@@ -5,9 +5,10 @@
 //
 // The ledger tables are tinted, so the rules behind the tints have to stay
 // honest:
-//   - an increase is green, a reduction is red;
-//   - a movement above the notable amount OF ITS CURRENCY is tinted one step
-//     stronger, which is what makes a big increase or a big expense stand out.
+//   - an increase is green, a reduction (an expense) is red, money handed over
+//     to a person is amber; an entry above the notable amount OF ITS CURRENCY is
+//     tinted one step stronger, which is what makes a big increase or a big
+//     expense stand out.
 //     The limits mirror the exchange rate the branches use - 5 500 TRY is
 //     100 EUR - so a lira movement is never flagged sooner than a euro one;
 //   - a row whose reason carries words is nudged up, while a purely numerical
@@ -162,6 +163,25 @@ check("amounts are compared as numbers, not strings", () => {
     "a string lira amount"
   );
   eq(movementRowClass("increase", null, "EUR"), "row-increase", "no amount");
+});
+
+check("a hand-over has its own amber tint, not the expense red", () => {
+  eq(movementRowClass("handover", 20, "EUR"), "row-handover", "20 handed over");
+  eq(
+    movementRowClass("handover", 150, "EUR"),
+    "row-handover row-large-handover",
+    "150 handed over is big"
+  );
+  eq(
+    movementRowClass("handover", 6000, "TRY"),
+    "row-handover row-large-handover",
+    "6 000 TRY handed over is big"
+  );
+  eq(
+    movementRowClass("handover", 5000, "TRY"),
+    "row-handover",
+    "5 000 TRY handed over is not big"
+  );
 });
 
 check("an unknown movement type gets no tint", () => {

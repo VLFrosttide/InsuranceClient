@@ -123,7 +123,7 @@ const I18N = {
     balance: "Balance",
     currentCash: "Current cash",
     currentCashHint:
-      "Only the cash balance: money that physically arrived as cash. Card payments, email payments funded by a broker balance and money handed over by brokers (cash from brokers) are tracked separately.",
+      "Only the cash balance: money that physically arrived as cash. Card payments, email payments funded by a broker balance and money handed over by brokers (cash from brokers) are tracked separately. Both “Expense” and “Hand over” take money out of this balance, but only an expense counts as spending for the day.",
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
@@ -180,6 +180,10 @@ const I18N = {
 
     increase: "Increase",
     reduce: "Reduce",
+    expense: "Expense",
+    handOver: "Hand over",
+    handedTo: "Received by",
+    handedToPlaceholder: "Name of the person who took the money",
     resetTo0: "End shift",
     amount: "Amount",
     reason: "Reason",
@@ -242,6 +246,10 @@ const I18N = {
     registrationFailed: "Registration failed",
     currentCashIncreased: "Current cash increased",
     currentCashReduced: "Current cash reduced",
+    cashHandedOver: "Cash handed over",
+    recordExpense: "Record an expense",
+    handOverCash: "Hand over cash",
+    expenseRecorded: "Expense recorded",
     currentCashReset: "Current cash, card balance and cash from brokers reset",
     transactionUpdated: "Transaction updated",
     editTransaction: "Edit transaction",
@@ -347,12 +355,28 @@ const I18N = {
     unassignedBranch: "(no branch)",
 
     dailyReport: "Daily report",
+    drawers: "Drawers",
+    insuranceNumberStatistics: "Insurance number statistics",
+    insuranceMoneyStatistics: "Insurance money statistics",
+    manualBrokerIncreases: "Manual cash increases to brokers balance",
+    manualBrokerIncreasesHint:
+      "Money brokers handed over on this day (manual top-ups of a broker balance). Refunds of annulled insurances are not counted.",
+    balanceFromBrokerInsurances: "Balance from broker insurances",
+    balanceFromBrokerInsurancesHint:
+      "Money funded from a broker's balance by the policies created on this day.",
+    balanceFromWalkInsCash: "Balance from walk-ins cash",
+    balanceFromWalkInsCashHint:
+      "Cash money collected from walk-in policies on this day.",
+    balanceFromWalkInsCard: "Balance from walk-ins card",
+    balanceFromWalkInsCardHint:
+      "Card payments collected from walk-in policies on this day.",
+    lastPayment: "Last payment",
     totalInsurances: "Total insurances",
     brokerInsurances: "Broker insurances",
     walkInInsurances: "Walk-in insurances",
     totalDailyCash: "Total daily cash",
     totalDailyCashHint:
-      "Total daily cash is the net cash that physically entered the drawers across all branches on this day: walk-in cash payments plus manual increases, minus manual reductions. Card payments and broker-balance payments are tracked separately and are not included.",
+      "The day's total insurance money: the balance funded from broker insurances, plus walk-in cash payments and walk-in card payments. It combines the three figures below.",
     availableCashBranch: "Available cash ({branch})",
     availableCashHint:
       "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
@@ -364,6 +388,9 @@ const I18N = {
     countryWideSinglePolicy: "Only policy",
     cardPaymentsHint:
       "Card payments collected at this branch on this day.",
+    cardInsurances: "Walk-in card insurances",
+    cardInsurancesHint:
+      "Walk-in policies paid by card at this branch on the selected day. The Card balance card opens this list.",
     brokerBalanceTotal: "Broker balance total",
     brokerBalanceTotalHint:
       "Money funded from a broker's balance at this branch on this day (email policies).",
@@ -375,7 +402,7 @@ const I18N = {
     expenses: "Expenses",
     totalExpenses: "Total expenses",
     expensesHint:
-      "Money taken out of this branch's drawer by hand on this day (the manual reductions). Refunds of annulled or deleted insurances reduce the drawer too, but they are policy movements, not money the branch spent, so they are not counted here.",
+      "Money spent from this branch's drawer on this day (the entries recorded with the “Expense” button). Refunds of annulled or deleted insurances reduce the drawer too, but they are policy movements, not money the branch spent, so they are not counted here. Cash handed over to a person (the “Hand over” button) is not counted either: it left the drawer, but the branch did not spend it.",
 
     annul: "Annul",
     annulled: "Annulled",
@@ -652,6 +679,7 @@ const I18N = {
     "err.pricingFormat": "Invalid pricing data format",
     "err.tariffsRequired": "At least one tariff is required",
     "err.typeInvalid": "Type must be 'increase' or 'reduce'",
+    "err.cashTypeInvalid": "Type must be 'increase', 'reduce' or 'handover'",
     "err.usernameBalanceRequired": "Username and balance are required",
     "err.noBatch": "No batch given",
     "err.rangeRequired": "Range start and end are required",
@@ -661,6 +689,9 @@ const I18N = {
     "err.nothingToUpdate": "Nothing to update",
     "err.partInvalid": "Part must be 'CardPart' or 'BrokerPart'",
     "err.reasonRequired": "Reason is required",
+    "err.recipientRequired": "Enter who received the money",
+    "err.handoverTypeFixed":
+      "A hand-over cannot be changed into an increase or an expense (or the other way round); delete the entry and record the right one instead",
     "err.sourceInvalid": "Source must be 'Card' or 'Broker'",
     "err.movementNotFound": "Balance movement not found",
     "err.movementIdInvalid": "Invalid movement id",
@@ -774,7 +805,7 @@ const I18N = {
     balance: "Баланс",
     currentCash: "Наличен кеш",
     currentCashHint:
-      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно.",
+      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно. Бутоните „Разход“ и „Предай кеш“ и двата изваждат пари от този баланс, но само разходът се брои като изразходване за деня.",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -831,6 +862,10 @@ const I18N = {
 
     increase: "Увеличи",
     reduce: "Намали",
+    expense: "Разход",
+    handOver: "Предай кеш",
+    handedTo: "Получател",
+    handedToPlaceholder: "Име на човека, който взе парите",
     resetTo0: "Завърши смяна",
     amount: "Сума",
     reason: "Причина",
@@ -893,6 +928,10 @@ const I18N = {
     registrationFailed: "Регистрацията не успя",
     currentCashIncreased: "Наличният кеш беше увеличен",
     currentCashReduced: "Наличният кеш беше намален",
+    cashHandedOver: "Кешът е предаден",
+    recordExpense: "Записване на разход",
+    handOverCash: "Предаване на кеш",
+    expenseRecorded: "Разходът е записан",
     currentCashReset:
       "Наличният кеш, балансът на картата и кешът от брокери бяха нулирани",
     transactionUpdated: "Транзакцията е обновена",
@@ -1012,12 +1051,28 @@ const I18N = {
     unassignedBranch: "(без клон)",
 
     dailyReport: "Дневен отчет",
+    drawers: "Каси",
+    insuranceNumberStatistics: "Статистика по брой застраховки",
+    insuranceMoneyStatistics: "Статистика по пари от застраховки",
+    manualBrokerIncreases: "Ръчни увеличения на кеша към баланса на брокери",
+    manualBrokerIncreasesHint:
+      "Пари, предадени от брокери на този ден (ръчни увеличения на баланс на брокер). Върнатите суми за анулирани застраховки не се броят.",
+    balanceFromBrokerInsurances: "Баланс от брокерски застраховки",
+    balanceFromBrokerInsurancesHint:
+      "Пари, финансирани от баланс на брокер чрез застраховките, създадени на този ден.",
+    balanceFromWalkInsCash: "Баланс от плащания в брой на място",
+    balanceFromWalkInsCashHint:
+      "Пари в брой, събрани от застраховки на място на този ден.",
+    balanceFromWalkInsCard: "Баланс от плащания с карта на място",
+    balanceFromWalkInsCardHint:
+      "Плащания с карта, събрани от застраховки на място на този ден.",
+    lastPayment: "Последно плащане",
     totalInsurances: "Общо застраховки",
     brokerInsurances: "Брокерски застраховки",
     walkInInsurances: "Застраховки на място",
     totalDailyCash: "Общ дневен кеш",
     totalDailyCashHint:
-      "Общ дневен кеш е нетният кеш, постъпил физически в касите на всички клонове за този ден: плащания в брой на място плюс ръчни увеличения, минус ръчни намаления. Плащанията с карта и от баланс на брокер се отчитат отделно и не са включени.",
+      "Общите пари от застраховки за деня: балансът от брокерски застраховки плюс плащанията в брой и с карта на място. Обединява трите стойности по-долу.",
     availableCashBranch: "Наличен кеш ({branch})",
     availableCashHint:
       "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
@@ -1029,6 +1084,9 @@ const I18N = {
     countryWideSinglePolicy: "Единствена полица",
     cardPaymentsHint:
       "Плащания с карта, събрани в този клон на този ден.",
+    cardInsurances: "Застраховки с карта (на място)",
+    cardInsurancesHint:
+      "Застраховки на място, платени с карта в този клон на избрания ден. Картата „Баланс на картата“ отваря този списък.",
     brokerBalanceTotal: "Общ баланс на брокери",
     brokerBalanceTotalHint:
       "Пари, финансирани от баланс на брокер, в този клон на този ден (застраховки по имейл).",
@@ -1040,7 +1098,7 @@ const I18N = {
     expenses: "Разходи",
     totalExpenses: "Общо разходи",
     expensesHint:
-      "Пари, извадени на ръка от касата на този клон на този ден (ръчните намаления). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук.",
+      "Пари, изразходвани от касата на този клон на този ден (записаните с бутона „Разход“). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук. Преданият на човек кеш (бутонът „Предай кеш“) също не се брои: той е излязъл от касата, но клонът не го е изразходвал.",
 
     annul: "Анулирай",
     annulled: "Анулирана",
@@ -1307,6 +1365,8 @@ const I18N = {
     "err.pricingFormat": "Невалиден формат на данните за цените",
     "err.tariffsRequired": "Необходима е поне една тарифа",
     "err.typeInvalid": "Типът трябва да е 'увеличение' или 'намаление'",
+    "err.cashTypeInvalid":
+      "Типът трябва да е 'увеличение', 'намаление' или 'предаване'",
     "err.usernameBalanceRequired": "Потребителско име и баланс са задължителни",
     "err.noBatch": "Не е подадена партида",
     "err.rangeRequired": "Началото и краят на диапазона са задължителни",
@@ -1317,6 +1377,9 @@ const I18N = {
     "err.nothingToUpdate": "Няма какво да се обнови",
     "err.partInvalid": "Частта трябва да е 'CardPart' или 'BrokerPart'",
     "err.reasonRequired": "Причината е задължителна",
+    "err.recipientRequired": "Въведете кой получи парите",
+    "err.handoverTypeFixed":
+      "Предаването на кеш не може да се превърне в увеличение или разход (или обратното); изтрийте записа и въведете правилния",
     "err.movementNotFound": "Движението не е намерено",
     "err.movementIdInvalid": "Невалидно движение",
     "err.amountNonZero": "Сумата трябва да е число, различно от нула",
@@ -1455,6 +1518,7 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Invalid pricing data format": "err.pricingFormat",
   "tariffs array is required and must not be empty": "err.tariffsRequired",
   "type must be 'increase' or 'reduce'": "err.typeInvalid",
+  "type must be 'increase', 'reduce' or 'handover'": "err.cashTypeInvalid",
   "username and balance are required": "err.usernameBalanceRequired",
   "No batch given": "err.noBatch",
   "RangeStart and RangeEnd are required": "err.rangeRequired",
@@ -1464,6 +1528,9 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Nothing to update": "err.nothingToUpdate",
   "part must be 'CardPart' or 'BrokerPart'": "err.partInvalid",
   "reason is required": "err.reasonRequired",
+  "recipient is required": "err.recipientRequired",
+  "a hand-over cannot be changed into an increase or an expense, or the other way round":
+    "err.handoverTypeFixed",
   "source must be 'Card' or 'Broker'": "err.sourceInvalid",
   "Movement not found": "err.movementNotFound",
   "Invalid movement id": "err.movementIdInvalid",

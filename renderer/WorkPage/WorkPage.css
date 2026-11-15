@@ -141,8 +141,46 @@ body {
 .cash-cards-left .balance-card:last-child {
   margin-bottom: 0;
 }
+/* The cash cards are navigation, not text: a click must never select their
+   figures while it scrolls to the matching table. */
+.cash-cards .balance-card {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cash-cards .balance-card.clickable {
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.cash-cards .balance-card.clickable:hover,
+.cash-cards .balance-card.clickable:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+  outline: none;
+}
 .daily-report {
   min-width: 260px;
+}
+.drawers-card {
+  min-width: 260px;
+}
+/* Sub-headings inside the Daily report card split the figures into the
+   insurance-number statistic and the insurance-money statistic. */
+.daily-report-group {
+  margin: 14px 0 2px 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.daily-report-group:first-of-type {
+  margin-top: 8px;
+}
+.daily-report-sub {
+  padding-left: 14px;
+}
+.daily-report-sub span:first-child {
+  font-size: 0.92em;
 }
 .daily-report-row {
   display: flex;
@@ -244,7 +282,8 @@ body {
 
 /* Light row tints for the cash ledger tables. Deliberately soft: the colour has
    to guide the eye, not decorate the page.
-     green = money in, red = money out
+     green = money in, red = money spent out, amber = money handed over to a
+             person (out of the drawer, but not an expense)
      stronger step = a movement above the currency's notable amount
                      (100 EUR / 5 500 TRY, the same money)
    The leading stripe keeps a big movement visible even where the tints fade. */
@@ -271,6 +310,21 @@ tr.row-large-reduce td {
 }
 tr.row-large-reduce td:first-child {
   box-shadow: inset 3px 0 0 rgba(196, 84, 84, 0.7);
+}
+/* Money handed over to a person: it left the drawer like a spend, but the
+   branch did not spend it, so it gets an amber tint instead of the expense red
+   and can never be mistaken for one. */
+tr.row-handover td {
+  background: rgba(214, 158, 46, 0.08);
+}
+tr.row-handover td:first-child {
+  box-shadow: inset 3px 0 0 rgba(214, 158, 46, 0.4);
+}
+tr.row-large-handover td {
+  background: rgba(214, 158, 46, 0.16);
+}
+tr.row-large-handover td:first-child {
+  box-shadow: inset 3px 0 0 rgba(214, 158, 46, 0.75);
 }
 /* The amount of a notable movement is emphasised too, so it is still obvious
    when the row tint alone is too quiet. */
