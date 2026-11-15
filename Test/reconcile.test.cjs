@@ -46,6 +46,7 @@ const {
   reconTermDays,
   reconFileDate,
   reconNormId,
+  reconNormPolicy,
   reconNormCar,
 } = CTX;
 
@@ -157,6 +158,41 @@ const SAMPLE = path.join(
   check("identifier normalisation ignores leading zeros", () => {
     eq(reconNormId("000789"), "789");
     eq(reconNormId(789), "789");
+  });
+
+  check("policy normalisation cuts the BG/02/FI report prefix", () => {
+    eq(reconNormPolicy("BG/02/FI 26167659"), "26167659");
+    eq(reconNormPolicy("bg/02/fi-000789"), "789");
+    eq(reconNormPolicy("BG / 02 / FI 26167659"), "26167659");
+    eq(reconNormPolicy("26167659"), "26167659");
+    // Only the prefix is special: the policy itself must still match exactly.
+    ok(reconNormPolicy("BG/02/FI 26167660") !== "26167659");
+  });
+
+  check("parsed file value drops the BG/02/FI report prefix", () => {
+    const prefixedRows = [
+      ["НОМЕР НА ПОЛИЦА", "НОМЕР НА СТИКЕР", "ВАЛИДЕН ОТ", "ВАЛИДЕН ДО", "ДКН"],
+      ["BG/02/FI 26167659", "149988", "05.10.2026", "03.01.2027", "59ADJ391"],
+    ];
+    const cols = reconFindColumns(prefixedRows);
+    const parsed = reconParseFileRows(
+      prefixedRows,
+      cols.headerRow,
+      cols.index
+    );
+    eq(parsed[0].policy, "26167659");
+  });
+
+  check("prefixed file policy matches the database policy", () => {
+    const ins = {
+      PolicyNumber: "26167659",
+      BlancNumber: "149988",
+      CarNumber: "59ADJ391",
+      StartDate: "2026-10-05",
+      Duration: 90,
+    };
+    const prefixed = { ...fileRows[0], policy: "BG/02/FI 26167659" };
+    eq(reconCompareRow(prefixed, ins).count, 0);
   });
 
   check("car number normalisation maps Cyrillic look-alikes", () => {

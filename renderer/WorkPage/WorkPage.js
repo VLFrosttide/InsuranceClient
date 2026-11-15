@@ -6160,7 +6160,7 @@ async function reconcileReport(rows, dbDate) {
     map.get(key).push(ins);
   };
   for (const ins of insurances) {
-    addTo(byPolicy, reconNormId(ins.PolicyNumber), ins);
+    addTo(byPolicy, reconNormPolicy(ins.PolicyNumber), ins);
     addTo(byBlank, reconNormId(ins.BlancNumber), ins);
   }
 
@@ -6171,7 +6171,7 @@ async function reconcileReport(rows, dbDate) {
 
   for (const fileRow of fileRows) {
     const candidates = new Set([
-      ...(byPolicy.get(reconNormId(fileRow.policy)) || []),
+      ...(byPolicy.get(reconNormPolicy(fileRow.policy)) || []),
       ...(byBlank.get(reconNormId(fileRow.blank)) || []),
     ]);
 
@@ -6211,11 +6211,47 @@ async function reconcileReport(rows, dbDate) {
 function reconRenderResults(result) {
   const wrap = el("div", null, { class: "recon-results" });
 
+  // One scroll target per summary card. Each table lives in its own section so
+  // the card can jump straight to the rows it counts; the sticky page header
+  // would otherwise cover the heading (see .recon-section in WorkPage.css).
+  const missingDbSection = el("div", null, {
+    class: "recon-section",
+    id: "recon-missing-db",
+  });
+  const missingFileSection = el("div", null, {
+    class: "recon-section",
+    id: "recon-missing-file",
+  });
+  const mismatchSection = el("div", null, {
+    class: "recon-section",
+    id: "recon-mismatches",
+  });
+
+  const scrollTo = (target) => {
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   const stats = el("div", null, { class: "stat-grid" });
-  const addStat = (label, value, cls) => {
-    const card = el("div", null, { class: `stat-card ${cls || ""}` });
+  const addStat = (label, value, cls, target) => {
+    const card = el("div", null, { class: `stat-card ${cls || ""}`.trim() });
     card.appendChild(el("h3", label));
     card.appendChild(el("p", String(value), { class: "big" }));
+    if (target) {
+      // Cards with a table are navigation, exactly like the Current cash
+      // balance cards: click or Enter/Space jumps to that table.
+      card.classList.add("clickable");
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.title = t("reconcile.cardHint");
+      card.addEventListener("click", () => scrollTo(target));
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        scrollTo(target);
+      });
+    }
     stats.appendChild(card);
   };
   addStat(t("reconcile.fileRows"), result.fileRowCount);
@@ -6227,57 +6263,65 @@ function reconRenderResults(result) {
   addStat(
     t("reconcile.missingFromDb"),
     result.missingFromDb.length,
-    result.missingFromDb.length ? "recon-bad" : ""
+    result.missingFromDb.length ? "recon-bad" : "",
+    missingDbSection
   );
   addStat(
     t("reconcile.missingFromFile"),
     result.missingFromFile.length,
-    result.missingFromFile.length ? "recon-bad" : ""
+    result.missingFromFile.length ? "recon-bad" : "",
+    missingFileSection
   );
   addStat(
     t("reconcile.mismatches"),
     result.mismatches.length,
-    result.mismatches.length ? "recon-warn" : ""
+    result.mismatches.length ? "recon-warn" : "",
+    mismatchSection
   );
   wrap.appendChild(stats);
 
-  // --- Missing rows (with the side they are missing from) -----------------
-  const missingItems = [
-    ...result.missingFromDb.map((r) => ({
-      source: t("reconcile.database"),
-      rowNo: r.rowNo,
-      policy: r.policy,
-      blank: r.blank,
-      from: r.fromKey ? reconShowDate(r.fromKey) : r.fromRaw,
-      to: r.toKey ? reconShowDate(r.toKey) : r.toRaw,
-      car: r.car,
-    })),
-    ...result.missingFromFile.map((ins) => {
-      const db = reconDbValues(ins);
-      return {
-        source: t("reconcile.file"),
-        rowNo: "",
-        policy: db.policy,
-        blank: db.blank,
-        from: reconShowDate(db.fromKey),
-        to: reconShowDate(db.toKey),
-        car: db.car,
-      };
-    }),
-  ];
+  const buildSection = (section, title, items, columns, rowClass) => {
+    section.appendChild(el("h3", `${title} (${items.length})`));
+    section.appendChild(renderTable(items, columns, null, rowClass));
+  };
 
-  wrap.appendChild(el("h3", `${t("reconcile.missingFrom")}…`));
-  wrap.appendChild(
-    renderTable(
-      missingItems,
-      [
-        { key: "source", label: t("reconcile.missingFrom") },
-        { key: "rowNo", label: t("reconcile.row") },
-        ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
-      ],
-      null,
-      () => "row-missing"
-    )
+  // --- Policies in the file that the database does not have ---------------
+  const missingDbRows = result.missingFromDb.map((r) => ({
+    rowNo: r.rowNo,
+    policy: r.policy,
+    blank: r.blank,
+    from: r.fromKey ? reconShowDate(r.fromKey) : r.fromRaw,
+    to: r.toKey ? reconShowDate(r.toKey) : r.toRaw,
+    car: r.car,
+  }));
+  buildSection(
+    missingDbSection,
+    t("reconcile.missingFromDb"),
+    missingDbRows,
+    [
+      { key: "rowNo", label: t("reconcile.row") },
+      ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
+    ],
+    () => "row-missing"
+  );
+
+  // --- Insurances in the database that the file does not list -------------
+  const missingFileRows = result.missingFromFile.map((ins) => {
+    const db = reconDbValues(ins);
+    return {
+      policy: db.policy,
+      blank: db.blank,
+      from: reconShowDate(db.fromKey),
+      to: reconShowDate(db.toKey),
+      car: db.car,
+    };
+  });
+  buildSection(
+    missingFileSection,
+    t("reconcile.missingFromFile"),
+    missingFileRows,
+    RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
+    () => "row-missing"
   );
 
   // --- Partial data mismatches (mismatching cells in dark red) ------------
@@ -6292,17 +6336,23 @@ function reconRenderResults(result) {
         : v.file,
     cellClass: (item) => (item[col.key].mismatch ? "cell-mismatch" : ""),
   });
-
-  wrap.appendChild(el("h3", t("reconcile.mismatches")));
-  wrap.appendChild(
-    renderTable(result.mismatches, [
+  buildSection(
+    mismatchSection,
+    t("reconcile.mismatches"),
+    result.mismatches,
+    [
       { key: "rowNo", label: t("reconcile.row") },
       ...RECON_COLUMNS.map(mismatchCol),
-    ])
+    ]
   );
 
+  wrap.appendChild(missingDbSection);
+  wrap.appendChild(missingFileSection);
+  wrap.appendChild(mismatchSection);
+
   if (
-    !missingItems.length &&
+    !missingDbRows.length &&
+    !missingFileRows.length &&
     !result.mismatches.length &&
     result.fileRowCount > 0
   ) {

@@ -221,9 +221,11 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
 
   // Only the statements GET /currentcash issues are understood; anything else is
   // a hard error, so a changed query cannot silently slip through the test.
+  const issuedSql = [];
   const makeDb = () => ({
     query: async (sql) => {
       const s = String(sql).replace(/\s+/g, " ").trim();
+      issuedSql.push(s);
       if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
       if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
         return [[{ Currency: "EUR", CurrentCash: 100 }]];
@@ -303,6 +305,29 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
       "Ivan",
       "the hand-over names the person who took the money"
     );
+  });
+
+  // Regression: `insurance` has no `id` column (PRIMARY KEY is BlancNumber), so
+  // ordering the card-insurance list by id made MySQL reject the whole Current
+  // cash request with "Unknown column 'id' in 'ORDER BY'".
+  await checkAsync("card insurance lookup sorts only by insurance columns", async () => {
+    const res = await callCurrentCash({
+      branch: "Офис Харманли",
+      date: DAY,
+      tzOffset: "180",
+    });
+    eq(res.code, 200, "status");
+    const q = issuedSql.find(
+      (sql) =>
+        sql.startsWith("SELECT * FROM insurance") &&
+        sql.includes("PaymentType = 'Card'")
+    );
+    ok(q, "card insurance lookup is issued");
+    ok(
+      /ORDER BY CreationDate DESC, BlancNumber DESC$/.test(q),
+      "valid insurance ORDER BY: " + q
+    );
+    ok(!/ORDER BY [^`]*\bid\b/.test(q), "no unknown id column: " + q);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

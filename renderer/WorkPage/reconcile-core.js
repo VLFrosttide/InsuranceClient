@@ -10,6 +10,10 @@
 //       № ПОЛИЦА / № БЛАНКА / ДАТА / СРОК / ДКН,
 //     where the valid-until date is derived from ДАТА + a "СРОК" term code
 //     such as "15D", "1M" or "3M".
+//
+// The policy number in a report is printed with the office/series code
+// "BG/02/FI" in front; that prefix is cut off before the numbers are compared
+// (reconNormPolicy) and from the displayed value (reconStripPolicyPrefix).
 
 const RECON_CYR_TO_LAT = {
   А: "A",
@@ -42,6 +46,28 @@ function reconNormText(value) {
 function reconNormId(value) {
   const s = reconNormText(value);
   return /^\d+$/.test(s) ? s.replace(/^0+(?=\d)/, "") : s;
+}
+
+// The daily reports print the policy number with the office/series code
+// "BG/02/FI" in front (e.g. "BG/02/FI 26167659"), while the database stores
+// only the number. That prefix is not part of the policy number, so it is cut
+// off before the two are compared - otherwise every row is reported as missing
+// from the database.
+const RECON_POLICY_PREFIX = /^BG\/02\/FI[\s./_-]*/;
+const RECON_POLICY_PREFIX_RAW = /^\s*BG\s*\/\s*02\s*\/\s*FI[\s./_-]*/i;
+
+// The display value of a parsed row: the file's policy number without the
+// report prefix, keeping its original formatting otherwise.
+function reconStripPolicyPrefix(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim().replace(RECON_POLICY_PREFIX_RAW, "").trim();
+}
+
+function reconNormPolicy(value) {
+  // Normalise first: it upper-cases, strips whitespace and maps Cyrillic
+  // look-alikes, so "bg / 02 / fi 26167659" reaches the prefix check in the
+  // canonical form too.
+  return reconNormId(reconNormText(value).replace(RECON_POLICY_PREFIX, ""));
 }
 
 function reconNormCar(value) {
@@ -226,7 +252,7 @@ function reconParseFileRows(rows, headerRow, index) {
 
     out.push({
       rowNo: r + 1,
-      policy: reconCellText(raw.policy),
+      policy: reconStripPolicyPrefix(reconCellText(raw.policy)),
       blank: reconCellText(raw.blank),
       car: reconCellText(raw.car),
       fromRaw: reconCellText(raw.from),
@@ -261,7 +287,7 @@ function reconCompareRow(fileRow, ins) {
     policy: {
       file: fileRow.policy,
       db: db.policy,
-      mismatch: reconNormId(fileRow.policy) !== reconNormId(db.policy),
+      mismatch: reconNormPolicy(fileRow.policy) !== reconNormPolicy(db.policy),
     },
     blank: {
       file: fileRow.blank,
