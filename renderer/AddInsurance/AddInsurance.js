@@ -30,6 +30,8 @@ const DroppedFiles = document.getElementById("DroppedFiles");
 
 // Image viewer
 const ImageViewer = document.getElementById("ImageViewer");
+const ViewerStage = document.getElementById("ViewerStage");
+const ViewerCanvas = document.getElementById("ViewerCanvas");
 const ViewerImage = document.getElementById("ViewerImage");
 const ViewerZoomIn = document.getElementById("ViewerZoomIn");
 const ViewerZoomOut = document.getElementById("ViewerZoomOut");
@@ -45,6 +47,12 @@ const ClearFormArray = Array.from(document.getElementsByClassName("ClearForm"));
 let droppedFiles = []; // { filename, mimeType, size, base64 }
 let viewerScale = 1;
 let viewerRotation = 0; // degrees, always one of 0 / 90 / 180 / 270
+// The picture's own pixel size and the scale that shows all of it in the stage.
+// Zoom (viewerScale) is a multiplier on that fit size, so "100%" is the whole
+// picture in view and a zoomed picture gets real scrollable area.
+let viewerNaturalWidth = 0;
+let viewerNaturalHeight = 0;
+let viewerFitScale = 1;
 
 // Scroll-to-cycle for dropdowns. Works while the mouse hovers the select (no
 // focus needed). A "change" event is dispatched so the price auto-calculates
@@ -1618,12 +1626,32 @@ function openImageViewer(src, title) {
   if (!ViewerImage || !ImageViewer) return;
   viewerScale = 1;
   viewerRotation = 0;
+  // The natural size arrives with the image's load event; until then no
+  // explicit size is set and the picture keeps its own.
+  viewerNaturalWidth = 0;
+  viewerNaturalHeight = 0;
+  viewerFitScale = 1;
   viewerRotateToken++;
   viewerOriginalSrc = src;
+  ViewerImage.style.width = "";
+  ViewerImage.style.height = "";
   ViewerImage.src = src;
   ViewerImage.alt = title || "";
-  ViewerImage.style.transform = `scale(${viewerScale})`;
+  updateViewerPercent();
   ImageViewer.classList.remove("hidden");
+  if (ViewerStage) {
+    ViewerStage.scrollLeft = 0;
+    ViewerStage.scrollTop = 0;
+    ViewerStage.classList.remove("scrollable", "dragging");
+  }
+  // A picture that is already decoded (cache / data URL) can be complete before
+  // the load listener runs, so measure it here as well.
+  if (ViewerImage.complete && ViewerImage.naturalWidth) {
+    viewerNaturalWidth = ViewerImage.naturalWidth;
+    viewerNaturalHeight = ViewerImage.naturalHeight;
+    viewerFitScale = computeViewerFitScale();
+    applyViewerScale();
+  }
 }
 
 function closeImageViewer() {
@@ -1633,6 +1661,8 @@ function closeImageViewer() {
   viewerOriginalSrc = "";
   viewerRotation = 0;
   viewerRotateToken++;
+  viewerDrag = null;
+  if (ViewerStage) ViewerStage.classList.remove("scrollable", "dragging");
 }
 
 // Load an image source into a detached <img> so it can be drawn to a canvas.
@@ -1697,14 +1727,88 @@ async function rotateViewer(delta) {
   }
 }
 
-function applyViewerScale() {
-  if (!ViewerImage) return;
-  ViewerImage.style.transform = `scale(${viewerScale})`;
+// The stage's content box, without its padding.
+function viewerStageBox() {
+  if (!ViewerStage) return { width: 0, height: 0 };
+  const style = window.getComputedStyle(ViewerStage);
+  const padX =
+    (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  const padY =
+    (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  return {
+    width: Math.max(0, ViewerStage.clientWidth - padX),
+    height: Math.max(0, ViewerStage.clientHeight - padY),
+  };
 }
 
-function zoomViewer(delta) {
-  viewerScale = Math.max(0.1, Math.min(8, viewerScale + delta));
-  applyViewerScale();
+// Scale that shows the whole picture in the stage. A small picture is never
+// enlarged: 1 means "its own pixel size".
+function computeViewerFitScale() {
+  if (!viewerNaturalWidth || !viewerNaturalHeight) return 1;
+  const box = viewerStageBox();
+  if (!box.width || !box.height) return 1;
+  const fit = Math.min(
+    box.width / viewerNaturalWidth,
+    box.height / viewerNaturalHeight,
+    1
+  );
+  return fit > 0 ? fit : 1;
+}
+
+function updateViewerPercent() {
+  if (!ViewerResetZoom) return;
+  const percent = Math.round(viewerFitScale * viewerScale * 100);
+  ViewerResetZoom.textContent = `${percent}%`;
+}
+
+// Size the picture in pixels instead of scaling it with a transform: only a
+// real size gives the stage scrollbars and reachable area outside the window.
+// `anchor` is a point in the stage's viewport; the picture stays put under it
+// while it grows or shrinks.
+function applyViewerScale(anchor) {
+  if (!ViewerImage) return;
+  const oldWidth = ViewerImage.offsetWidth;
+  const oldHeight = ViewerImage.offsetHeight;
+  if (viewerNaturalWidth && viewerNaturalHeight) {
+    const width = Math.max(
+      1,
+      Math.round(viewerNaturalWidth * viewerFitScale * viewerScale)
+    );
+    const height = Math.max(
+      1,
+      Math.round(viewerNaturalHeight * viewerFitScale * viewerScale)
+    );
+    ViewerImage.style.width = `${width}px`;
+    ViewerImage.style.height = `${height}px`;
+  }
+  updateViewerPercent();
+  if (!ViewerStage) return;
+  const newWidth = ViewerImage.offsetWidth;
+  const newHeight = ViewerImage.offsetHeight;
+  if (anchor && oldWidth && oldHeight && newWidth && newHeight) {
+    ViewerStage.scrollLeft =
+      (ViewerStage.scrollLeft + anchor.x) * (newWidth / oldWidth) - anchor.x;
+    ViewerStage.scrollTop =
+      (ViewerStage.scrollTop + anchor.y) * (newHeight / oldHeight) - anchor.y;
+  }
+  // The grab cursor is only shown when there is something to drag.
+  ViewerStage.classList.toggle(
+    "scrollable",
+    newWidth > ViewerStage.clientWidth || newHeight > ViewerStage.clientHeight
+  );
+}
+
+function viewerCenter() {
+  if (!ViewerStage) return null;
+  return { x: ViewerStage.clientWidth / 2, y: ViewerStage.clientHeight / 2 };
+}
+
+function zoomViewer(delta, anchor) {
+  viewerScale = Math.max(
+    0.1,
+    Math.min(8, Math.round((viewerScale + delta) * 100) / 100)
+  );
+  applyViewerScale(anchor);
 }
 
 // Guard against rapid/duplicate clicks: the native print dialog takes a moment
@@ -1751,13 +1855,15 @@ async function printViewerImage() {
 }
 
 if (ViewerZoomIn)
-  ViewerZoomIn.addEventListener("click", () => zoomViewer(0.25));
+  ViewerZoomIn.addEventListener("click", () => zoomViewer(0.25, viewerCenter()));
 if (ViewerZoomOut)
-  ViewerZoomOut.addEventListener("click", () => zoomViewer(-0.25));
+  ViewerZoomOut.addEventListener("click", () =>
+    zoomViewer(-0.25, viewerCenter())
+  );
 if (ViewerResetZoom)
   ViewerResetZoom.addEventListener("click", () => {
     viewerScale = 1;
-    applyViewerScale();
+    applyViewerScale(viewerCenter());
   });
 if (ViewerRotateLeft)
   ViewerRotateLeft.addEventListener("click", () => rotateViewer(-90));
@@ -1770,12 +1876,75 @@ if (ImageViewer) {
     if (e.target === ImageViewer) closeImageViewer();
   });
 }
-if (ViewerImage) {
-  ViewerImage.addEventListener("wheel", (e) => {
+
+// Dragging the picture with the mouse (the scroll bars work as well). The
+// pointer is captured on the stage so a fast drag keeps panning outside it.
+let viewerDrag = null;
+if (ViewerStage) {
+  ViewerStage.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    // Nothing to drag while the whole picture fits, and a click on the scroll
+    // bar must keep scrolling it (the stage itself is the scroll bar's target).
+    if (!ViewerStage.classList.contains("scrollable")) return;
+    if (!ViewerCanvas || !ViewerCanvas.contains(e.target)) return;
+    viewerDrag = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      left: ViewerStage.scrollLeft,
+      top: ViewerStage.scrollTop,
+    };
+    ViewerStage.setPointerCapture(e.pointerId);
+    ViewerStage.classList.add("dragging");
     e.preventDefault();
-    zoomViewer(e.deltaY < 0 ? 0.25 : -0.25);
+  });
+  ViewerStage.addEventListener("pointermove", (e) => {
+    if (!viewerDrag || viewerDrag.id !== e.pointerId) return;
+    ViewerStage.scrollLeft = viewerDrag.left - (e.clientX - viewerDrag.x);
+    ViewerStage.scrollTop = viewerDrag.top - (e.clientY - viewerDrag.y);
+  });
+  const endViewerDrag = (e) => {
+    if (!viewerDrag || viewerDrag.id !== e.pointerId) return;
+    if (ViewerStage.hasPointerCapture(e.pointerId)) {
+      ViewerStage.releasePointerCapture(e.pointerId);
+    }
+    viewerDrag = null;
+    ViewerStage.classList.remove("dragging");
+  };
+  ViewerStage.addEventListener("pointerup", endViewerDrag);
+  ViewerStage.addEventListener("pointercancel", endViewerDrag);
+  // Wheel zooms around the mouse pointer, like the toolbars of picture viewers.
+  ViewerStage.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const rect = ViewerStage.getBoundingClientRect();
+      zoomViewer(e.deltaY < 0 ? 0.25 : -0.25, {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      });
+    },
+    { passive: false }
+  );
+}
+
+if (ViewerImage) {
+  // Every source change (open, rotate) re-measures the picture: the fit size
+  // depends on its orientation, and the new size is applied right away.
+  ViewerImage.addEventListener("load", () => {
+    viewerNaturalWidth = ViewerImage.naturalWidth || 0;
+    viewerNaturalHeight = ViewerImage.naturalHeight || 0;
+    viewerFitScale = computeViewerFitScale();
+    applyViewerScale();
   });
 }
+
+// Keep the picture fitted when the window changes size while the viewer is open.
+window.addEventListener("resize", () => {
+  if (!ImageViewer || ImageViewer.classList.contains("hidden")) return;
+  viewerFitScale = computeViewerFitScale();
+  applyViewerScale();
+});
 
 // ---------------------------------------------------------------------------
 // Ctrl-hover cursor helpers

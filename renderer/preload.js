@@ -59,6 +59,19 @@ contextBridge.exposeInMainWorld("bridge", {
   // over when a login misbehaves only on their network).
   LogEvent: (channel, message) =>
     ipcRenderer.send("ClientLog", String(channel || "client"), String(message || "")),
+
+  // ---------------------------------------------------------------------------
+  // Client diagnostics (renderer/diag.js).
+  //
+  // Failed requests (403 first) are kept in userData/diag/pending.jsonl by the
+  // main process so they survive page changes and restarts, then uploaded to
+  // the server when it is reachable again. DiagContext supplies the facts the
+  // renderer cannot read: proxy, public IP, TLS issuer, hostname, versions.
+  // ---------------------------------------------------------------------------
+  DiagRead: () => ipcRenderer.invoke("DiagQueueRead"),
+  DiagSave: (queue) => ipcRenderer.invoke("DiagQueueSave", queue),
+  DiagState: () => ipcRenderer.invoke("DiagQueueState"),
+  DiagContext: (force) => ipcRenderer.invoke("DiagContext", force === true),
   // Subscribe to queue changes / late deliveries. Returns an unsubscribe fn.
   OnOutboxState: (callback) => {
     const listener = (event, state) => callback(state);

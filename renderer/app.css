@@ -174,6 +174,21 @@ tr.row-broker-alert td {
   color: #ffd9d6;
 }
 
+/* Diagnostics tab: a failed request (403 etc.) stands out from recoveries and
+   normal rows; a path being polled unusually often uses the same tint. */
+tr.warn-row td {
+  background: rgba(229, 83, 75, 0.18);
+  color: #ffb4af;
+}
+
+/* The full JSON of one diagnostic report (Diagnostics > report details). */
+pre.diag-json {
+  white-space: pre-wrap;
+  max-height: 55vh;
+  overflow: auto;
+  font-size: 12px;
+}
+
 tr td.cell-broker-alert {
   background: #6b0f14;
   color: #ffd9d6;

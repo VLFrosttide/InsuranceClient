@@ -198,7 +198,13 @@
       <div class="viewer-toolbar">
         <button id="ViewerZoomOut" class="secondary" type="button">−</button>
         <button id="ViewerZoomIn" class="secondary" type="button">+</button>
-        <button id="ViewerResetZoom" class="secondary" type="button">
+        <button
+          id="ViewerResetZoom"
+          class="secondary"
+          type="button"
+          data-i18n-title="email.resetZoom"
+          title="Reset zoom"
+        >
           100%
         </button>
         <button
@@ -222,11 +228,14 @@
         <button id="ViewerPrint" type="button">🖨</button>
         <button id="ViewerClose" class="secondary" type="button">✕</button>
       </div>
-      <div class="viewer-stage">
-        <img id="ViewerImage" alt="" />
+      <div id="ViewerStage" class="viewer-stage">
+        <div id="ViewerCanvas" class="viewer-canvas">
+          <img id="ViewerImage" alt="" draggable="false" />
+        </div>
       </div>
     </div>
 
+    <script src="../diag.js" defer></script>
     <script src="../shiftReminder.js" defer></script>
     <script src="../common.js" defer></script>
     <script src="../emailThread.js" defer></script>

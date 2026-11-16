@@ -70,6 +70,52 @@ const I18N = {
     "nav.currentCash": "Current cash",
     "nav.card": "Card",
     "nav.reconcile": "Reconcile daily report",
+    "nav.diagnostics": "Diagnostics",
+
+    // Admin > Diagnostics: the failed requests recorded on every client PC.
+    "diag.title": "Client diagnostics",
+    "diag.hint":
+      "Failed requests recorded on the PCs (403s and the first successful request after them), uploaded as soon as the client can reach the server. They stay here until you delete them.",
+    "diag.refresh": "Refresh",
+    "diag.download": "Download JSON",
+    "diag.clear": "Delete all",
+    "diag.clearConfirm":
+      "Delete every stored client report? Download them first if you still need them.",
+    "diag.deleted": "Deleted {n} report(s)",
+    "diag.empty": "No client reports stored yet.",
+    "diag.failures": "Failures",
+    "diag.recoveries": "Recoveries",
+    "diag.withRequestId": "With request id",
+    "diag.total": "Stored reports",
+    "diag.clients": "Clients",
+    "diag.forbidden": "403",
+    "diag.all": "All statuses",
+    "diag.only403": "Only 403",
+    "diag.status": "Status",
+    "diag.kind": "Kind",
+    "diag.client": "Client",
+    "diag.requestId": "Request id",
+    "diag.uploadIp": "Upload IP",
+    "diag.captured": "Captured",
+    "diag.details": "Report details",
+    "diag.serverContext": "How the server sees a request",
+    "diag.observedIp": "Observed IP",
+    "diag.forwardedFor": "X-Forwarded-For",
+    "diag.realIp": "X-Real-IP",
+    "diag.proxy": "Trust proxy",
+    "diag.authPolicy": "Authentication",
+    "diag.rateLimits": "Rate limits",
+    "diag.ipAllowList": "IP allow list",
+    "diag.polling": "Busiest IP/path in the last minute",
+    "diag.recentFailures": "Server-side failures",
+    "diag.localQueue": "Local queue on this PC",
+    "diag.flushNow": "Upload now",
+    "diag.flushed": "Uploaded {n} report(s)",
+    "diag.queueEmpty": "Nothing queued on this PC",
+    "diag.copied": "Copied",
+    "diag.copy": "Copy JSON",
+    "diag.noContext": "Server context unavailable",
+    "diag.paired": "Paired with",
     "reconcile.title": "Reconcile daily report",
     "reconcile.dropHint": "Drop the daily report (Excel file) here",
     "reconcile.dropHint2": "or click to choose a file",
@@ -205,6 +251,7 @@ const I18N = {
     "movement.increase": "Increase",
     "movement.reduce": "Reduce",
     "movement.adjust": "Adjustment",
+    "movement.handover": "Hand over",
     myProfile: "My Profile",
     myInsurances: "My Insurances",
 
@@ -291,6 +338,7 @@ const I18N = {
       "Leave this page? Anything not saved on the insurance form will be lost. Open Current cash to finish the shift?",
     brokerBalanceIncreased: "Broker balance increased",
     brokerBalanceReduced: "Broker balance reduced",
+    brokerHandoverRecorded: "Hand over recorded",
     brokerCreated: "Broker created",
     brokerUpdated: "Broker updated",
     brokerDeleted: "Broker deleted",
@@ -763,6 +811,52 @@ const I18N = {
     "nav.currentCash": "Наличен кеш",
     "nav.card": "Карта",
     "nav.reconcile": "Дневен отчет",
+    "nav.diagnostics": "Диагностика",
+
+    // Админ > Диагностика: неуспешните заявки, записани на всеки клиент.
+    "diag.title": "Клиентска диагностика",
+    "diag.hint":
+      "Неуспешни заявки, записани на компютрите (403 и първата успешна заявка след тях), качени веднага щом клиентът достигне сървъра. Стоят тук, докато не ги изтриете.",
+    "diag.refresh": "Опресни",
+    "diag.download": "Изтегли JSON",
+    "diag.clear": "Изтрий всички",
+    "diag.clearConfirm":
+      "Да се изтрият ли всички запазени клиентски отчети? Първо ги изтеглете, ако все още са ви нужни.",
+    "diag.deleted": "Изтрити {n} отчета",
+    "diag.empty": "Все още няма запазени клиентски отчети.",
+    "diag.failures": "Неуспешни",
+    "diag.recoveries": "Възстановени",
+    "diag.withRequestId": "С request id",
+    "diag.total": "Запазени отчети",
+    "diag.clients": "Клиенти",
+    "diag.forbidden": "403",
+    "diag.all": "Всички статуси",
+    "diag.only403": "Само 403",
+    "diag.status": "Статус",
+    "diag.kind": "Вид",
+    "diag.client": "Клиент",
+    "diag.requestId": "Request id",
+    "diag.uploadIp": "IP при качване",
+    "diag.captured": "Записано",
+    "diag.details": "Детайли на отчета",
+    "diag.serverContext": "Как сървърът вижда заявката",
+    "diag.observedIp": "Видян IP",
+    "diag.forwardedFor": "X-Forwarded-For",
+    "diag.realIp": "X-Real-IP",
+    "diag.proxy": "Trust proxy",
+    "diag.authPolicy": "Автентикация",
+    "diag.rateLimits": "Ограничения на честотата",
+    "diag.ipAllowList": "Списък с разрешени IP-та",
+    "diag.polling": "Най-натоварени IP/път за последната минута",
+    "diag.recentFailures": "Сървърни грешки",
+    "diag.localQueue": "Локална опашка на този компютър",
+    "diag.flushNow": "Качи сега",
+    "diag.flushed": "Качени {n} отчета",
+    "diag.queueEmpty": "Няма нищо в опашката на този компютър",
+    "diag.copied": "Копирано",
+    "diag.copy": "Копирай JSON",
+    "diag.noContext": "Сървърният контекст не е наличен",
+    "diag.paired": "Свързан с",
     "reconcile.title": "Дневен отчет",
     "reconcile.dropHint": "Пуснете дневния отчет (Excel файл) тук",
     "reconcile.dropHint2": "или щракнете, за да изберете файл",
@@ -813,7 +907,7 @@ const I18N = {
     balance: "Баланс",
     currentCash: "Наличен кеш",
     currentCashHint:
-      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно. Бутоните „Разход“ и „Предай кеш“ и двата изваждат пари от този баланс, но само разходът се брои като изразходване за деня.",
+      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно. Бутоните „Разход“ и „Предай пари“ и двата изваждат пари от този баланс, но само разходът се брои като изразходване за деня.",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -871,7 +965,7 @@ const I18N = {
     increase: "Увеличи",
     reduce: "Намали",
     expense: "Разход",
-    handOver: "Предай кеш",
+    handOver: "Предай пари",
     handedTo: "Получател",
     handedToPlaceholder: "Име на човека, който взе парите",
     resetTo0: "Завърши смяна",
@@ -897,6 +991,7 @@ const I18N = {
     "movement.increase": "Увеличение",
     "movement.reduce": "Намаление",
     "movement.adjust": "Корекция",
+    "movement.handover": "Предай пари",
     myProfile: "Моят профил",
     myInsurances: "Моите застраховки",
 
@@ -936,9 +1031,9 @@ const I18N = {
     registrationFailed: "Регистрацията не успя",
     currentCashIncreased: "Наличният кеш беше увеличен",
     currentCashReduced: "Наличният кеш беше намален",
-    cashHandedOver: "Кешът е предаден",
+    cashHandedOver: "Парите са предадени",
     recordExpense: "Записване на разход",
-    handOverCash: "Предаване на кеш",
+    handOverCash: "Предаване на пари",
     expenseRecorded: "Разходът е записан",
     currentCashReset:
       "Наличният кеш, балансът на картата и кешът от брокери бяха нулирани",
@@ -984,6 +1079,7 @@ const I18N = {
       "Да се напусне ли страницата? Незаписаното във формуляра за застраховка ще бъде загубено. Да се отвори ли „Наличен кеш“, за да завършите смяната?",
     brokerBalanceIncreased: "Балансът на брокера беше увеличен",
     brokerBalanceReduced: "Балансът на брокера беше намален",
+    brokerHandoverRecorded: "Предаването е записано",
     brokerCreated: "Брокерът е създаден",
     brokerUpdated: "Брокерът е обновен",
     brokerDeleted: "Брокерът е изтрит",
@@ -1106,7 +1202,7 @@ const I18N = {
     expenses: "Разходи",
     totalExpenses: "Общо разходи",
     expensesHint:
-      "Пари, изразходвани от касата на този клон на този ден (записаните с бутона „Разход“). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук. Преданият на човек кеш (бутонът „Предай кеш“) също не се брои: той е излязъл от касата, но клонът не го е изразходвал.",
+      "Пари, изразходвани от касата на този клон на този ден (записаните с бутона „Разход“). Върнатите суми за анулирани или изтрити застраховки също намаляват касата, но те са движения по полици, а не пари, изразходвани от клона, и не се броят тук. Преданият на човек кеш (бутонът „Предай пари“) също не се брои: той е излязъл от касата, но клонът не го е изразходвал.",
 
     annul: "Анулирай",
     annulled: "Анулирана",
@@ -1399,7 +1495,7 @@ const I18N = {
     "err.reasonRequired": "Причината е задължителна",
     "err.recipientRequired": "Въведете кой получи парите",
     "err.handoverTypeFixed":
-      "Предаването на кеш не може да се превърне в увеличение или разход (или обратното); изтрийте записа и въведете правилния",
+      "Предаването на пари не може да се превърне в увеличение или разход (или обратното); изтрийте записа и въведете правилния",
     "err.movementNotFound": "Движението не е намерено",
     "err.movementIdInvalid": "Невалидно движение",
     "err.amountNonZero": "Сумата трябва да е число, различно от нула",
@@ -3056,6 +3152,18 @@ class UnreadEmailSocket {
       ws = new WebSocket(this.wsUrl);
     } catch (err) {
       console.error("WebSocket error:", err);
+      // A 403/failed upgrade is part of the same incident the HTTP diagnostics
+      // track, so record it there too (the browser hides the status code).
+      try {
+        if (window.Diag && typeof window.Diag.noteWebSocketFailure === "function") {
+          window.Diag.noteWebSocketFailure(
+            this.wsUrl,
+            `constructor failed: ${(err && err.message) || err}`
+          );
+        }
+      } catch {
+        // Diagnostics must never break reconnection.
+      }
       if (this.handlers.close) this.handlers.close(err);
       this.scheduleReconnect();
       return;
@@ -3199,6 +3307,19 @@ class UnreadEmailSocket {
           `Email WebSocket handshake failed for ${this.wsUrl} ` +
             `(attempt ${this.failedAttempts}, retrying in ${this.reconnectDelay} ms)`
         );
+        try {
+          if (
+            window.Diag &&
+            typeof window.Diag.noteWebSocketFailure === "function"
+          ) {
+            window.Diag.noteWebSocketFailure(
+              this.wsUrl,
+              `handshake failed (attempt ${this.failedAttempts})`
+            );
+          }
+        } catch {
+          // Diagnostics must never break reconnection.
+        }
         this.reportOutage();
         this.diagnoseHandshakeFailure();
       }

@@ -4699,6 +4699,14 @@ async function brokersView() {
           class: "broker-adjust broker-adjust-increase",
           onClick: (broker) => brokerAdjust(broker, "increase"),
         },
+        // A broker may pay the owner directly: that is a payment on their
+        // balance as well, but the money never reaches a branch, so it is
+        // recorded as a hand-over (no branch, no Cash from Brokers).
+        {
+          label: t("handOver"),
+          class: "broker-adjust secondary",
+          onClick: (broker) => brokerAdjust(broker, "handover"),
+        },
         // A worker may top a broker up, but reducing a broker's balance stays an
         // admin correction.
         ...(isAdmin
@@ -5041,6 +5049,13 @@ async function restoreBrokerMovement(broker, movement, page, date) {
 // the broker balance by the difference. Type, blank number, reason and author
 // are stored as entered.
 function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = false) {
+  // A hand-over keeps its own type: it is a payment the owner took directly, so
+  // it never carried a branch. Turning it into a branch top-up (or the other
+  // way round) would move the money between the broker's balance and Cash from
+  // Brokers, so the server rejects that correction (PATCH
+  // /brokers/:id/history/:movementId). Its type select is left out here for
+  // the same reason, and the other movements do not offer "handover".
+  const isHandover = String(movement.Type || "") === "handover";
   const typeOptions = [
     "policy",
     "annulment",
@@ -5050,30 +5065,35 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
     "reduce",
     "adjust",
   ].map((value) => ({ label: movementTypeLabel(value), value }));
+  const spec = [
+    {
+      key: "amount",
+      label: t("amount"),
+      type: "number",
+      step: "0.01",
+      value: movement.Amount,
+    },
+  ];
+  if (!isHandover) {
+    spec.push({
+      key: "type",
+      label: t("type"),
+      type: "select",
+      options: typeOptions,
+      value: movement.Type,
+    });
+  }
+  spec.push(
+    {
+      key: "blancNumber",
+      label: t("blankNo"),
+      value: movement.BlancNumber || "",
+    },
+    { key: "reason", label: t("reason"), value: movement.Reason || "" },
+    { key: "author", label: t("author"), value: movement.Author || "" }
+  );
   const form = buildForm(
-    [
-      {
-        key: "amount",
-        label: t("amount"),
-        type: "number",
-        step: "0.01",
-        value: movement.Amount,
-      },
-      {
-        key: "type",
-        label: t("type"),
-        type: "select",
-        options: typeOptions,
-        value: movement.Type,
-      },
-      {
-        key: "blancNumber",
-        label: t("blankNo"),
-        value: movement.BlancNumber || "",
-      },
-      { key: "reason", label: t("reason"), value: movement.Reason || "" },
-      { key: "author", label: t("author"), value: movement.Author || "" },
-    ],
+    spec,
     async (payload) => {
       await api(`/brokers/${broker.id}/history/${movement.id}`, {
         method: "PATCH",
@@ -5090,6 +5110,16 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
 }
 
 function brokerAdjust(broker, kind) {
+  const titles = {
+    increase: t("increase"),
+    reduce: t("reduce"),
+    handover: t("handOver"),
+  };
+  const confirmations = {
+    increase: t("brokerBalanceIncreased"),
+    reduce: t("brokerBalanceReduced"),
+    handover: t("brokerHandoverRecorded"),
+  };
   const form = buildForm(
     [
       { key: "amount", label: t("amount"), type: "number", value: "" },
@@ -5111,28 +5141,21 @@ function brokerAdjust(broker, kind) {
       // Money handed over by the broker is kept apart from current cash as the
       // branch's Cash from Brokers, so an increase must name the branch that
       // took the money (the logged-in user's branch). A reduction moves no
-      // cash and is left without one.
+      // cash, and a hand-over went straight to the owner - neither gets a
+      // branch, which is what keeps a hand-over out of Cash from Brokers.
       if (kind === "increase") payload.branch = getBranch();
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      toast(
-        kind === "increase"
-          ? t("brokerBalanceIncreased")
-          : t("brokerBalanceReduced"),
-        "success"
-      );
+      toast(confirmations[kind] || titles[kind] || kind, "success");
       closeModal();
       brokersView();
     },
-    kind === "increase" ? t("increase") : t("reduce")
+    titles[kind] || kind
   );
-  openModal(
-    `${kind === "increase" ? t("increase") : t("reduce")} ${broker.Name}`,
-    form
-  );
+  openModal(`${titles[kind] || kind} ${broker.Name}`, form);
 }
 
 function brokerCreateForm() {
@@ -6604,6 +6627,440 @@ async function clientInsurances() {
 }
 
 // ---------------------------------------------------------------------------
+// Admin: client diagnostics
+//
+// Every PC records the failed requests it sees (403 first) plus the first
+// successful request after a 403, and uploads them to the server when it can
+// reach it again. This view lists what the server has stored (nothing is
+// pruned; Delete all is the explicit cleanup), shows one report in full, and
+// pairs it with the server's own view of a request (IP resolution,
+// X-Forwarded-For, auth/CORS policy, busiest paths) so "blocked before the
+// server" can be told apart from "rejected by the app".
+// ---------------------------------------------------------------------------
+let diagStatusFilter = "";
+
+function diagClientLabel(report) {
+  const env = (report && report.Env) || {};
+  const host = env.hostname || "";
+  const user =
+    report.Username || (env.renderer && env.renderer.username) || "";
+  const id = String(report.ClientId || env.clientId || "").slice(0, 8);
+  const parts = [host || (id ? `#${id}` : "")];
+  if (user && user !== host) parts.push(user);
+  return parts.filter(Boolean).join(" · ") || "—";
+}
+
+function diagDetailsNode(report) {
+  const wrap = el("div");
+  const summary = el("div", null, { class: "stat-grid" });
+  const card = (label, value) => {
+    const box = el("div", null, { class: "stat-card" });
+    box.appendChild(el("h3", label));
+    box.appendChild(
+      el(
+        "p",
+        value === null || value === undefined || value === "" ? "—" : String(value)
+      )
+    );
+    summary.appendChild(box);
+  };
+  card(t("diag.status"), report.Status);
+  card(t("diag.kind"), report.Kind);
+  card(t("diag.requestId"), report.RequestId || "—");
+  card(t("diag.uploadIp"), report.UploadIp || "—");
+  wrap.appendChild(summary);
+
+  if (report.PairId) {
+    wrap.appendChild(
+      el(
+        "p",
+        `${t("diag.paired")}: ${report.PairId}` +
+          (report.SamePath ? "" : " (different path)"),
+        { class: "muted" }
+      )
+    );
+  }
+  wrap.appendChild(
+    el("p", `${report.Method || ""} ${report.Url || ""}`, { class: "muted" })
+  );
+  wrap.appendChild(
+    el(
+      "p",
+      `${t("diag.captured")}: ${report.CapturedAtText || report.CapturedAt || ""}` +
+        (report.DurationMs !== null && report.DurationMs !== undefined
+          ? ` · ${report.DurationMs} ms`
+          : "") +
+        (report.RepeatCount > 1 ? ` · ×${report.RepeatCount}` : ""),
+      { class: "muted" }
+    )
+  );
+
+  const pre = el("pre", JSON.stringify(report, null, 2), { class: "diag-json" });
+  wrap.appendChild(pre);
+
+  const copy = el("button", t("diag.copy"), {
+    class: "secondary small",
+    type: "button",
+  });
+  copy.addEventListener("click", () => {
+    const text = JSON.stringify(report, null, 2);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast(t("diag.copied"), "success"),
+        () => toast(t("diag.copied"), "error")
+      );
+    }
+  });
+  wrap.appendChild(copy);
+  return wrap;
+}
+
+
+async function adminDiagnostics() {
+  const title = el("h2", t("diag.title"));
+  const hint = el("p", t("diag.hint"), { class: "muted" });
+  const controls = el("div", null, { class: "row" });
+  const summary = el("div", null, { class: "stat-grid" });
+  const contextHost = el("div");
+  const tableHost = el("div");
+  const localHost = el("div");
+
+  const statusSelect = select(
+    [
+      { value: "", label: t("diag.all") },
+      { value: "403", label: t("diag.only403") },
+      { value: "401", label: "401" },
+      { value: "429", label: "429" },
+      { value: "500", label: "500" },
+    ],
+    diagStatusFilter
+  );
+  statusSelect.addEventListener("change", () => {
+    diagStatusFilter = statusSelect.value;
+    load();
+  });
+
+  let latest = { reports: [], summary: {}, stored: 0 };
+  let latestContext = null;
+
+  const refreshButton = el("button", t("diag.refresh"), {
+    class: "secondary",
+    type: "button",
+  });
+  refreshButton.addEventListener("click", () => load());
+
+  const downloadButton = el("button", t("diag.download"), {
+    class: "secondary",
+    type: "button",
+  });
+  downloadButton.addEventListener("click", () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      summary: latest.summary,
+      serverContext: latestContext,
+      reports: latest.reports,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download =
+      `client-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  });
+
+  const clearButton = el("button", t("diag.clear"), {
+    class: "danger",
+    type: "button",
+  });
+  clearButton.addEventListener("click", async () => {
+    if (!window.confirm(t("diag.clearConfirm"))) return;
+    try {
+      const result = await api("/admin/diagnostics", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      toast(
+        t("diag.deleted").replace("{n}", String(result.deleted || 0)),
+        "success"
+      );
+      load();
+    } catch (err) {
+      reportError("Failed to delete diagnostics", err);
+    }
+  });
+
+  controls.appendChild(statusSelect);
+  controls.appendChild(refreshButton);
+  controls.appendChild(downloadButton);
+  controls.appendChild(clearButton);
+
+  async function renderLocalQueue() {
+    localHost.replaceChildren();
+    let info = null;
+    try {
+      if (window.Diag && typeof window.Diag.info === "function") {
+        info = await window.Diag.info();
+      }
+    } catch {
+      info = null;
+    }
+    const card = el("div", null, { class: "stat-card" });
+    card.appendChild(el("h3", t("diag.localQueue")));
+    if (!info) {
+      card.appendChild(el("p", t("diag.noContext"), { class: "muted" }));
+      localHost.appendChild(card);
+      return;
+    }
+    card.appendChild(
+      el(
+        "p",
+        `${info.queueLength}` +
+          (info.clientId ? ` · #${String(info.clientId).slice(0, 8)}` : "") +
+          (info.lastFlushError ? ` · ${info.lastFlushError}` : "")
+      )
+    );
+    if (info.queueLength) {
+      const flush = el("button", t("diag.flushNow"), {
+        class: "secondary small",
+        type: "button",
+      });
+      flush.addEventListener("click", async () => {
+        const result = await window.Diag.flush();
+        toast(
+          t("diag.flushed").replace("{n}", String(result.uploaded || 0)),
+          result.skipped ? "info" : "success"
+        );
+        renderLocalQueue();
+        load();
+      });
+      card.appendChild(flush);
+    }
+    localHost.appendChild(card);
+  }
+
+
+  function renderContext(context) {
+    contextHost.replaceChildren();
+    if (!context) {
+      contextHost.appendChild(el("p", t("diag.noContext"), { class: "muted" }));
+      return;
+    }
+    contextHost.appendChild(el("h3", t("diag.serverContext")));
+    const grid = el("div", null, { class: "stat-grid" });
+
+    const requestCard = el("div", null, { class: "stat-card" });
+    requestCard.appendChild(el("h3", "Request"));
+    requestCard.appendChild(
+      el("div", `${t("diag.observedIp")}: ${context.request.ip || "—"}`, {
+        class: "muted",
+      })
+    );
+    requestCard.appendChild(
+      el(
+        "div",
+        `${t("diag.forwardedFor")}: ${context.request.forwardedFor || "—"}`,
+        { class: "muted" }
+      )
+    );
+    requestCard.appendChild(
+      el("div", `${t("diag.realIp")}: ${context.request.xRealIp || "—"}`, {
+        class: "muted",
+      })
+    );
+    requestCard.appendChild(
+      el("div", `Origin: ${context.request.origin || "—"}`, { class: "muted" })
+    );
+    requestCard.appendChild(
+      el("div", `Socket: ${context.request.socketRemoteAddress || "—"}`, {
+        class: "muted",
+      })
+    );
+    grid.appendChild(requestCard);
+
+    const ac = context.accessControl || {};
+    const policyCard = el("div", null, { class: "stat-card" });
+    policyCard.appendChild(el("h3", "Access control"));
+    policyCard.appendChild(
+      el("div", `${t("diag.proxy")}: ${String(ac.trustProxy ?? "—")}`, {
+        class: "muted",
+      })
+    );
+    policyCard.appendChild(
+      el("div", `${t("diag.ipAllowList")}: ${ac.ipAllowList || "—"}`, {
+        class: "muted",
+      })
+    );
+    policyCard.appendChild(
+      el("div", `${t("diag.authPolicy")}: ${ac.authentication || "—"}`, {
+        class: "muted",
+      })
+    );
+    policyCard.appendChild(
+      el("div", `${t("diag.rateLimits")}: ${JSON.stringify(ac.rateLimits || {})}`, {
+        class: "muted",
+      })
+    );
+    policyCard.appendChild(
+      el("div", `CORS: ${JSON.stringify(ac.cors || {})}`, { class: "muted" })
+    );
+    grid.appendChild(policyCard);
+    contextHost.appendChild(grid);
+
+    const polling = (context.recent && context.recent.polling) || [];
+    contextHost.appendChild(el("h3", t("diag.polling")));
+    if (!polling.length) {
+      contextHost.appendChild(el("p", t("noData"), { class: "muted" }));
+    } else {
+      contextHost.appendChild(
+        renderTable(
+          polling,
+          [
+            { key: "ip", label: t("diag.uploadIp") },
+            { key: "method", label: "Method" },
+            { key: "path", label: "Path" },
+            { key: "requestsPerMinute", label: "/min" },
+            { key: "lastStatus", label: t("diag.status") },
+          ],
+          null,
+          (row) => (Number(row.requestsPerMinute) >= 30 ? "warn-row" : "")
+        )
+      );
+    }
+
+    const failures = (context.recent && context.recent.failures) || [];
+    contextHost.appendChild(el("h3", t("diag.recentFailures")));
+    if (!failures.length) {
+      contextHost.appendChild(el("p", t("noData"), { class: "muted" }));
+    } else {
+      contextHost.appendChild(
+        renderTable(
+          failures.slice(-30).reverse(),
+          [
+            { key: "at", label: t("diag.captured") },
+            { key: "method", label: "Method" },
+            { key: "path", label: "Path" },
+            { key: "status", label: t("diag.status") },
+            { key: "ip", label: t("diag.uploadIp") },
+            { key: "user", label: t("username") },
+          ],
+          null,
+          () => ""
+        )
+      );
+    }
+  }
+
+
+  function renderReports() {
+    const reports = latest.reports || [];
+    summary.replaceChildren();
+    const stats = latest.summary || {};
+    const card = (label, value) => {
+      const box = el("div", null, { class: "stat-card" });
+      box.appendChild(el("h3", label));
+      box.appendChild(
+        el("p", String(value === undefined || value === null ? 0 : value))
+      );
+      summary.appendChild(box);
+    };
+    card(t("diag.total"), stats.total || 0);
+    card(t("diag.forbidden"), stats.forbidden || 0);
+    card(t("diag.recoveries"), stats.recoveries || 0);
+    card(t("diag.withRequestId"), stats.withRequestId || 0);
+    card(t("diag.clients"), stats.clients || 0);
+
+    tableHost.replaceChildren();
+    if (!reports.length) {
+      tableHost.appendChild(el("p", t("diag.empty"), { class: "muted" }));
+      return;
+    }
+    tableHost.appendChild(
+      renderTable(
+        reports,
+        [
+          {
+            key: "CapturedAtText",
+            label: t("diag.captured"),
+            format: (v, row) => v || row.CapturedAt || row.ReceivedAt || "",
+          },
+          {
+            key: "ClientId",
+            label: t("diag.client"),
+            format: (v, row) => diagClientLabel(row),
+          },
+          { key: "Kind", label: t("diag.kind") },
+          { key: "Status", label: t("diag.status") },
+          {
+            key: "Path",
+            label: "Request",
+            format: (v, row) => `${row.Method || ""} ${v || ""}`,
+          },
+          {
+            key: "RequestId",
+            label: t("diag.requestId"),
+            format: (v) => (v ? String(v).slice(0, 12) : "—"),
+          },
+          { key: "UploadIp", label: t("diag.uploadIp") },
+          { key: "RepeatCount", label: "×" },
+        ],
+        null,
+        (row) => (Number(row.Status) === 403 ? "warn-row" : ""),
+        (row) => openModal(t("diag.details"), diagDetailsNode(row))
+      )
+    );
+  }
+
+  async function load() {
+    tableHost.replaceChildren(el("p", t("loading"), { class: "muted" }));
+    try {
+      const query =
+        "/admin/diagnostics?limit=100" +
+        (diagStatusFilter
+          ? `&status=${encodeURIComponent(diagStatusFilter)}`
+          : "");
+      const [data, context] = await Promise.all([
+        api(query),
+        api("/admin/diagnostics/context").catch(() => null),
+      ]);
+      latest = data || { reports: [], summary: {} };
+      latestContext = context;
+      renderReports();
+      renderContext(context);
+    } catch (err) {
+      tableHost.replaceChildren(
+        el(
+          "p",
+          `${t("errorPrefix")}: ${translateError(
+            err && err.message ? err.message : ""
+          )}`,
+          { class: "muted" }
+        )
+      );
+    }
+    renderLocalQueue();
+  }
+
+  Content.replaceChildren(
+    title,
+    hint,
+    summary,
+    controls,
+    tableHost,
+    localHost,
+    contextHost
+  );
+  await load();
+}
+
+// __DIAG_UI_END__
+// ---------------------------------------------------------------------------
 // Navigation setup
 // ---------------------------------------------------------------------------
 const NAV_DEFS = {
@@ -6616,6 +7073,7 @@ const NAV_DEFS = {
     { key: "nav.card", load: cardView },
     { key: "nav.brokers", load: brokersView },
     { key: "nav.reconcile", load: reconcileView },
+    { key: "nav.diagnostics", load: adminDiagnostics },
   ],
   2: [
     { key: "nav.dashboard", load: workerDashboard },

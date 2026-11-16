@@ -567,21 +567,46 @@ button.reply-button.reply-empty:hover {
   margin-bottom: 16px;
 }
 #ImageViewer .viewer-stage {
-  max-width: 92vw;
-  max-height: 72vh;
+  /* A fixed frame: the picture is sized in JS, so zooming grows the stage's
+     scrollable content instead of a CSS transform (which leaves no scrollbar
+     room and so cannot be dragged past the visible part). */
+  width: 92vw;
+  height: 72vh;
+  flex: 0 0 auto;
   overflow: auto;
+  box-sizing: border-box;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  overscroll-behavior: contain;
+}
+/* The grab cursor appears only when the picture is bigger than the stage. */
+#ImageViewer .viewer-stage.scrollable {
+  cursor: grab;
+}
+#ImageViewer .viewer-stage.scrollable.dragging {
+  cursor: grabbing;
+}
+/* At least as big as the stage (so a fitted picture is centred), and as big as
+   the picture itself (so every part of a zoomed one can be scrolled to). */
+#ImageViewer .viewer-canvas {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 10px;
-  padding: 10px;
+  width: max-content;
+  height: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  /* Dragging is handled by pointer events, so the browser must not scroll the
+     stage a second time on a touch drag. */
+  touch-action: none;
 }
 #ImageViewer .viewer-stage img {
   display: block;
-  transition: transform 0.12s ease;
-  transform-origin: center;
+  max-width: none;
+  max-height: none;
   user-select: none;
+  -webkit-user-drag: none;
 }
 #ImageViewer .viewer-toolbar button {
   min-width: 72px;

@@ -13,9 +13,11 @@ import {
   shell,
   powerMonitor,
   net,
+  session,
 } from "electron";
 import path from "path";
 import fs from "fs";
+import os from "node:os";
 import https from "node:https";
 import dnsLookup from "node:dns";
 import crypto from "node:crypto";
@@ -509,6 +511,294 @@ ipcMain.on("ClientLog", (event, channel, message) => {
     String(message || "").slice(0, 2000)
   );
 });
+
+// ---------------------------------------------------------------------------
+// Client diagnostics queue (renderer/diag.js).
+//
+// The renderer records every failed request (403 first) and the first success
+// after a 403. The queue lives HERE, on disk, so it survives a page change, a
+// crash or an app restart - the exact conditions under which an intermittent
+// 403 is most likely to be missed. The renderer uploads it to POST /diag/client
+// whenever the API is reachable again and then removes the delivered entries.
+//
+// The file is JSON Lines so a single damaged line can be skipped instead of
+// losing the whole queue.
+// ---------------------------------------------------------------------------
+const DIAG_QUEUE_MAX_ENTRIES = 200;
+const DIAG_QUEUE_MAX_BYTES = 4 * 1024 * 1024;
+
+const DiagDir = () => path.join(app.getPath("userData"), "diag");
+const DiagQueuePath = () => path.join(DiagDir(), "pending.jsonl");
+const DiagClientIdPath = () => path.join(DiagDir(), "client-id.txt");
+
+function EnsureDiagDir() {
+  fs.mkdirSync(DiagDir(), { recursive: true });
+}
+
+// Stable per-install id. Distinguishes two PCs even when they share a Windows
+// user name or a public IP, which is exactly what a 403 investigation needs.
+function DiagClientId() {
+  try {
+    const file = DiagClientIdPath();
+    if (fs.existsSync(file)) {
+      const existing = String(fs.readFileSync(file, "utf8")).trim();
+      if (existing) return existing;
+    }
+    const id = crypto.randomBytes(12).toString("hex");
+    EnsureDiagDir();
+    fs.writeFileSync(file, id);
+    return id;
+  } catch (err) {
+    console.error("[diag] client id unavailable:", err);
+    return "";
+  }
+}
+
+function ReadDiagQueue() {
+  try {
+    const file = DiagQueuePath();
+    if (!fs.existsSync(file)) return [];
+    const text = fs.readFileSync(file, "utf8");
+    const queue = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry && typeof entry === "object" && entry.url) queue.push(entry);
+      } catch {
+        // Skip a damaged line; the rest of the queue is still usable.
+      }
+    }
+    return queue;
+  } catch (err) {
+    console.error("[diag] queue read failed:", err);
+    return [];
+  }
+}
+
+function TrimDiagQueue(queue) {
+  let trimmed = queue.slice(-DIAG_QUEUE_MAX_ENTRIES);
+  const encoded = () => trimmed.map((e) => JSON.stringify(e)).join("\n");
+  let text = encoded();
+  while (text.length > DIAG_QUEUE_MAX_BYTES && trimmed.length > 1) {
+    trimmed = trimmed.slice(Math.ceil(trimmed.length / 10));
+    text = encoded();
+  }
+  return { queue: trimmed, text };
+}
+
+function WriteDiagQueue(queue) {
+  try {
+    const { text } = TrimDiagQueue(Array.isArray(queue) ? queue : []);
+    EnsureDiagDir();
+    fs.writeFileSync(DiagQueuePath(), text ? text + "\n" : "");
+    return true;
+  } catch (err) {
+    console.error("[diag] queue write failed:", err);
+    return false;
+  }
+}
+
+ipcMain.handle("DiagQueueRead", async () => ReadDiagQueue());
+ipcMain.handle("DiagQueueSave", async (event, queue) => {
+  return WriteDiagQueue(queue);
+});
+ipcMain.handle("DiagQueueState", async () => {
+  let bytes = 0;
+  try {
+    bytes = fs.statSync(DiagQueuePath()).size;
+  } catch {
+    bytes = 0;
+  }
+  return {
+    path: DiagQueuePath(),
+    clientId: DiagClientId(),
+    entries: ReadDiagQueue().length,
+    bytes,
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics environment.
+//
+// Everything the renderer cannot see on its own but a 403 investigation needs:
+// which proxy Chromium resolved for the API (antivirus web filters show up
+// here), the public IP (an IP-range block shows up here), the TLS certificate
+// issuer (an HTTPS-scanning antivirus replaces it), hostname/OS user and the
+// build's versions. Cached for ten minutes; the public-IP lookup is the only
+// slow part.
+// ---------------------------------------------------------------------------
+const DIAG_ENV_TTL_MS = 10 * 60 * 1000;
+let diagEnvCache = null;
+let diagEnvAt = 0;
+
+function FetchPublicIp() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    Promise.resolve()
+      .then(() =>
+        net.fetch("https://api.ipify.org?format=json", {
+          signal: AbortSignal.timeout(8000),
+          cache: "no-store",
+        })
+      )
+      .then(async (res) => {
+        if (!res.ok) return finish({ error: `HTTP ${res.status}` });
+        const text = await res.text();
+        let ip = "";
+        try {
+          const parsed = JSON.parse(text);
+          ip = String(parsed && parsed.ip ? parsed.ip : "");
+        } catch {
+          ip = String(text || "").trim();
+        }
+        finish(ip ? { ip } : { error: "empty answer" });
+      })
+      .catch((err) => finish({ error: String((err && err.message) || err) }));
+  });
+}
+
+// The issuer of the certificate the API host actually presented. If an
+// antivirus or a corporate proxy scans HTTPS, this is ITS name instead of the
+// hosting provider's - the clearest sign that something intercepts TLS.
+function FetchTlsIssuer() {
+  return new Promise((resolve) => {
+    let url;
+    try {
+      url = new URL(OUTBOX_DEFAULT_ORIGIN);
+    } catch {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const req = https.request(
+      {
+        protocol: url.protocol,
+        host: url.hostname,
+        port: url.port || 443,
+        path: "/ping",
+        method: "HEAD",
+        agent: false,
+        // Capture the issuer even when an antivirus replaced the certificate.
+        rejectUnauthorized: false,
+        timeout: 8000,
+      },
+      (res) => {
+        let cert = null;
+        try {
+          cert = res.socket ? res.socket.getPeerCertificate() : null;
+        } catch {
+          cert = null;
+        }
+        res.destroy();
+        finish(
+          cert
+            ? {
+                issuer: cert.issuer || null,
+                subject: cert.subject || null,
+                validFrom: cert.valid_from || null,
+                validTo: cert.valid_to || null,
+                fingerprint256: cert.fingerprint256 || null,
+              }
+            : null
+        );
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      finish(null);
+    });
+    req.on("error", () => finish(null));
+    req.end();
+  });
+}
+
+async function CollectDiagContext(force) {
+  if (!force && diagEnvCache && Date.now() - diagEnvAt < DIAG_ENV_TTL_MS) {
+    return diagEnvCache;
+  }
+
+  let proxy = null;
+  try {
+    proxy = await session.defaultSession.resolveProxy(OUTBOX_DEFAULT_ORIGIN);
+  } catch (err) {
+    proxy = `unavailable: ${String((err && err.message) || err)}`;
+  }
+
+  const publicIp = await FetchPublicIp();
+  const tls = await FetchTlsIssuer();
+
+  const networkInterfaces = {};
+  try {
+    for (const [name, addresses] of Object.entries(os.networkInterfaces())) {
+      networkInterfaces[name] = (addresses || [])
+        .filter((address) => !address.internal)
+        .map((address) => ({
+          family: address.family,
+          address: address.address,
+          mac: address.mac,
+        }));
+    }
+  } catch {
+    // Leave it empty.
+  }
+
+  let osUser = null;
+  try {
+    osUser = os.userInfo().username;
+  } catch {
+    osUser = null;
+  }
+
+  let systemLocale = null;
+  try {
+    systemLocale =
+      typeof app.getSystemLocale === "function" ? app.getSystemLocale() : null;
+  } catch {
+    systemLocale = null;
+  }
+
+  diagEnvCache = {
+    collectedAt: new Date().toISOString(),
+    clientId: DiagClientId(),
+    appVersion: APP_VERSION,
+    hostname: os.hostname(),
+    osUser,
+    platform: process.platform,
+    osRelease: os.release(),
+    arch: process.arch,
+    totalMemoryBytes: os.totalmem(),
+    cpuCount: (os.cpus() || []).length,
+    electron: process.versions.electron || null,
+    chrome: process.versions.chrome || null,
+    node: process.versions.node || null,
+    v8: process.versions.v8 || null,
+    locale: app.getLocale(),
+    systemLocale,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    proxy: { resolved: proxy, apiOrigin: OUTBOX_DEFAULT_ORIGIN },
+    publicIp: publicIp.ip || null,
+    publicIpError: publicIp.error || null,
+    tls,
+    networkInterfaces,
+  };
+  diagEnvAt = Date.now();
+  return diagEnvCache;
+}
+
+ipcMain.handle("DiagContext", async (event, force) =>
+  CollectDiagContext(force === true)
+);
 
 // One GET /ping with every stage timed. /ping needs no auth and never touches
 // the database, so this is safe to run while a login is failing.
@@ -1450,15 +1740,20 @@ const GuardWindowClose = (window) => {
 // Scans folder (Desktop\Scans)
 // ---------------------------------------------------------------------------
 // Created on start when it is missing. Every scan dropped into it is read with
-// the Windows OCR engine and the text is logged (see ./scans.js). The English,
-// Turkish and Arabic OCR language packs are checked on every start and the
-// missing ones are installed, which makes Windows ask for permission.
+// the Windows OCR engine in Turkish - every scan is assumed to be Turkish and
+// upright, though the quarter turn a phone photo keeps in EXIF is applied - and
+// the text is logged (see ./scans.js) and saved to Desktop\OCRScans.txt, which
+// each new scan overwrites. Each field is saved as its label, a tab, then its
+// data. The Turkish OCR language pack is checked on every start and installed
+// when missing, which makes Windows ask for permission.
 let scanWatcher = null;
 
 const SetupScans = () => {
   try {
+    const desktop = app.getPath("desktop");
     scanWatcher = new ScanWatcher({
-      dir: path.join(app.getPath("desktop"), "Scans"),
+      dir: path.join(desktop, "Scans"),
+      outFile: path.join(desktop, "OCRScans.txt"),
     });
     scanWatcher.start();
   } catch (err) {
