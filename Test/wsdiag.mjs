@@ -1,4 +1,7 @@
-const WS_URL = "wss://lavender-quail-935384.hostingersite.com/ws";
+import { WS_URL as APP_WS_URL } from "../config.js";
+
+// Same WebSocket URL the app uses (config.js: API_DOMAIN).
+const WS_URL = process.env.WS_URL || APP_WS_URL;
 
 function test(name, firstMessage) {
   return new Promise((resolve) => {

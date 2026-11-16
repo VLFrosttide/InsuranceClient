@@ -25,9 +25,14 @@ import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
 import { BulinsController } from "./bulins.js";
 import { ScanWatcher, ensureOcrLanguages } from "./scans.js";
+import { API } from "./config.js";
 const { autoUpdater } = electronUpdater;
 let win;
 let PreloadPath = path.join(app.getAppPath(), "/renderer/preload.js");
+
+// The API host is defined once in config.js; the CSP, the outbox allow-list,
+// the diagnostics and the renderer all use these values.
+console.log(`[API] Using ${API.apiBase} (WebSocket ${API.wsUrl})`);
 
 // The app's release number (package.json "version"). Reading package.json
 // directly keeps this accurate in both `npm start` (unpackaged) and the
@@ -59,8 +64,11 @@ const CreateWindow = () => {
       sandbox: true,
       contextIsolation: true,
       preload: PreloadPath,
-      contentSecurityPolicy:
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://lavender-quail-935384.hostingersite.com wss://lavender-quail-935384.hostingersite.com http://127.0.0.1:5501 http://localhost:5501 ws://127.0.0.1:5501 ws://localhost:5501; manifest-src 'self';",
+      // Built from config.js: connect-src lists the API/WebSocket host and the
+      // local dev server, so the policy never has to be edited by hand.
+      contentSecurityPolicy: API.csp,
+      // --api-base / --ws-url for renderer/preload.js (window.bridge.ApiBase).
+      additionalArguments: API.rendererArgs,
     },
   });
 
@@ -360,14 +368,11 @@ const SetupAutoUpdater = () => {
 // page change destroys the renderer - the retry loop must survive the worker
 // moving on to the next policy. Stored under userData so it survives restarts.
 // ---------------------------------------------------------------------------
-// Only these API origins may be used by queued requests (same list as the CSP).
-const OUTBOX_ALLOWED_ORIGINS = new Set([
-  "https://lavender-quail-935384.hostingersite.com",
-  "http://127.0.0.1:5501",
-  "http://localhost:5501",
-]);
+// Only these API origins may be used by queued requests (same list as the CSP:
+// the API host plus the local dev server - see config.js).
+const OUTBOX_ALLOWED_ORIGINS = new Set(API.allowedOrigins);
 const OUTBOX_ALLOWED_PATHS = new Set(["/worker/insurances"]);
-const OUTBOX_DEFAULT_ORIGIN = "https://lavender-quail-935384.hostingersite.com";
+const OUTBOX_DEFAULT_ORIGIN = API.apiBase;
 
 let outbox = null;
 let outboxReady = null;

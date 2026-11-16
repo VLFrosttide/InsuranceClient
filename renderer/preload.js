@@ -2,7 +2,24 @@ const { ipcRenderer, contextBridge } = require("electron");
 //Example window.bridge.GlobalKey((event, data) => {})
 // Or window.bridge.GlobalKey()
 
+// The API host for this build. main.js takes it from config.js (API_DOMAIN) and
+// passes it down through webPreferences.additionalArguments, so no renderer
+// file has to hardcode the domain.
+const ArgValue = (prefix) => {
+  const hit = (process.argv || []).find((arg) => String(arg).startsWith(prefix));
+  return hit ? String(hit).slice(prefix.length) : "";
+};
+const API_BASE = ArgValue("--api-base=");
+const WS_URL = ArgValue("--ws-url=");
+
 contextBridge.exposeInMainWorld("bridge", {
+  // ---------------------------------------------------------------------------
+  // API host (renderer/common.js reads these as API_BASE / WS_URL).
+  // apiBase: https origin of the API, wsUrl: its wss .../ws endpoint.
+  // ---------------------------------------------------------------------------
+  ApiBase: API_BASE,
+  WsUrl: WS_URL,
+
   LoadNewPage: (page) => {
     ipcRenderer.send("LoadPage", page);
   },

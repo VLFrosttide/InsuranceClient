@@ -189,6 +189,9 @@ function createClientHarness() {
       bridge: {
         LoadNewPage: () => {},
         WsHandshakeProbe: async () => null,
+        // Same values renderer/preload.js exposes from config.js.
+        ApiBase: "https://bulsig.online",
+        WsUrl: "wss://bulsig.online/ws",
       },
     },
     document: {
@@ -218,7 +221,7 @@ function createClientHarness() {
   vm.createContext(ctx);
   vm.runInContext(
     commonCode +
-      "\nthis.__exports = { UnreadEmailSocket, normalizeWsUrl, queueDurableEmailWsAction, clearDurableEmailWsAction, loadDurableEmailWsActions };",
+      "\nthis.__exports = { UnreadEmailSocket, normalizeWsUrl, queueDurableEmailWsAction, clearDurableEmailWsAction, loadDurableEmailWsActions, API_BASE, WS_URL };",
     ctx,
     { filename: "renderer/common.js" }
   );
@@ -524,18 +527,24 @@ function createServerWsHarness({ dbQuery } = {}) {
     sock.close();
   });
 
+  await check("renderer API host comes from the preload bridge (config.js)", () => {
+    const h = createClientHarness();
+    eq(h.API_BASE, "https://bulsig.online", "api base from bridge");
+    eq(h.WS_URL, "wss://bulsig.online/ws", "ws url from bridge");
+  });
+
   await check("normalizeWsUrl converts https/http redirect Location headers to wss/ws", () => {
     const h = createClientHarness();
     eq(
       h.normalizeWsUrl(
-        "https://lavender-quail-935384.hostingersite.com/ws",
-        "wss://lavender-quail-935384.hostingersite.com/ws"
+        "https://bulsig.online/ws",
+        "wss://bulsig.online/ws"
       ),
-      "wss://lavender-quail-935384.hostingersite.com/ws",
+      "wss://bulsig.online/ws",
       "https -> wss"
     );
     const sock = new h.UnreadEmailSocket();
-    sock.registerRedirect("https://lavender-quail-935384.hostingersite.com/ws");
+    sock.registerRedirect("https://bulsig.online/ws");
     eq(sock.redirectSeen, 0, "self-redirect to https:// of same URL ignored");
     sock.close();
   });

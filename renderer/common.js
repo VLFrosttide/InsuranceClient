@@ -3,8 +3,20 @@
 // Shared helpers for the InsuranceClient renderer.
 // Load this file before any page-specific logic script.
 
-const API_BASE = "https://lavender-quail-935384.hostingersite.com";
-const WS_URL = "wss://lavender-quail-935384.hostingersite.com/ws";
+// API host. The value is defined once in config.js (API_DOMAIN) and handed over
+// by renderer/preload.js. Never hardcode a domain here - the fallbacks below
+// only apply when common.js runs outside the Electron shell (unit tests, a
+// plain-browser preview).
+const FALLBACK_API_BASE = "https://bulsig.online";
+const FALLBACK_WS_URL = "wss://bulsig.online/ws";
+
+const BridgeConfig = (typeof window !== "undefined" && window.bridge) || {};
+
+const API_BASE = String(BridgeConfig.ApiBase || FALLBACK_API_BASE).replace(
+  /\/+$/,
+  ""
+);
+const WS_URL = String(BridgeConfig.WsUrl || FALLBACK_WS_URL).replace(/\/+$/, "");
 
 const ROLE_LABELS = { 1: "Admin", 2: "Worker", 3: "Client" };
 

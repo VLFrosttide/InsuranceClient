@@ -12,8 +12,10 @@
 
 import https from "node:https";
 import crypto from "node:crypto";
+import { API_DOMAIN } from "../config.js";
 
-const WS_HOST = process.env.WS_HOST || "lavender-quail-935384.hostingersite.com";
+// Target host comes from config.js (the same host the app uses).
+const WS_HOST = process.env.WS_HOST || API_DOMAIN;
 const WS_PATH = process.env.WS_PATH || "/ws";
 const ATTEMPTS = Math.max(1, Number(process.argv[2]) || 20);
 

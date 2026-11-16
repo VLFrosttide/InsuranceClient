@@ -91,6 +91,94 @@ The single most useful comparison is: **a client report whose path never
 appears in the server's recent requests was blocked before the application**
 (the request id then belongs to the CDN, not to Express).
 
+## Findings from the 2026-11-16 export (`client-diagnostics-2026-11-16T19-40-25-569Z.json`)
+
+33 reports, 3 clients: 16 `403`, 4 `recovery`, 12 `websocket-error`, 2 `network-error`
+(client-side aborts of `/branches` after 8 s and `/ping` after 12 s, not server faults).
+
+**The 403s are produced by the Hostinger CDN, not by InsuranceServer.** Every one of
+them carries:
+
+* `server: hcdn`, `content-type: text/html`, body = LiteSpeed's
+  `<h1>403</h1><h2>Forbidden</h2><p>Access to this resource on the server is denied!</p>`
+  page (787 bytes), request id `x-hcdn-request-id: …-fra-edge7|8`;
+* **no** `x-powered-by: Express`, `platform: hostinger` or `panel: hpanel` — all three
+  are present on every Express answer, including Express' own 404s (verified live
+  against `/nope-not-a-route`), and `x-hcdn-cache-status`/`x-hcdn-upstream-rt` appear
+  on every 200. So the request never reached the Node process;
+* the server's own ring buffer for the same hour holds 120 requests and **zero 403s**;
+  none of the failing `/ping`, `/branches`, `/logme` calls appear in it.
+
+All 16 come from **one public IP, 130.204.76.194** (branch PC `DESKTOP-SU92BUV`,
+user `DARIAANGELOVA`, proxy DIRECT, genuine `*.hostingersite.com` Let's Encrypt cert,
+so no antivirus/proxy interception). Requests are refused in episodes of 10–65 s that
+start roughly every five minutes (19:01, 19:05, 19:06, 19:11, 19:15, 19:21, 19:22 UTC),
+and identical requests succeed seconds later:
+
+| failure | recovery |
+| --- | --- |
+| `GET /ping` 403 at 19:06:23 | `GET /ping` 200 at 19:06:37 |
+| `POST /logme` 403 at 19:05:34 | `POST /logme` 200 at 19:06:44 |
+| `GET /ping` 403 at 19:11:45 | `GET /ping` 200 at 19:12:00 |
+| `GET /ping` 403 at 19:15:01 (repeatCount 27) | `GET /ping` 200 at 19:20:16 |
+
+Reproduced live on 2026-11-16 from another IP: 150 requests in 15 s, HTTP/1.1 and
+HTTP/2, with `Origin: null`, `Origin: file://`, `Content-Type: application/json` on
+GET, `Authorization: Bearer …` and the app's exact User-Agent, plus CORS preflights —
+all `200`/`204` from Express (edges 6–10). So the block is **not** volume-, header-,
+protocol- or auth-based; it is a per-source-IP CDN decision.
+
+At the time of this report the API host was `lavender-quail-935384.hostingersite.com`
+(the client now targets `bulsig.online`; the host is set in `config.js`).
+That Hostinger preview hostname is a CNAME to
+**`free.cdn.hstgr.net`**, i.e.
+the whole API and WebSocket live behind Hostinger's CDN, whose default security level
+is *Medium* (challenges visitors by threat score) and which has IP/country traffic
+blocking. Hostinger documents exactly this case in *Hostinger CDN: How to fix blocked
+legitimate requests*: lower the security level, review Traffic blocking, test with the
+CDN disabled, and if it still happens send support the URL, method,
+`x-hcdn-request-id`, timestamp and client IP so the triggered rule can be excepted.
+
+### Fix (hosting side, no client release needed)
+
+1. hPanel → Websites → *Manage site* → **Performance → CDN**: set the Security level
+   to *Essentially off*/*Low* (Business plan or higher; if the plan has no level
+   control, go to step 2), and review **Traffic blocking** for country/IP rules that
+   cover Bulgaria or 130.204.76.194 (branch NAT).
+2. Preferred for this workload: **disable the CDN for the API hostname**
+   (`bulsig.online`) - or point the
+   client at a hostname that is not behind it. A desktop client's authenticated JSON
+   API and `wss://` upgrade gain nothing from the free CDN, and it is the layer that
+   both answers 403 and interferes with the `Upgrade`.
+3. If the CDN must stay, open a ticket with the 16 request ids below and ask for an
+   exception for this endpoint/IP.
+
+```
+19:01:33.081 GET  /branches  e63a0d390662686198723c0131d854ca-fra-edge8
+19:01:33.083 GET  /ping      f4e7b3a0955b7beb7ed41cfe5de34db3-fra-edge8
+19:01:57.624 POST /logme     bfe828f660b16391a3696215df949577-fra-edge8
+19:05:19.361 GET  /branches  659b2a07a2dd949dbe3a3e934322ef56-fra-edge7
+19:05:19.363 GET  /ping      a2c4c67c9bde9904b9e824f3f6163844-fra-edge7
+19:05:34.333 POST /logme     a4c507aa0531657be50e9ab44a3dbc3e-fra-edge7
+19:06:23.417 GET  /ping      3635ebd9dbda5c6f3c971a086144a6dc-fra-edge7
+19:06:23.434 GET  /branches  39d27563e27ee7e4f60d94b3d417d535-fra-edge7
+19:11:45.618 GET  /ping      a50e263836a72b43a21d4cf837d63bbb-fra-edge7
+19:11:45.623 GET  /branches  98295014c70fdbc7b7cf5c29e00b9fcc-fra-edge7
+19:11:55.896 POST /logme     fa04825cbca9fdfdb7a59ff472e4fb1e-fra-edge7
+19:15:01.215 GET  /ping      ca15b312bdd1028faff8eaf91ae2b32f-fra-edge8
+19:15:01.217 GET  /branches  6c4a5ade44ad6fed2b54eb7e0ca9db13-fra-edge8
+19:15:17.610 POST /logme     44560548643bf0a5ff8dcc02ccf8157f-fra-edge8
+19:21:22.146 POST /logme     3d2d72797f1e9dd5a62070b8bf4e0612-fra-edge8
+19:22:23.839 GET  /branches  9686e4ed3714be7acde319f61a764b3a-fra-edge7
+```
+
+### Known gap in the export
+
+The 12 `websocket-error` reports say only `handshake failed (attempt n)`; the
+`WsHandshakeProbe` result (status + `Location` + `server` + request id) exists only in
+the console/log. Until it is stored in the report, a WebSocket incident cannot be
+attributed (CDN challenge vs 307 vs client-side proxy) from an export.
+
 ## Database
 
 `db/setup.js` creates `client_diagnostics` on every start (`CREATE TABLE IF NOT
