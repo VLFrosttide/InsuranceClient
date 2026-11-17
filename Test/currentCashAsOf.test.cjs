@@ -98,7 +98,9 @@ function makeDb() {
 
     // Cash movements after the cutoff.
     if (
-      s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase'") &&
+      s.startsWith(
+        "SELECT Currency, ROUND(SUM(CASE WHEN Type IN ('increase', 'handover_return')"
+      ) &&
       s.includes("FROM cash_transactions")
     ) {
       const b = p[0];
@@ -109,7 +111,9 @@ function makeDb() {
         if (row.CreatedAt < cut) continue;
         totals[row.Currency] =
           (totals[row.Currency] || 0) +
-          (row.Type === "increase" ? row.Amount : -row.Amount);
+          (row.Type === "increase" || row.Type === "handover_return"
+            ? row.Amount
+            : -row.Amount);
       }
       return [
         Object.entries(totals).map(([Currency, Net]) => ({

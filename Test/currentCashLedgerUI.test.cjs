@@ -70,8 +70,31 @@ function eq(actual, expected, msg) {
   if (a !== b)
     throw new Error((msg || "values differ") + ` (got ${a}, want ${b})`);
 }
+function ok(value, msg) {
+  if (!value) throw new Error(msg || "expected a truthy value");
+}
 
 console.log("Insurance — Current cash ledger row colouring");
+
+// --- the admin-only cash controls ------------------------------------------
+check("admins are not offered End shift", () => {
+  ok(
+    /if \(!isAdmin\) \{\s*actions\.appendChild\(resetBtn\);/.test(src),
+    "End shift is appended for workers only"
+  );
+});
+
+check("hand-over statistics and the undo list are admin-only", () => {
+  const gates = src.match(/if \(isAdmin && data\.handoverStats\)/g) || [];
+  ok(
+    gates.length >= 2,
+    "the statistics card and the handed-over list are gated by isAdmin"
+  );
+  ok(
+    src.includes("/currentcash/handover/${handover.id}/undo"),
+    "the undo action calls the hand-over return endpoint"
+  );
+});
 
 // --- movement tints ---------------------------------------------------------
 check("an ordinary increase is green only", () => {
@@ -186,6 +209,19 @@ check("a hand-over has its own amber tint, not the expense red", () => {
 
 check("an unknown movement type gets no tint", () => {
   eq(movementRowClass("something", 500, "EUR"), "", "unknown type");
+});
+
+check("money returned from a hand-over is green, like an increase", () => {
+  eq(
+    movementRowClass("handover_return", 20, "EUR"),
+    "row-increase",
+    "20 returned"
+  );
+  eq(
+    movementRowClass("handover_return", 150, "EUR"),
+    "row-increase row-large-increase",
+    "150 returned is big"
+  );
 });
 
 // --- reason tints -----------------------------------------------------------

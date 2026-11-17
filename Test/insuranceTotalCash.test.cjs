@@ -411,7 +411,7 @@ async function query(sql, params = []) {
   //                        reduce -, hand-over ignored - see the Hand over note
   //                        in Requests/CurrentCash.js).
   const walkBackSql = s.startsWith(
-    "SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount ELSE -Amount END), 2) AS Net"
+    "SELECT Currency, ROUND(SUM(CASE WHEN Type IN ('increase', 'handover_return') THEN Amount ELSE -Amount END), 2) AS Net"
   );
   const dailyNetSql = s.startsWith(
     "SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount WHEN Type = 'reduce' THEN -Amount ELSE 0 END), 2) AS Net"
@@ -428,11 +428,18 @@ async function query(sql, params = []) {
       if (scoped && r.Branch !== p[0]) continue;
       if (r.CreatedAt < from || r.CreatedAt >= to) continue;
       let signed;
-      if (r.Type === "increase") signed = Number(r.Amount);
-      else if (r.Type === "handover") {
+      if (dailyNetSql) {
+        // Total daily cash: increase +, reduce -, every other type 0 (so a
+        // hand-over and its return never change what the day earned/spent).
+        if (r.Type === "increase") signed = Number(r.Amount);
+        else if (r.Type === "reduce") signed = -Number(r.Amount);
+        else continue;
+      } else if (r.Type === "increase" || r.Type === "handover_return") {
+        // The walk-back counts a returned hand-over as money in.
+        signed = Number(r.Amount);
+      } else if (r.Type === "handover") {
         // A hand-over is not a sale and not an expense: it is left out of Total
         // daily cash, but it did leave the drawer, so the walk-back counts it.
-        if (dailyNetSql) continue;
         signed = -Number(r.Amount);
       } else signed = -Number(r.Amount);
       totals[r.Currency] = round((totals[r.Currency] || 0) + signed);

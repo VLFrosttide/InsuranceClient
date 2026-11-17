@@ -395,7 +395,7 @@ const txRow = (over = {}) => ({
         if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
           return [[]];
         }
-        if (s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase'")) {
+        if (s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type IN ('increase', 'handover_return')")) {
           ok(s.includes("Deleted = 0"), "the movements query skips deleted rows");
           return [[]];
         }

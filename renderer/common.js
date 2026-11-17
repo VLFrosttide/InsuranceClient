@@ -306,6 +306,46 @@ const I18N = {
     cashHandedOver: "Cash handed over",
     recordExpense: "Record an expense",
     handOverCash: "Hand over cash",
+    handoverStats: "Hand over statistics",
+    handoverStatsHint:
+      "Money handed to a person and not yet back in a drawer or the company bank. The figures cover every branch and every broker; the list below names the branch of each hand-over.",
+    handoverGroupHandedOver: "Handed over",
+    handoverGroupReturns: "Returns and undos",
+    handoverGroupOutstanding: "Still handed over",
+    handedOverFromDrawer: "From office drawer",
+    handedOverFromDrawerHint:
+      "Cash hand-overs recorded with the Hand over button (money physically given to a person).",
+    handedOverFromBrokerBalance: "From broker balance",
+    handedOverFromBrokerBalanceHint:
+      "Broker hand-overs recorded in a broker's balance history (the broker paid the owner directly).",
+    returnedToDrawer: "Returned to office drawer",
+    returnedToDrawerHint:
+      "Undone hand-overs whose money was put back into a branch's available cash.",
+    returnedToBank: "Returned to company bank account",
+    returnedToBankHint:
+      "Undone hand-overs sent straight to the company bank; no drawer was touched.",
+    handoverUndone: "Undone hand-overs",
+    handoverUndoneHint:
+      "Hand-over entries deleted from their ledger (cash and broker balance). Their money was already reversed.",
+    handoverCashOutstanding: "Cash still handed over",
+    handoverCashOutstandingHint:
+      "Live cash hand-overs minus the amounts already returned to a drawer or the bank.",
+    handoverBalanceOutstanding: "Broker balance still handed over",
+    handoverBalanceOutstandingHint:
+      "Live broker hand-overs. They are undone from the broker's balance history.",
+    handedOverCashSection: "Handed over cash",
+    handoverReturn: "Returned hand over",
+    handoverReturnedAmount: "Returned",
+    handoverRemaining: "Remaining",
+    undoHandover: "Undo hand over",
+    undoHandoverTitle: "Undo hand over #{i}",
+    undoHandoverDestination: "Where the money goes",
+    undoHandoverDrawer: "Office drawer (increases available cash)",
+    undoHandoverBank: "Company bank account (no drawer change)",
+    undoHandoverReason: "Note (optional)",
+    undoHandoverSubmit: "Return money",
+    handoverReturnedToDrawer: "Returned to the office drawer",
+    handoverReturnedToBank: "Returned to the company bank account",
     expenseRecorded: "Expense recorded",
     currentCashReset: "Current cash, card balance and cash from brokers reset",
     transactionUpdated: "Transaction updated",
@@ -760,6 +800,18 @@ const I18N = {
     "err.partInvalid": "Part must be 'CardPart' or 'BrokerPart'",
     "err.reasonRequired": "Reason is required",
     "err.recipientRequired": "Enter who received the money",
+    "err.handoverReturnTooMuch":
+      "The amount is more than what is still handed over",
+    "err.handoverAlreadyReturned":
+      "This hand-over has already been fully returned",
+    "err.handoverHasReturns":
+      "A hand-over that has been (partly) returned cannot be deleted; undo the remaining amount instead",
+    "err.handoverReturnLocked":
+      "A hand-over return cannot be edited or deleted",
+    "err.notHandover": "This entry is not a cash hand-over",
+    "err.handoverDeleted": "A deleted hand-over cannot be returned",
+    "err.amountBelowReturned": "The amount is below what was already returned",
+    "err.destinationInvalid": "Destination must be 'drawer' or 'bank'",
     "err.handoverTypeFixed":
       "A hand-over cannot be changed into an increase or an expense (or the other way round); delete the entry and record the right one instead",
     "err.sourceInvalid": "Source must be 'Card' or 'Broker'",
@@ -1046,6 +1098,46 @@ const I18N = {
     cashHandedOver: "Парите са предадени",
     recordExpense: "Записване на разход",
     handOverCash: "Предаване на пари",
+    handoverStats: "Статистика на предаванията",
+    handoverStatsHint:
+      "Пари, предадени на човек и още невърнати в каса или във фирмената банкова сметка. Стойностите обхващат всички клонове и всички брокери; списъкът по-долу показва клона на всяко предаване.",
+    handoverGroupHandedOver: "Предадено",
+    handoverGroupReturns: "Връщания и отмени",
+    handoverGroupOutstanding: "Все още предадено",
+    handedOverFromDrawer: "От офис касата",
+    handedOverFromDrawerHint:
+      "Предавания в брой, записани с бутона „Предай пари“ (пари, физически дадени на човек).",
+    handedOverFromBrokerBalance: "От баланс на брокер",
+    handedOverFromBrokerBalanceHint:
+      "Предавания, записани в историята на брокерски баланс (брокерът е платил директно на собственика).",
+    returnedToDrawer: "Върнато в офис касата",
+    returnedToDrawerHint:
+      "Отменени предавания, чиито пари са върнати в наличния кеш на клона.",
+    returnedToBank: "Върнато във фирмената банкова сметка",
+    returnedToBankHint:
+      "Отменени предавания, изпратени директно във фирмената банка; не е пипана каса.",
+    handoverUndone: "Отменени предавания",
+    handoverUndoneHint:
+      "Изтрити записи за предаване от съответния регистър (кеш и брокерски баланс). Парите им вече са сторнирани.",
+    handoverCashOutstanding: "Кеш, който все още е предаден",
+    handoverCashOutstandingHint:
+      "Активни предавания в брой минус сумите, вече върнати в каса или в банката.",
+    handoverBalanceOutstanding: "Брокерски баланс, който все още е предаден",
+    handoverBalanceOutstandingHint:
+      "Активни брокерски предавания. Отменят се от историята на брокерския баланс.",
+    handedOverCashSection: "Предадени пари в брой",
+    handoverReturn: "Връщане на предаване",
+    handoverReturnedAmount: "Върнато",
+    handoverRemaining: "Остава",
+    undoHandover: "Отмени предаване",
+    undoHandoverTitle: "Отмяна на предаване #{i}",
+    undoHandoverDestination: "Къде отиват парите",
+    undoHandoverDrawer: "Офис каса (увеличава наличния кеш)",
+    undoHandoverBank: "Фирмена банкова сметка (без промяна в касата)",
+    undoHandoverReason: "Бележка (по избор)",
+    undoHandoverSubmit: "Върни парите",
+    handoverReturnedToDrawer: "Върнато в офис касата",
+    handoverReturnedToBank: "Върнато във фирмената банкова сметка",
     expenseRecorded: "Разходът е записан",
     currentCashReset:
       "Наличният кеш, балансът на картата и кешът от брокери бяха нулирани",
@@ -1506,6 +1598,18 @@ const I18N = {
     "err.partInvalid": "Частта трябва да е 'CardPart' или 'BrokerPart'",
     "err.reasonRequired": "Причината е задължителна",
     "err.recipientRequired": "Въведете кой получи парите",
+    "err.handoverReturnTooMuch":
+      "Сумата е повече от това, което все още е предадено",
+    "err.handoverAlreadyReturned":
+      "Това предаване вече е върнато изцяло",
+    "err.handoverHasReturns":
+      "Предаване, което е частично или изцяло върнато, не може да се изтрие; отменете оставащата сума",
+    "err.handoverReturnLocked":
+      "Връщането на предаване не може да се редактира или изтрива",
+    "err.notHandover": "Този запис не е предаване на пари в брой",
+    "err.handoverDeleted": "Изтрито предаване не може да бъде върнато",
+    "err.amountBelowReturned": "Сумата е под вече върнатата",
+    "err.destinationInvalid": "Дестинацията трябва да е 'drawer' или 'bank'",
     "err.handoverTypeFixed":
       "Предаването на пари не може да се превърне в увеличение или разход (или обратното); изтрийте записа и въведете правилния",
     "err.movementNotFound": "Движението не е намерено",
@@ -1659,6 +1763,14 @@ const SERVER_ERROR_TRANSLATIONS = {
   "part must be 'CardPart' or 'BrokerPart'": "err.partInvalid",
   "reason is required": "err.reasonRequired",
   "recipient is required": "err.recipientRequired",
+  "destination must be 'drawer' or 'bank'": "err.destinationInvalid",
+  "amount exceeds the money still handed over": "err.handoverReturnTooMuch",
+  "the hand-over has already been fully returned": "err.handoverAlreadyReturned",
+  "a hand-over with returns cannot be deleted": "err.handoverHasReturns",
+  "a hand-over return cannot be edited or deleted": "err.handoverReturnLocked",
+  "transaction is not a hand-over": "err.notHandover",
+  "a deleted hand-over cannot be returned": "err.handoverDeleted",
+  "amount is below what was already returned": "err.amountBelowReturned",
   "a hand-over cannot be changed into an increase or an expense, or the other way round":
     "err.handoverTypeFixed",
   "source must be 'Card' or 'Broker'": "err.sourceInvalid",
@@ -2167,12 +2279,11 @@ function fmt(text, vars) {
 // ---------------------------------------------------------------------------
 // End-of-shift reminder (5 minutes before local midnight)
 //
-// Current cash is not reset automatically: a worker (or an admin) must press
-// "End shift" so the branch's drawer, card balance and cash from brokers are
-// zeroed and the day's report closes. A worker who forgets leaves last night's
-// money sitting in today's balances. This reminder runs on every authenticated
-// page (dashboard, insurance form) and stays on screen until it is acted on or
-// dismissed, with a live countdown to midnight.
+// Current cash is not reset automatically: a WORKER must press "End shift" so
+// the branch's drawer, card balance and cash from brokers are zeroed and the
+// day's report closes. A worker who forgets leaves last night's money sitting
+// in today's balances. Admins do not have shifts (and no End shift button), so
+// the reminder is not shown to them.
 //
 // `shiftReminder.js` provides the pure timing helpers; the banner itself lives
 // here so every page gets it from one place.
@@ -2185,10 +2296,10 @@ let shiftReminderTick = null;
 let shiftReminderNode = null;
 
 function shiftReminderEligible() {
-  const role = getRole();
-  if (role !== "1" && role !== "2") return false;
-  // A stale role left on the login page (after a crash, say) must not show a
-  // shift reminder over the sign-in form.
+  // Workers only: an admin has no shift to finish. A stale role left on the
+  // login page (after a crash, say) must not show a shift reminder over the
+  // sign-in form either.
+  if (getRole() !== "2") return false;
   return typeof getToken === "function" ? Boolean(getToken()) : true;
 }
 

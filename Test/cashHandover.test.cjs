@@ -128,6 +128,15 @@ function makeDb({ cash = 100, rows = [] } = {}) {
     if (s.startsWith("SELECT * FROM cash_transactions WHERE id = ?")) {
       return [txRows.filter((r) => Number(r.id) === Number(p[0]))];
     }
+    // A hand-over may already have been (partly) returned; this test starts
+    // every row with no returns, so correcting/deleting it is still allowed.
+    if (
+      s.startsWith(
+        "SELECT COALESCE(SUM(Amount), 0) AS Returned FROM cash_handover_returns"
+      )
+    ) {
+      return [[{ Returned: 0 }]];
+    }
     if (s.startsWith("UPDATE cash_transactions SET Type = ?")) {
       // [Type, Amount, Currency, Reason, Recipient, id]
       const row = txRows.find((r) => Number(r.id) === Number(p[5]));

@@ -1395,6 +1395,11 @@ function movementRowClass(type, amount, currency) {
   if (kind === "handover") {
     return big ? "row-handover row-large-handover" : "row-handover";
   }
+  // Money coming back from a hand-over fills the drawer again, so it carries
+  // the same green hue as an increase.
+  if (kind === "handover_return") {
+    return big ? "row-increase row-large-increase" : "row-increase";
+  }
   return "";
 }
 
@@ -1426,14 +1431,16 @@ function amountCellClass(item) {
 }
 
 // The cash ledger's technical Type values, as the tables show them to a user:
-// "increase" -> Increase, "reduce" -> Expense, "handover" -> Hand over. An
-// unknown value is shown as it is, so a new type is never hidden. (Broker
-// movements have their own movementTypeLabel further down.)
+// "increase" -> Increase, "reduce" -> Expense, "handover" -> Hand over,
+// "handover_return" -> Returned hand over. An unknown value is shown as it is,
+// so a new type is never hidden. (Broker movements have their own
+// movementTypeLabel further down.)
 function cashTypeLabel(type) {
   const kind = String(type ?? "");
   if (kind === "increase") return t("increase");
   if (kind === "reduce") return t("expense");
   if (kind === "handover") return t("handOver");
+  if (kind === "handover_return") return t("handoverReturn");
   return kind;
 }
 
@@ -3455,6 +3462,7 @@ const cashTableSort = {
   brokerCash: { key: null, dir: "desc" },
   cardInsurances: { key: null, dir: "desc" },
   resets: { key: null, dir: "desc" },
+  handovers: { key: null, dir: "desc" },
 };
 
 // True when a per-currency balance object holds anything besides zero.
@@ -3472,6 +3480,21 @@ function cashRowsTotal(rows) {
   }
   total.EUR = Math.round(total.EUR * 100) / 100;
   total.TRY = Math.round(total.TRY * 100) / 100;
+  return total;
+}
+
+// Add two per-currency money objects (e.g. the undone cash and broker-balance
+// hand-overs) into one. Currencies the ledger supports are always present.
+function sumCashBalances(first, second) {
+  const total = { EUR: 0, TRY: 0 };
+  for (const currency of Object.keys(total)) {
+    total[currency] =
+      Math.round(
+        ((Number(first && first[currency]) || 0) +
+          (Number(second && second[currency]) || 0)) *
+          100
+      ) / 100;
+  }
   return total;
 }
 
@@ -3684,6 +3707,82 @@ async function currentCashView(overrideBranch, overrideDate) {
     row.appendChild(box);
     return row;
   };
+
+  // Hand-over statistics (admin only): how much money left the company because
+  // it was handed to a person - from a branch drawer or from a broker's balance
+  // - and how much of it has come back. The figures cover every branch and
+  // every broker, so they do not change with the branch selector above; the
+  // outstanding hand-overs are listed further down with their branch.
+  if (isAdmin && data.handoverStats) {
+    const stats = data.handoverStats;
+    const handoverCard = el("div", null, {
+      class: "balance-card handover-card",
+      title: t("handoverStatsHint"),
+    });
+    handoverCard.appendChild(el("h3", t("handoverStats")));
+
+    handoverCard.appendChild(dailyGroup(t("handoverGroupHandedOver")));
+    handoverCard.appendChild(
+      dailyStat(
+        t("handedOverFromDrawer"),
+        renderCashBalances(stats.cash && stats.cash.handedOver),
+        t("handedOverFromDrawerHint")
+      )
+    );
+    handoverCard.appendChild(
+      dailyStat(
+        t("handedOverFromBrokerBalance"),
+        renderCashBalances(stats.balance && stats.balance.handedOver),
+        t("handedOverFromBrokerBalanceHint")
+      )
+    );
+
+    handoverCard.appendChild(dailyGroup(t("handoverGroupReturns")));
+    handoverCard.appendChild(
+      dailyStat(
+        t("returnedToDrawer"),
+        renderCashBalances(stats.cash && stats.cash.returnedToDrawer),
+        t("returnedToDrawerHint")
+      )
+    );
+    handoverCard.appendChild(
+      dailyStat(
+        t("returnedToBank"),
+        renderCashBalances(stats.cash && stats.cash.returnedToBank),
+        t("returnedToBankHint")
+      )
+    );
+    handoverCard.appendChild(
+      dailyStat(
+        t("handoverUndone"),
+        renderCashBalances(
+          sumCashBalances(
+            stats.cash && stats.cash.undone,
+            stats.balance && stats.balance.undone
+          )
+        ),
+        t("handoverUndoneHint")
+      )
+    );
+
+    handoverCard.appendChild(dailyGroup(t("handoverGroupOutstanding")));
+    handoverCard.appendChild(
+      dailyStat(
+        t("handoverCashOutstanding"),
+        renderCashBalances(stats.cash && stats.cash.outstanding),
+        t("handoverCashOutstandingHint")
+      )
+    );
+    handoverCard.appendChild(
+      dailyStat(
+        t("handoverBalanceOutstanding"),
+        renderCashBalances(stats.balance && stats.balance.outstanding),
+        t("handoverBalanceOutstandingHint")
+      )
+    );
+    cardsRow.appendChild(handoverCard);
+  }
+
   // Drawers: the three places this branch's money can sit at the end of the
   // picked day. It was previously mixed into the Daily report card; keeping it
   // apart lets the report talk only about insurances.
@@ -3823,7 +3922,12 @@ async function currentCashView(overrideBranch, overrideDate) {
   actions.appendChild(incBtn);
   actions.appendChild(expenseBtn);
   actions.appendChild(handOverBtn);
-  actions.appendChild(resetBtn);
+  // Admins have no shifts: "End shift" closes a worker's day (it zeroes the
+  // branch's drawer, card balance and cash from brokers), so it is a worker
+  // action. An admin repairs a forgotten shift with the button below instead.
+  if (!isAdmin) {
+    actions.appendChild(resetBtn);
+  }
 
   // Admin-only repair for a shift that was never ended. The reset is recorded
   // at the chosen time, so the forgotten night's report is corrected while the
@@ -3987,6 +4091,55 @@ async function currentCashView(overrideBranch, overrideDate) {
     openModal(`${t("editTransaction")} #${tx.id}`, form);
   }
 
+  // Undo a hand-over: ask how much came back and where it went. "Office
+  // drawer" puts it back into available cash (a 'handover_return' ledger row);
+  // "Company bank account" touches no drawer and only lowers the handed-over
+  // total. The server refuses more than is still out.
+  function openUndoHandover(handover) {
+    const spec = [
+      {
+        key: "Amount",
+        label: t("amount"),
+        type: "number",
+        step: "0.01",
+        value: handover.Remaining,
+      },
+      {
+        key: "Destination",
+        label: t("undoHandoverDestination"),
+        type: "select",
+        options: [
+          { label: t("undoHandoverDrawer"), value: "drawer" },
+          { label: t("undoHandoverBank"), value: "bank" },
+        ],
+        value: "drawer",
+      },
+      { key: "Reason", label: t("undoHandoverReason"), value: "" },
+    ];
+    const form = buildForm(
+      spec,
+      async (payload) => {
+        payload.CreatedAt = localDateTimeNow();
+        payload.TzOffset = -new Date().getTimezoneOffset();
+        await api(`/currentcash/handover/${handover.id}/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        toast(
+          payload.Destination === "bank"
+            ? t("handoverReturnedToBank")
+            : t("handoverReturnedToDrawer"),
+          "success"
+        );
+        closeModal();
+        currentCashView(branch, date);
+      },
+      t("undoHandoverSubmit")
+    );
+    openModal(fmt(t("undoHandoverTitle"), { i: handover.id }), form);
+  }
+
   const txTable = sortableTable(
     data.transactions,
     [
@@ -4025,9 +4178,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     // The author can correct their own entry ("Edit"); an admin can delete any
     // entry. The delete is the row's "X" and only appears while the row is
     // hovered, so the ledger stays readable and a destructive click is never
-    // one stray click away.
+    // one stray click away. A hand-over RETURN is a locked bookkeeping row: it
+    // is undone through the hand-over itself (the Undo button), never edited or
+    // deleted here.
     (tx) => {
       const rowActions = [];
+      if (String(tx.Type || "") === "handover_return") return rowActions;
       if (String(tx.Username) === String(username)) {
         rowActions.push({
           label: t("edit"),
@@ -4053,6 +4209,65 @@ async function currentCashView(overrideBranch, overrideDate) {
     undefined,
     { sort: cashTableSort.transactions }
   );
+  // Handed-over cash that has not come back yet (admin only). It lists every
+  // outstanding hand-over - any branch, any day - because the day picker below
+  // would hide yesterday's ones and they still need an Undo. The statistics
+  // card above shows the company-wide totals; this is the list behind them.
+  let handoverSection = null;
+  if (isAdmin && data.handoverStats) {
+    const outstandingHandovers = (data.handoverStats.handovers || []).filter(
+      (h) => Number(h.Remaining) > 0
+    );
+    const handoversTable = sortableTable(
+      outstandingHandovers,
+      [
+        { key: "Branch", label: t("branch"), sortType: "text" },
+        { key: "Recipient", label: t("handedTo"), sortType: "text" },
+        {
+          key: "Amount",
+          label: t("amount"),
+          format: (v) => money(v),
+          cellClass: amountCellClass,
+          sortType: "number",
+        },
+        { key: "Currency", label: t("currency"), sortType: "text" },
+        {
+          key: "Returned",
+          label: t("handoverReturnedAmount"),
+          format: (v) => money(v),
+          sortType: "number",
+        },
+        {
+          key: "Remaining",
+          label: t("handoverRemaining"),
+          format: (v) => money(v),
+          sortType: "number",
+        },
+        { key: "Reason", label: t("reason"), sortType: "text" },
+        {
+          key: "CreatedAt",
+          label: t("created"),
+          format: (v) => formatDateTime(v),
+          sortType: "date",
+        },
+      ],
+      (h) => [
+        {
+          label: t("undoHandover"),
+          class: "danger",
+          onClick: () => openUndoHandover(h),
+        },
+      ],
+      (h) => cashLedgerRowClass("handover", h.Amount, h.Currency, h.Reason),
+      undefined,
+      { sort: cashTableSort.handovers }
+    );
+    handoverSection = collapsibleSection(
+      t("handedOverCashSection"),
+      outstandingHandovers.length,
+      [handoversTable]
+    );
+  }
   // Expenses: the money that LEFT this branch's drawer as a spend on the picked
   // day. The server lists only the manual reductions ("Expense" entries) - the
   // refunds of annulled or deleted insurances reduce the drawer as well, but
@@ -4314,6 +4529,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
+    ...(handoverSection ? [handoverSection] : []),
     dateRow,
     transactionsSection,
     expensesSection,
