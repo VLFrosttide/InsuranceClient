@@ -5,13 +5,13 @@
 //
 // The view builds a lot of DOM and talks to the API, so these checks pin the
 // pieces that are easy to lose in a refactor without running a browser:
-//   - the Broker ID filter exists, is sent as ?brokerCode and is matched
-//     locally while an older server ignores it;
+//   - there is no separate Broker ID input: a broker ID typed in the Broker
+//     field is matched locally as well, while an older server ignores it;
 //   - the Broker ID column is sortable (the sort list itself is tested in
 //     insuranceSort.test.cjs);
 //   - the search state (filters, rows, sort) is saved and restored across tab
 //     changes, and clearing the form forgets it;
-//   - the Author / Broker / Broker ID inputs use the suggestions endpoint;
+//   - the Author / Broker inputs use the suggestions endpoint;
 //   - a search shows a spinner while it runs, then says how many results came
 //     back, that none did, or that the result is unchanged, with a short
 //     result animation;
@@ -27,7 +27,9 @@ const WORKPAGE_JS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.js");
 const WORKPAGE_CSS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.css");
 const COMMON_JS = path.join(ROOT, "renderer", "common.js");
 
-const src = fs.readFileSync(WORKPAGE_JS, "utf8");
+// Normalised to LF so the multi-line checks below match on every checkout
+// (the renderer files are stored with CRLF).
+const src = fs.readFileSync(WORKPAGE_JS, "utf8").replace(/\r\n/g, "\n");
 const css = fs.readFileSync(WORKPAGE_CSS, "utf8");
 const common = fs.readFileSync(COMMON_JS, "utf8");
 
@@ -55,16 +57,18 @@ function eq(actual, expected, msg) {
 
 console.log("Insurance lookup — Broker ID, autocomplete and persisted search");
 
-check("the Broker ID filter is part of the search form", () => {
-  ok(src.includes('const brokerIdInput = input("text"'));
-  ok(src.includes('field(t("brokerIdFilter"), brokerIdInput)'));
+check("there is no separate Broker ID input anymore", () => {
+  ok(!src.includes('const brokerIdInput = input("text"'));
+  ok(!src.includes('field(t("brokerIdFilter"), brokerIdInput)'));
+  ok(src.includes('field(t("broker"), brokerInput)'), "the Broker field stays");
+  ok(!src.includes('params.set("brokerCode"'), "no brokerCode request parameter");
 });
 
-check("the Broker ID filter is sent and matched locally", () => {
-  ok(src.includes('params.set("brokerCode", brokerCode)'));
+check("a broker ID typed in the Broker field is matched locally", () => {
+  ok(src.includes("function brokerCodeMatchesQuery(code, query) {"));
   ok(
-    src.includes("String(r.BrokerCode") && src.includes(".includes(wanted)"),
-    "the older-server fallback filters the fetched rows by BrokerCode"
+    src.includes("brokerCodeMatchesQuery(r.BrokerCode, broker)"),
+    "the older-server fallback matches the fetched rows by BrokerCode too"
   );
 });
 
@@ -97,12 +101,12 @@ check("typing alone keeps the filters for the next visit", () => {
   ok(src.includes('annulledInput.addEventListener("change", rememberSearch)'));
 });
 
-check("Author / Broker / Broker ID have autocomplete", () => {
+check("Author / Broker have autocomplete", () => {
   ok(src.includes("function attachAutocomplete("), "visible dropdown helper");
   eq(
     (src.match(/attachAutocomplete\(/g) || []).length,
-    4,
-    "one definition + three fields"
+    3,
+    "one definition + two fields"
   );
   ok(src.includes('inputNode.addEventListener("focus", open)'));
   ok(src.includes("loadInsuranceFilterSuggestions"));
@@ -157,6 +161,62 @@ check("the new labels exist in both languages", () => {
   ]) {
     eq(
       (common.match(new RegExp(`\\b${key}:`, "g")) || []).length,
+      2,
+      `${key} in EN and BG`
+    );
+  }
+});
+
+check("the table shows the policy's duration next to the numbers", () => {
+  ok(
+    src.includes('key: "Duration",\n            label: t("add.duration"),'),
+    "Duration column with the shared label"
+  );
+  ok(
+    src.includes("format: (v) => insuranceDurationLabel(v),"),
+    "same 15D / 1M / 3M shorthand as the Excel export"
+  );
+  ok(
+    src.includes('...sortHeader("Duration"),'),
+    "the Duration header sorts the list"
+  );
+});
+
+check("edit / annul only appear while a row is hovered", () => {
+  ok(
+    src.includes("{ revealActions: true }"),
+    "the insurance table reveals its action buttons on hover"
+  );
+  ok(
+    src.includes("openInsuranceEditorFor(i, () => runSearch())"),
+    "the edit button opens the editor through the lookup-refreshing helper"
+  );
+});
+
+check("admins can change the author and the broker of a policy", () => {
+  ok(src.includes('key: "Author",\n      label: t("author"),'), "author field");
+  ok(
+    src.includes('key: "BrokerId",\n      label: t("broker"),'),
+    "broker field"
+  );
+  ok(
+    src.includes("function loadInsuranceEditLookups()") &&
+      src.includes('api("/admin/users")'),
+    "the author list comes from the accounts"
+  );
+  ok(
+    src.includes("function editBrokerOptions(insurance)"),
+    "the broker dropdown is built from the brokers list"
+  );
+  for (const key of [
+    "onlyAdminAuthor",
+    "onlyAdminBroker",
+    "brokerChangeAnnulled",
+    "authorRequired",
+    "authorNotFound",
+  ]) {
+    eq(
+      (common.match(new RegExp(`"err.${key}":`, "g")) || []).length,
       2,
       `${key} in EN and BG`
     );

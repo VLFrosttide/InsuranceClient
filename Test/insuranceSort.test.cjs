@@ -108,6 +108,7 @@ check("every requested column is sortable", () => {
     "Author",
     "Annulled",
     "PaymentType",
+    "Duration",
   ]);
 });
 
@@ -143,6 +144,18 @@ check("payment type groups Card / Cash", () => {
 check("author sorts alphabetically and case-insensitively", () => {
   eq(sorted("Author", "asc"), ["B2", "B5", "B6", "B4", "B1", "B3"]);
   eq(sorted("Author", "desc"), ["B1", "B3", "B4", "B6", "B2", "B5"]);
+});
+
+check("duration sorts numerically (15 < 30 < 90), blanks last", () => {
+  const durationRows = [
+    { BlancNumber: "D1", Duration: 90 },
+    { BlancNumber: "D2", Duration: null },
+    { BlancNumber: "D3", Duration: 15 },
+    { BlancNumber: "D4", Duration: "30" },
+  ];
+  // Lexicographic order would put "90" before "30" before "15".
+  eq(sorted("Duration", "asc", durationRows), ["D3", "D4", "D1", "D2"]);
+  eq(sorted("Duration", "desc", durationRows), ["D1", "D4", "D3", "D2"]);
 });
 
 check("blank broker (walk-in policy) stays last in both directions", () => {
@@ -198,6 +211,9 @@ check("cell values: numbers, timestamps, text and blanks", () => {
   eq(insuranceSortValue({ Annulled: 0 }, "Annulled"), 0);
   eq(insuranceSortValue({ Annulled: "1" }, "Annulled"), 1);
   eq(insuranceSortValue({ PaymentType: "Cash" }, "PaymentType"), "Cash");
+  eq(insuranceSortValue({ Duration: "30" }, "Duration"), 30);
+  eq(insuranceSortValue({ Duration: "" }, "Duration"), null);
+  eq(insuranceSortValue({ Duration: "abc" }, "Duration"), null);
   eq(insuranceSortValue({ Broker: "" }, "Broker"), null);
   eq(insuranceSortValue({ Broker: null }, "Broker"), null);
   eq(insuranceSortValue({}, "Broker"), null);

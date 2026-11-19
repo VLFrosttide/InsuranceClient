@@ -10,6 +10,11 @@
 // "Current cash" would silently drift away from the policies behind it every
 // time an old policy is corrected.
 //
+// The same file covers the admin-only corrections added on top of that: the
+// Author of a policy and its broker (BrokerId). A broker decides who pays, so
+// reassigning one refunds the previous broker, charges the new one and switches
+// the payment channel between current cash / the card balance and "Broker".
+//
 // Like insuranceSearchFilter.test.cjs, this loads the REAL server file
 // (InsuranceServer/Requests/TierEndpoints.js, see Test/serverPath.cjs) in a vm
 // with its requires stubbed, registers the routes on a fake router, and then
@@ -268,6 +273,10 @@ let row = null;
 // Blank numbers already used by OTHER policies, so changing a policy's blank
 // number to one of them is reported as a clash.
 let takenBlancs = [];
+// Accounts the author lookup accepts (soft-deleted ones are absent, exactly
+// like the real query) and the brokers the broker lookup can resolve.
+let knownUsers = ["admin1", "worker1", "worker2"];
+let knownBrokers = { 5: "Тест Брокер", 7: "Euroins" };
 
 const fakeDb = {
   query: async (sql, params) => {
@@ -277,6 +286,16 @@ const fakeDb = {
     if (flat.startsWith("SELECT BlancNumber FROM insurance")) {
       const wanted = String((params || [])[0]);
       return [takenBlancs.includes(wanted) ? [{ BlancNumber: wanted }] : []];
+    }
+
+    // Admin-only author / broker corrections (see the checks at the end).
+    if (flat.startsWith("SELECT Username FROM users")) {
+      const wanted = String((params || [])[0]);
+      return [knownUsers.includes(wanted) ? [{ Username: wanted }] : []];
+    }
+    if (flat.startsWith("SELECT id, Name FROM brokers")) {
+      const id = Number((params || [])[0]);
+      return [knownBrokers[id] ? [{ id, Name: knownBrokers[id] }] : []];
     }
 
     if (flat.startsWith("SELECT * FROM insurance")) {
@@ -1900,6 +1919,184 @@ async function patch(body, opts = {}) {
     eq(r.status, 400, "status");
     eq(r.body, { error: "Insurance is not annulled" }, "error");
     eq(r.movements, [], "no money moves");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin-only author / broker corrections
+  // ---------------------------------------------------------------------------
+  // The author is a plain column; the broker decides who pays for the policy,
+  // so moving a policy between brokers has to refund the old broker and charge
+  // the new one (and switch the payment channel of a walk-in).
+
+  await check("an admin can change the author of a policy", async () => {
+    const r = await patch({ Author: "worker2" });
+    eq(r.status, 200, "status");
+    eq(r.row.Author, "worker2", "stored author");
+    eq(r.movements, [], "no money moves");
+    eq(r.brokerDeltas, [], "no broker is touched");
+  });
+
+  await check("an unchanged author is never re-validated", async () => {
+    // The account behind an old policy may be gone; re-saving the policy must
+    // still work because nothing is being changed.
+    const previous = knownUsers;
+    knownUsers = ["admin1", "worker2"];
+    try {
+      const r = await patch({ Author: "worker1", PolicyNumber: "P-002" });
+      eq(r.status, 200, "status");
+      eq(r.row.PolicyNumber, "P-002", "the other field was saved");
+      eq(r.row.Author, "worker1", "the author is untouched");
+    } finally {
+      knownUsers = previous;
+    }
+  });
+
+  await check("an unknown author is rejected", async () => {
+    const r = await patch({ Author: "nobody" });
+    eq(r.status, 404, "status");
+    eq(r.body, { error: "Author not found" }, "error");
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("a worker cannot change the author or the broker", async () => {
+    const author = await patch({ Author: "worker2" }, { role: 2 });
+    eq(author.status, 403, "author status");
+    eq(
+      author.body,
+      { error: "Only admins can change the author of an insurance" },
+      "author error"
+    );
+    const broker = await patch({ BrokerId: 5 }, { role: 2 });
+    eq(broker.status, 403, "broker status");
+    eq(
+      broker.body,
+      { error: "Only admins can change the broker of an insurance" },
+      "broker error"
+    );
+    eq(broker.movements, [], "no money moves");
+  });
+
+  await check("assigning a broker turns the walk-in into a broker policy", async () => {
+    const r = await patch(
+      { BrokerId: 5, PaymentType: "Cash" },
+      { row: { BrokerId: null, Broker: "Офис Харманли", PaymentType: "Cash" } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.BrokerId, 5, "stored broker id");
+    eq(r.row.Broker, "Тест Брокер", "stored broker name");
+    eq(r.row.PaymentType, "Broker", "the broker is the payer now");
+    eq(
+      r.movements,
+      [
+        "cash reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "total/Broker increase 100 EUR @ Офис Харманли (1234567) by admin1",
+      ],
+      "the cash drawer is refunded and the Broker channel takes over"
+    );
+    eq(r.brokerDeltas, ["100 -> broker 5"], "the new broker is charged");
+  });
+
+  await check("moving a broker policy keeps the Broker channel and moves the balances", async () => {
+    const r = await patch(
+      { BrokerId: 5 },
+      { row: { BrokerId: 7, Broker: "Euroins", PaymentType: "Broker" } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.BrokerId, 5, "stored broker id");
+    eq(r.row.Broker, "Тест Брокер", "stored broker name");
+    eq(r.row.PaymentType, "Broker", "payment type unchanged");
+    eq(r.movements, [], "the channel and the amount did not change");
+    eq(
+      r.brokerDeltas,
+      ["-100 -> broker 7", "100 -> broker 5"],
+      "the old broker is refunded, the new one charged"
+    );
+  });
+
+  await check("clearing the broker turns the policy back into a walk-in", async () => {
+    const r = await patch(
+      { BrokerId: "" },
+      { row: { BrokerId: 7, Broker: "Euroins", PaymentType: "Broker" } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.BrokerId, null, "no broker id");
+    eq(r.row.Broker, "Офис Харманли", "the branch is the walk-in's broker");
+    eq(r.row.PaymentType, "Cash", "back in the cash drawer");
+    eq(
+      r.movements,
+      [
+        "total/Broker reduce 100 EUR @ Офис Харманли (Edit 1234567) by admin1",
+        "cash increase 100 EUR @ Офис Харманли (1234567) by admin1",
+      ],
+      "the Broker channel gives the money back to the drawer"
+    );
+    eq(r.brokerDeltas, ["-100 -> broker 7"], "the old broker is refunded");
+  });
+
+  await check("an unchanged broker never moves money", async () => {
+    const r = await patch(
+      { BrokerId: "7", PolicyNumber: "P-002" },
+      { row: { BrokerId: 7, Broker: "Euroins", PaymentType: "Broker" } }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.PolicyNumber, "P-002", "the other field was saved");
+    eq(r.movements, [], "no channel movement");
+    eq(r.brokerDeltas, [], "no broker movement");
+  });
+
+  await check("an unknown broker is rejected", async () => {
+    const r = await patch({ BrokerId: 999 });
+    eq(r.status, 404, "status");
+    eq(r.body, { error: "Broker not found" }, "error");
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("the broker of an annulled policy cannot be changed", async () => {
+    const r = await patch(
+      { BrokerId: 5 },
+      {
+        row: {
+          BrokerId: 7,
+          Broker: "Euroins",
+          PaymentType: "Broker",
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          Price: "9.00",
+          OriginalPrice: "100.00",
+        },
+      }
+    );
+    eq(r.status, 400, "status");
+    eq(
+      r.body,
+      { error: "Cannot change the broker of an annulled insurance" },
+      "error"
+    );
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("a non-Turk walk-in cannot become a broker policy while the tax is on", async () => {
+    const rejected = await patch(
+      { BrokerId: 5, NonTurk: true },
+      { row: { BrokerId: null, NonTurk: 1 } }
+    );
+    eq(rejected.status, 400, "status");
+    eq(
+      rejected.body,
+      { error: "The non-Turk tax only applies to walk-in policies" },
+      "error"
+    );
+    eq(rejected.brokerDeltas, [], "no broker is charged");
+
+    // Unticking it in the same save is the documented way to move the policy.
+    const accepted = await patch(
+      { BrokerId: 5, NonTurk: false },
+      { row: { BrokerId: null, NonTurk: 1 } }
+    );
+    eq(accepted.status, 200, "status");
+    eq(accepted.row.NonTurk, 0, "the tax flag is cleared");
+    eq(accepted.row.PaymentType, "Broker", "the broker pays");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

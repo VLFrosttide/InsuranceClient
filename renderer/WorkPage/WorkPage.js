@@ -1834,6 +1834,10 @@ function buildForm(spec, onSubmit, submitLabel) {
     } else control = input(s.type, s.value, s.placeholder);
     if (s.step !== undefined && s.step !== null) control.step = s.step;
     if (s.readonly) control.readOnly = true;
+    // A disabled control is shown but cannot be changed (e.g. the broker of an
+    // annulled policy, which the server refuses to move). buildForm still reads
+    // its value, so an unchanged field simply travels back as a no-op.
+    if (s.disabled) control.disabled = true;
     control.dataset.key = s.key;
     values[s.key] = control;
     form.appendChild(field(s.label, control));
@@ -2259,6 +2263,20 @@ function wireEditPriceRecalc(form, insurance) {
   const vehicleInput = control("Otomobil");
   if (!priceInput || !durationInput || !vehicleInput) return;
   const branchInput = control("Branch");
+  // The broker picked in the form (admins only: the field exists for them). A
+  // reassignment therefore recalculates from the NEW broker's tariffs instead
+  // of the stored one's.
+  const brokerInput = control("BrokerId");
+  const pricingRow = () =>
+    brokerInput
+      ? {
+          ...insurance,
+          BrokerId:
+            String(brokerInput.value ?? "").trim() === ""
+              ? null
+              : Number(brokerInput.value),
+        }
+      : insurance;
   // Non-Turk fee checkbox (only exists for walk-ins: email policies are
   // broker-paid and the non-Turk tax only applies to walk-ins).
   const nonTurkInput = control("NonTurk");
@@ -2332,7 +2350,7 @@ function wireEditPriceRecalc(form, insurance) {
     ).trim();
     let pricing;
     try {
-      pricing = await loadEditPricing(insurance, branch, cache);
+      pricing = await loadEditPricing(pricingRow(), branch, cache);
     } catch (err) {
       console.warn("Failed to load pricing for the edited policy:", err);
       if (request === latest) toast(t("edit.pricingLoadFailed"), "error");
@@ -2393,6 +2411,125 @@ function dateInputValue(value) {
     .match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[1]}-${m[2]}-${m[3]}` : "";
 }
+
+// ---------------------------------------------------------------------------
+// Admin-only author / broker dropdowns of the edit form
+// ---------------------------------------------------------------------------
+// Admins can correct who authored a policy and which broker it belongs to.
+// The two lists come from the server (the live staff accounts and the live
+// brokers) and are cached for the session; the lookup tab refreshes them just
+// before a row is opened, so only the first modal of a session waits for them.
+let insuranceEditAuthors = [];
+let insuranceEditBrokers = [];
+let insuranceEditLookupsLoaded = false;
+let insuranceEditLookupsRequest = null;
+
+// Fetch the accounts and brokers used by the admin-only fields. Failures are
+// thrown to the caller, which still opens the editor with the stored values;
+// concurrent calls share one request.
+function loadInsuranceEditLookups() {
+  if (insuranceEditLookupsRequest) return insuranceEditLookupsRequest;
+  insuranceEditLookupsRequest = (async () => {
+    const [users, brokers] = await Promise.all([
+      api("/admin/users"),
+      api("/brokers"),
+    ]);
+    insuranceEditAuthors = Array.from(
+      new Set(
+        ((users && users.users) || [])
+          .map((u) => String((u && u.Username) || "").trim())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    insuranceEditBrokers = ((brokers && brokers.brokers) || [])
+      .map((b) => ({
+        id: Number(b && b.id),
+        name: String((b && b.Name) || "").trim(),
+        code: String((b && b.Code) || "").trim(),
+      }))
+      .filter((b) => Number.isInteger(b.id) && b.id > 0 && b.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    insuranceEditLookupsLoaded = true;
+    return { authors: insuranceEditAuthors, brokers: insuranceEditBrokers };
+  })().finally(() => {
+    insuranceEditLookupsRequest = null;
+  });
+  return insuranceEditLookupsRequest;
+}
+
+// Options of the Author dropdown: every staff account, with the stored author
+// kept selectable even when that account is gone (an unchanged value is never
+// re-validated by the server, so opening the editor cannot silently reassign it).
+function editAuthorOptions(current) {
+  const stored = String(current ?? "").trim();
+  let names = insuranceEditAuthors.filter((n) => n !== stored);
+  // Before the lists arrive (or when they cannot be loaded) the signed-in admin
+  // is still a sensible choice, and an empty stored author keeps an empty option
+  // so the select never jumps to someone else.
+  if (!names.length && typeof username === "string" && username) {
+    names = [username];
+  }
+  return (stored ? [stored, ...names] : ["", ...names]).map((name) => ({
+    label: name,
+    value: name,
+  }));
+}
+
+// Selectable value of the Broker dropdown: the linked broker's id, or "" for a
+// walk-in (no broker).
+function editBrokerValue(insurance) {
+  const id = Number(insurance && insurance.BrokerId);
+  return Number.isInteger(id) && id > 0 ? String(id) : "";
+}
+
+// Options of the Broker dropdown. "" means "no broker": the policy is a
+// walk-in paid in cash or by card. A broker that is no longer in the list (e.g.
+// a soft-deleted one) stays selectable so the stored assignment is preserved.
+function editBrokerOptions(insurance) {
+  const currentId = Number(insurance && insurance.BrokerId);
+  const options = [{ label: t("addAdmin.brokerNone"), value: "" }];
+  const list = insuranceEditBrokers.slice();
+  if (
+    Number.isInteger(currentId) &&
+    currentId > 0 &&
+    !list.some((b) => b.id === currentId)
+  ) {
+    list.push({
+      id: currentId,
+      name: String((insurance && insurance.Broker) || currentId),
+      code: "",
+    });
+  }
+  for (const b of list) {
+    options.push({
+      label: b.code ? `${b.name} (${b.code})` : b.name,
+      value: String(b.id),
+    });
+  }
+  return options;
+}
+
+// Opens the editor, first making sure the admin-only dropdown data is loaded.
+// Only the first modal of a session waits for it; later ones open straight away
+// and refresh the cache in the background. A failed lookup still opens the
+// modal (with the stored values) instead of blocking the edit.
+async function openInsuranceEditorFor(insurance, onDone) {
+  if (userRole === "1") {
+    if (insuranceEditLookupsLoaded) {
+      loadInsuranceEditLookups().catch((err) => {
+        console.warn("Failed to refresh the insurance edit lookups:", err);
+      });
+    } else {
+      try {
+        await loadInsuranceEditLookups();
+      } catch (err) {
+        console.warn("Failed to load the insurance edit lookups:", err);
+      }
+    }
+  }
+  return openInsuranceEditor(insurance, onDone);
+}
+
 // `onDone` (optional) runs after a successful save so the calling view can
 // refresh itself — the same pattern openAnnulForm/deleteInsurance use. Editing
 // the price, the payment type, the branch or the currency also moves the money
@@ -2483,6 +2620,29 @@ function openInsuranceEditor(insurance, onDone) {
       value: dateInputValue(insurance.StartDate),
     },
   ];
+  // Admins may also correct who authored the policy and which broker it belongs
+  // to. Assigning a broker turns the policy into a broker-paid one (the server
+  // refunds the previous broker and charges the new one); "no broker" makes it a
+  // walk-in again, paid in cash or by card.
+  if (userRole === "1") {
+    spec.push({
+      key: "Author",
+      label: t("author"),
+      type: "select",
+      options: editAuthorOptions(insurance.Author),
+      value: String(insurance.Author ?? ""),
+    });
+    spec.push({
+      key: "BrokerId",
+      label: t("broker"),
+      type: "select",
+      options: editBrokerOptions(insurance),
+      value: editBrokerValue(insurance),
+      // An annulled policy was already refunded through its original broker, so
+      // the server refuses to move it; do not offer the change.
+      disabled: Boolean(Number(insurance.Annulled)),
+    });
+  }
   if (!isEmailPolicy) {
     spec.push({
       key: "PaymentType",
@@ -3648,6 +3808,12 @@ function openForgottenShiftFix(branch, defaultDate) {
 // stale branch, mixing up the daily report.
 let currentCashSeq = 0;
 
+// The day picked in the Current cash tab, kept outside the DOM. Switching nav
+// tabs throws the view away and rebuilds it on return, so without this the day
+// jumped back to today every time - the user had to re-pick it. Null means no
+// day has been picked yet, so the tab opens on today.
+let currentCashDate = null;
+
 // The currencies the drawer tracks. Every cash movement (including a hand-over)
 // records one of these; a new movement defaults to EUR, while TRY can be picked
 // explicitly and is deducted from the TRY balance.
@@ -3731,10 +3897,18 @@ async function currentCashView(overrideBranch, overrideDate) {
   const isAdmin = userRole === "1";
   let branch = overrideBranch || getBranch();
 
-  // The transaction/reset history is shown one day at a time, defaulting to
-  // today. Any day can be picked.
+  // The transaction/reset history is shown one day at a time. A day the caller
+  // asks for wins, then the day this tab was last left on; the first visit (and
+  // every visit after "today" was picked) opens on today.
   const now = new Date();
-  const date = overrideDate || localDateString(now);
+  const today = localDateString(now);
+  const date = overrideDate || currentCashDate || today;
+  if (overrideDate) {
+    // Remember a picked day so changing tabs and coming back keeps it. "Today"
+    // is deliberately not stored: that leaves the tab opening on the real today
+    // even when the app stays open past midnight.
+    currentCashDate = overrideDate === today ? null : overrideDate;
+  }
 
   let allBranchNames = [];
   if (isAdmin) {
@@ -5279,9 +5453,9 @@ function pagerControls(totalPages, page, onPage) {
   return wrap;
 }
 
-// The broker balance history "page": the broker's balance movements for the
-// last month, 40 per page, newest first, with a back button to the list. A
-// calendar picker scopes it to a single day.
+// The broker balance history "page": every balance movement of the broker,
+// newest first, with a back button to the list. It goes all the way back to the
+// broker's first movement, and a calendar picker scopes it to a single day.
 async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = false) {
   Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
@@ -5289,7 +5463,7 @@ async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = f
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
-      // Lets the server resolve the default "last 30 days" window in the
+      // Lets the server resolve the default upper bound ("now") in the
       // worker's local time, matching the client-stamped movement times.
       tzOffset: String(-new Date().getTimezoneOffset()),
     });
@@ -5314,14 +5488,21 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
 
   const heading = el("h2", `${t("brokerHistory")}: ${broker.Name}`);
   const range = `${formatDateTime(data.since)} – ${formatDateTime(data.until)}`;
+  // The balance of the scoped range's END (what the broker owed then), not the
+  // current balance: walking the date back has to change the figure instead of
+  // repeating today's balance on every day.
+  const balanceAtEnd =
+    data.balanceAtEnd === undefined || data.balanceAtEnd === null
+      ? data.broker.CashBalance
+      : data.balanceAtEnd;
   const summary = el(
     "p",
-    `${t("balance")}: ${money(data.broker.CashBalance)} · ${t("netChange")}: ${signedMoney(data.netChange)} · ${range}`,
-    { class: "muted" }
+    `${t("balance")}: ${money(balanceAtEnd)} · ${t("netChange")}: ${signedMoney(data.netChange)} · ${range}`,
+    { class: "muted", title: t("brokerHistoryBalanceHint") }
   );
 
   // Calendar picker scopes the history to a single day; clearing it falls back
-  // to the default last-month window.
+  // to the whole history.
   const dateInput = input("date", date || "");
 
   // Admins can also list the soft-deleted movements and restore them. The flag
@@ -5985,6 +6166,7 @@ const INSURANCE_SORT_KEYS = [
   "Author",
   "Annulled",
   "PaymentType",
+  "Duration",
 ];
 
 // Last search of each lookup tab (admins: "Insurances by date", workers:
@@ -6119,16 +6301,16 @@ function loadInsuranceFilterSuggestions() {
 // Unique id source for the visible autocomplete dropdowns.
 let suggestionListSeq = 0;
 
-// Comparable value of one cell: a number for price/status, a timestamp for the
-// creation date (parsed exactly like formatDateTime, so the order matches what
-// is displayed) and text for broker/author/payment type. Empty or unparsable
-// values become null and always sink to the bottom of the list.
+// Comparable value of one cell: a number for price/status/duration, a timestamp
+// for the creation date (parsed exactly like formatDateTime, so the order
+// matches what is displayed) and text for broker/author/payment type. Empty or
+// unparsable values become null and always sink to the bottom of the list.
 function insuranceSortValue(item, key) {
   const raw = item ? item[key] : null;
   if (raw === undefined || raw === null || String(raw).trim() === "") {
     return null;
   }
-  if (key === "Price" || key === "Annulled") {
+  if (key === "Price" || key === "Annulled" || key === "Duration") {
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   }
@@ -6248,6 +6430,21 @@ function brokerRowMatchesNameFilter(name, query) {
   const text = String(query === undefined || query === null ? "" : query).trim();
   if (!text) return true;
   return brokerNameMatches(name, text);
+}
+
+// The lookup's Broker field accepts the broker's ID ("2.1") as well, so the ID
+// shown next to a name in the suggestions can be typed directly. Codes are
+// compared as case-insensitive substrings, exactly like the server matches
+// them, and an empty query matches nothing (the name match already handled the
+// empty-filter case).
+function brokerCodeMatchesQuery(code, query) {
+  const text = String(query === undefined || query === null ? "" : query)
+    .trim()
+    .toLowerCase();
+  if (!text) return false;
+  return String(code === undefined || code === null ? "" : code)
+    .toLowerCase()
+    .includes(text);
 }
 
 // A small visible autocomplete dropdown for a text input. Native <datalist>
@@ -6400,18 +6597,19 @@ function applyBrokerNameFilterToRows(rows, query) {
 
 
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
-  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&brokerCode=&annulled=&payment=
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&annulled=&payment=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
   // only a car number is not silently narrowed to the current user's own
   // records. Workers reach this view through the "Insurances" tab, which also
   // leaves the author field empty so they can find and edit any policy.
-  // PolicyNumber/BlancNumber/CarNumber/Broker/BrokerCode match partially
-  // (substring) on the server, so a worker can search by a fragment of the
-  // number, a partially typed broker name ("Euro" finds the "Euroins"
-  // policies), or a broker ID ("2.1"). Author, Broker and Broker ID have
-  // autocomplete from the values already in the database.
+  // PolicyNumber/BlancNumber/CarNumber/Broker match partially (substring) on
+  // the server, so a worker can search by a fragment of the number or a partly
+  // typed broker name ("Euro" finds the "Euroins" policies). The broker field
+  // also accepts the broker's ID ("2.1"): the suggestions show it next to the
+  // name and the match covers it, so there is no separate ID input. Author and
+  // Broker have autocomplete from the values already in the database.
   // The result table also lists the broker, its ID and the author of every
   // policy and can be sorted by price, creation date, broker, broker ID, author,
   // status and payment type by clicking the column headers (see the sorting
@@ -6430,7 +6628,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
 
   const authorInput = input("text", initial("author", defaultAuthor));
   const brokerInput = input("text", initial("broker"));
-  const brokerIdInput = input("text", initial("brokerCode"));
   const dateInput = input("date", initial("date"));
   const policyNumberInput = input("text", initial("policyNumber"));
   const blancNumberInput = input("text", initial("blancNumber"));
@@ -6459,7 +6656,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   const form = el("div", null, { class: "row filter-row" });
   form.appendChild(field(t("author"), authorInput));
   form.appendChild(field(t("broker"), brokerInput));
-  form.appendChild(field(t("brokerIdFilter"), brokerIdInput));
   form.appendChild(field(t("date"), dateInput));
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
@@ -6500,28 +6696,13 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
         .toLowerCase()
         .includes(query.toLowerCase())
   );
-  const brokerCodeAutocomplete = attachAutocomplete(
-    brokerIdInput,
-    () =>
-      currentInsuranceSuggestions()
-        .brokers.filter((b) => b.Code)
-        .map((b) => ({ value: b.Code, hint: b.Name })),
-    (item, query) =>
-      !query ||
-      item.value.toLowerCase().includes(query.toLowerCase()) ||
-      String(item.hint || "")
-        .toLowerCase()
-        .includes(query.toLowerCase())
-  );
   function refreshAutocompletes() {
     authorAutocomplete.refresh();
     brokerAutocomplete.refresh();
-    brokerCodeAutocomplete.refresh();
   }
   function closeAutocompletes() {
     authorAutocomplete.close();
     brokerAutocomplete.close();
-    brokerCodeAutocomplete.close();
   }
   loadInsuranceFilterSuggestions().then(refreshAutocompletes);
   // Exports exactly what the table shows (same rows, same order, same row
@@ -6611,7 +6792,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     insuranceSearchStates.set(titleKey, {
       author: authorInput.value,
       broker: brokerInput.value,
-      brokerCode: brokerIdInput.value,
       date: dateInput.value,
       policyNumber: policyNumberInput.value,
       blancNumber: blancNumberInput.value,
@@ -6684,6 +6864,14 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
           { key: "BlancNumber", label: t("blankNo") },
           { key: "PolicyNumber", label: t("policyNumber") },
           { key: "CarNumber", label: t("carNumber") },
+          // The policy's term, in the same shift-log shorthand the Excel export
+          // uses (15D / 1M / 3M), so a row and its exported sheet always agree.
+          {
+            key: "Duration",
+            label: t("add.duration"),
+            format: (v) => insuranceDurationLabel(v),
+            ...sortHeader("Duration"),
+          },
           {
             key: "Price",
             label: t("price"),
@@ -6745,8 +6933,10 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
                   label: t("edit"),
                   class: "",
                   // Re-run the search after a save (like annul/delete do here) so
-                  // the corrected price/payment type is re-read from the server.
-                  onClick: () => openInsuranceEditor(i, () => runSearch()),
+                  // the corrected fields are re-read from the server. Admins get
+                  // the author / broker dropdowns, whose lists are refreshed
+                  // first (see openInsuranceEditorFor).
+                  onClick: () => openInsuranceEditorFor(i, () => runSearch()),
                 },
                 ...(!i.Annulled
                   ? [
@@ -6775,7 +6965,13 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
                     ]
                   : []),
               ],
-        (i) => (i.Deleted ? "row-deleted" : annulledRowClass(i))
+        (i) => (i.Deleted ? "row-deleted" : annulledRowClass(i)),
+        // Edit and Annul stay invisible until the row is hovered (or one of its
+        // buttons is reached with the keyboard), so a list that is read far more
+        // often than it is acted on stays calm - see .row-hover-actions in
+        // app.css. The delete "X" keeps its own, stricter hover-only rule.
+        null,
+        { revealActions: true }
       )
     );
     // The sum of the shown policies, right-aligned under the table and split
@@ -6809,7 +7005,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (searching) return;
     const author = authorInput.value.trim();
     const broker = brokerInput.value.trim();
-    const brokerCode = brokerIdInput.value.trim();
     const date = dateInput.value;
     const policyNumber = policyNumberInput.value.trim();
     const blancNumber = blancNumberInput.value.trim();
@@ -6820,7 +7015,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (
       !author &&
       !broker &&
-      !brokerCode &&
       !date &&
       !policyNumber &&
       !blancNumber &&
@@ -6844,7 +7038,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     const params = new URLSearchParams();
     if (author) params.set("author", author);
     if (broker) params.set("broker", broker);
-    if (brokerCode) params.set("brokerCode", brokerCode);
     if (date) params.set("date", date);
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
@@ -6868,25 +7061,17 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       // answer so it cannot bring the results back.
       if (requestId !== searchSeq) return;
       let rows = data.insurances || [];
-      // The server matches the broker name itself (script-insensitively). This
-      // extra pass only matters while the deployed server still predates the
-      // `broker` parameter, so the new field keeps working right after a client
-      // update; once the server filters too, every returned row already matches
-      // and the pass is a no-op. It uses the same transliteration-aware match.
+      // The server matches the broker name (and its ID) itself, script-
+      // insensitively. This extra pass only matters while the deployed server
+      // still predates that, so the Broker field keeps working right after a
+      // client update; once the server filters too, every returned row already
+      // matches and the pass is a no-op. It uses the same transliteration-aware
+      // name match and the same case-insensitive ID substring.
       if (broker) {
-        rows = rows.filter((r) => brokerNameMatches(r.Broker, broker));
-      }
-      // The broker ID is matched locally too so the field also works when it is
-      // combined with another criterion against an older server (a request that
-      // carries only brokerCode is accepted by the updated server, which treats
-      // it as a search criterion). The comparison is the same case-insensitive
-      // substring the server uses on the resolved code.
-      if (brokerCode) {
-        const wanted = brokerCode.toLowerCase();
-        rows = rows.filter((r) =>
-          String(r.BrokerCode ?? "")
-            .toLowerCase()
-            .includes(wanted)
+        rows = rows.filter(
+          (r) =>
+            brokerNameMatches(r.Broker, broker) ||
+            brokerCodeMatchesQuery(r.BrokerCode, broker)
         );
       }
       // The rows themselves are the best autocomplete source: every author and
@@ -6924,7 +7109,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   [
     authorInput,
     brokerInput,
-    brokerIdInput,
     dateInput,
     policyNumberInput,
     blancNumberInput,
@@ -6943,7 +7127,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   [
     authorInput,
     brokerInput,
-    brokerIdInput,
     dateInput,
     policyNumberInput,
     blancNumberInput,
@@ -6957,7 +7140,6 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   clearBtn.addEventListener("click", () => {
     authorInput.value = "";
     brokerInput.value = "";
-    brokerIdInput.value = "";
     dateInput.value = "";
     policyNumberInput.value = "";
     blancNumberInput.value = "";
@@ -8073,6 +8255,9 @@ function activateNav(load) {
 // it calls this hook directly instead of reloading the page.
 window.__openCurrentCash = function openCurrentCashFromReminder() {
   if (!activateNav(currentCashView)) return false;
+  // The reminder is about the shift that is running now, so open today even if
+  // the tab was last left on another day.
+  currentCashDate = null;
   runLoader(() => currentCashView());
   return true;
 };

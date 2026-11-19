@@ -147,8 +147,12 @@ vm.runInContext(
   CTX,
   { filename: "WorkPage.js#brokerNameFilter" }
 );
-const { brokerNameMatches, brokerRowMatchesNameFilter, brokerNameFilterHeader } =
-  CTX;
+const {
+  brokerNameMatches,
+  brokerRowMatchesNameFilter,
+  brokerCodeMatchesQuery,
+  brokerNameFilterHeader,
+} = CTX;
 const applyBrokerNameFilterToRows = CTX.applyBrokerNameFilterToRows;
 const state = CTX.__filterState;
 
@@ -204,6 +208,19 @@ check("a typed filter narrows the rows by name", () => {
   eq(brokerRowMatchesNameFilter("ГКПП Лесово", "lesovo"), true, "match");
   eq(brokerRowMatchesNameFilter("ГКПП Лесово", " harmanli "), false, "no match");
   eq(brokerRowMatchesNameFilter("", "a"), false, "empty name");
+});
+
+// The insurance lookup's Broker field accepts a typed broker ID too ("2.1"), so
+// the same block handles a row whose resolved owner code matches.
+check("a broker ID matches the Broker field", () => {
+  eq(brokerCodeMatchesQuery("2.1", "2.1"), true, "full ID");
+  eq(brokerCodeMatchesQuery("4.2", "4"), true, "partial ID");
+  eq(brokerCodeMatchesQuery("1.9", "1.9"), true, "email broker ID");
+  eq(brokerCodeMatchesQuery("2.1", "9"), false, "other ID");
+  eq(brokerCodeMatchesQuery("", "2.1"), false, "row without an ID");
+  eq(brokerCodeMatchesQuery(null, "2.1"), false, "null ID");
+  eq(brokerCodeMatchesQuery("2.1", "  "), false, "blank query");
+  eq(brokerCodeMatchesQuery("2.1", null), false, "null query");
 });
 
 // --- hiding and showing the rendered rows ------------------------------------

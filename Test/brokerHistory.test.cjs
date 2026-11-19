@@ -92,6 +92,31 @@ async function query(sql, params = []) {
   }
   if (
     s.startsWith(
+      "SELECT MIN(CreatedAt) AS FirstMovement FROM broker_balance_movements"
+    )
+  ) {
+    const rows = db.movements
+      .filter((m) => m.BrokerId === Number(p[0]) && m.Deleted !== 1)
+      .sort((a, b) =>
+        a.CreatedAt < b.CreatedAt ? -1 : a.CreatedAt > b.CreatedAt ? 1 : 0
+      );
+    return [[{ FirstMovement: rows.length ? rows[0].CreatedAt : null }]];
+  }
+  if (
+    s.startsWith(
+      "SELECT COALESCE(SUM(Amount), 0) AS net FROM broker_balance_movements WHERE BrokerId = ? AND CreatedAt >= ? AND Deleted = 0"
+    )
+  ) {
+    const rows = db.movements.filter(
+      (m) =>
+        m.BrokerId === Number(p[0]) && m.CreatedAt >= p[1] && m.Deleted !== 1
+    );
+    return [[
+      { net: rows.reduce((sum, m) => sum + Number(m.Amount), 0) },
+    ]];
+  }
+  if (
+    s.startsWith(
       "SELECT COUNT(*) AS total, COALESCE(SUM(Amount), 0) AS net FROM broker_balance_movements"
     )
   ) {
@@ -323,6 +348,7 @@ resetDb();
     eq(r.body.movements, [], "movements");
     eq(r.body.broker.Name, "Alpha", "broker name");
     eq(r.body.broker.CashBalance, 70, "broker balance");
+    eq(r.body.balanceAtEnd, 70, "the window ends with the current balance");
   });
 
   await check("movements are newest first with a correct running balance", async () => {
@@ -348,6 +374,7 @@ resetDb();
     eq(ms[2].BlancNumber, "100001", "policy carries its blanc number");
     eq(r.body.netChange, 70, "net change");
     eq(r.body.balanceAtStart, 0, "balance at window start");
+    eq(r.body.balanceAtEnd, 70, "balance at the window end");
   });
 
   await check("movements outside the requested window are ignored", async () => {
@@ -396,10 +423,12 @@ resetDb();
     eq(r.body.movements.length, 90, "all movements on one page");
   });
 
-  await check("default window is the last 30 days", async () => {
+  await check("default window covers the whole history", async () => {
     resetDb();
-    addMovement(1, 10, dt(new Date(Date.now() - 1000)));
-    addMovement(1, 99, dt(new Date(Date.now() - 40 * 86400000)));
+    const recent = dt(new Date(Date.now() - 1000));
+    const old = dt(new Date(Date.now() - 400 * 86400000));
+    addMovement(1, 10, recent);
+    addMovement(1, 99, old);
 
     const tzOffset = String(-new Date().getTimezoneOffset());
     const r = await call("get", "/brokers/:id/history", {
@@ -408,8 +437,53 @@ resetDb();
     });
     eq(r.status, 200, "status");
     ok(r.body.since && r.body.until, "window bounds returned");
-    eq(r.body.total, 1, "only the recent movement is inside the window");
+    eq(r.body.total, 2, "a movement from over a year back is inside the default window");
     eq(r.body.movements[0].Amount, 10, "recent movement returned");
+    eq(r.body.movements[1].Amount, 99, "oldest movement returned");
+    eq(r.body.since, old, "the window starts at the first movement");
+  });
+
+  await check("a past window shows the balance the broker had then", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-05 10:00:00", { Type: "policy" });
+    addMovement(1, 100, "2026-10-10 12:00:00", { Type: "increase" });
+    addMovement(1, -20, "2026-10-20 09:00:00", { Type: "policy" });
+    addMovement(1, 100, "2026-11-10 09:00:00", { Type: "increase" });
+    db.brokers[0].CashBalance = 170; // 70 after October + 100 in November.
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-10-01", until: "2026-10-16" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 2, "only the movements up to the window end");
+    eq(r.body.balanceAtEnd, 90, "balance at the end of the past window");
+    eq(r.body.balanceAtStart, 0, "balance before the past window");
+    eq(r.body.movements[0].BalanceAfter, 90, "running balance after the newest");
+    eq(r.body.movements[1].BalanceAfter, -10, "running balance after the oldest");
+    eq(r.body.broker.CashBalance, 170, "the current balance is untouched");
+  });
+
+  await check("walking the date back changes the displayed balance", async () => {
+    resetDb();
+    addMovement(1, 100, "2026-09-01 10:00:00", { Type: "increase" });
+    addMovement(1, -30, "2026-09-15 10:00:00", { Type: "policy" });
+    db.brokers[0].CashBalance = 70;
+
+    const firstDay = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-09-01", until: "2026-09-02" },
+    });
+    const laterDay = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-09-15", until: "2026-09-16" },
+    });
+    eq(firstDay.body.balanceAtEnd, 100, "balance after the first day");
+    eq(laterDay.body.balanceAtEnd, 70, "balance after the later day");
+    ok(
+      firstDay.body.balanceAtEnd !== laterDay.body.balanceAtEnd,
+      "each day keeps its own balance"
+    );
   });
 
   await check("history PATCH: invalid broker id is rejected", async () => {

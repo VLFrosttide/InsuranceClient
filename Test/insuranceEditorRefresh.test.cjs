@@ -197,6 +197,54 @@ function open(row, response, onDone) {
     eq(e.specValue("CurrencyType"), "EUR", "currency");
   });
 
+  await check("admins get the author and broker dropdowns, workers do not", async () => {
+    CTX.userRole = "1";
+    const e = open({
+      ...storedRow(),
+      Author: "worker1",
+      BrokerId: 7,
+      Broker: "Euroins",
+    });
+    const author = lastSpec.find((s) => s.key === "Author");
+    const broker = lastSpec.find((s) => s.key === "BrokerId");
+    eq(author.type, "select", "author is a dropdown");
+    eq(author.value, "worker1", "stored author selected");
+    eq(broker.type, "select", "broker is a dropdown");
+    eq(broker.value, "7", "stored broker id selected");
+    ok(
+      broker.options.some(
+        (o) => o.value === "" && o.label === "addAdmin.brokerNone"
+      ),
+      "the walk-in option is offered"
+    );
+    ok(
+      broker.options.some((o) => o.value === "7" && /Euroins/.test(o.label)),
+      "the stored broker stays selectable"
+    );
+
+    await e.save({ Author: "worker2", BrokerId: "5" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.Author, "worker2", "the new author is sent");
+    eq(body.BrokerId, "5", "the new broker is sent");
+
+    CTX.userRole = "2";
+    try {
+      open({ ...storedRow(), Author: "worker1", BrokerId: 7 });
+      eq(
+        lastSpec.some((s) => s.key === "Author"),
+        false,
+        "workers do not get the author field"
+      );
+      eq(
+        lastSpec.some((s) => s.key === "BrokerId"),
+        false,
+        "workers do not get the broker field"
+      );
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
   await check("the start date is normalised for the date input", async () => {
     // The server may hand back a full "YYYY-MM-DD HH:MM:SS" datetime for the
     // start date; an <input type="date"> only shows it when it is "YYYY-MM-DD".

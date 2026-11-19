@@ -255,6 +255,8 @@ const I18N = {
     next: "Next",
     pageOf: "Page {page} of {total}",
     brokerHistory: "Balance history",
+    brokerHistoryBalanceHint:
+      "The broker's balance at the end of the shown range. Pick a date to see the balance on that day; the history goes all the way back to the first movement.",
     balanceAfter: "Balance after",
     netChange: "Change",
     total: "Total",
@@ -751,6 +753,12 @@ const I18N = {
       "Only admins can change the fault of an annulled insurance",
     "err.onlyAdminRestoreAnnul":
       "Only admins can restore an annulled insurance",
+    "err.onlyAdminAuthor": "Only admins can change the author of an insurance",
+    "err.onlyAdminBroker": "Only admins can change the broker of an insurance",
+    "err.brokerChangeAnnulled":
+      "The broker of an annulled insurance cannot be changed",
+    "err.authorRequired": "The author is required",
+    "err.authorNotFound": "Author not found",
     "err.emailBrokerOnly": "Email policies are paid from the broker balance only",
     "err.onlyEmailBroker": "Only email policies can be paid from a broker balance",
     "err.nonTurkWalkInOnly": "The non-Turk tax only applies to walk-in policies",
@@ -1055,6 +1063,8 @@ const I18N = {
     next: "Следваща",
     pageOf: "Страница {page} от {total}",
     brokerHistory: "История на баланса",
+    brokerHistoryBalanceHint:
+      "Балансът на брокера в края на показания период. Изберете дата, за да видите баланса за този ден; историята стига до първото движение.",
     balanceAfter: "Баланс след",
     netChange: "Промяна",
     total: "Общо",
@@ -1554,6 +1564,14 @@ const I18N = {
       "Само администратор може да промени вината на анулирана застраховка",
     "err.onlyAdminRestoreAnnul":
       "Само администратор може да възстанови анулирана застраховка",
+    "err.onlyAdminAuthor":
+      "Само администратор може да промени автора на застраховка",
+    "err.onlyAdminBroker":
+      "Само администратор може да промени брокера на застраховка",
+    "err.brokerChangeAnnulled":
+      "Брокерът на анулирана застраховка не може да се променя",
+    "err.authorRequired": "Авторът е задължителен",
+    "err.authorNotFound": "Авторът не е намерен",
     "err.emailBrokerOnly": "Имейл полиците се плащат само от баланса на брокера",
     "err.onlyEmailBroker": "Само имейл полици могат да се плащат от баланс на брокер",
     "err.nonTurkWalkInOnly": "Данъкът за чужденци важи само за полици на място",
@@ -1715,6 +1733,12 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Only admins can change the fault of an annulled insurance":
     "err.onlyAdminAnnulFault",
   "Only admins can restore an annulled insurance": "err.onlyAdminRestoreAnnul",
+  "Only admins can change the author of an insurance": "err.onlyAdminAuthor",
+  "Only admins can change the broker of an insurance": "err.onlyAdminBroker",
+  "Cannot change the broker of an annulled insurance":
+    "err.brokerChangeAnnulled",
+  "Author is required": "err.authorRequired",
+  "Author not found": "err.authorNotFound",
   "Email policies are paid from the broker balance only": "err.emailBrokerOnly",
   "Only email policies can be paid from a broker balance": "err.onlyEmailBroker",
   "The non-Turk tax only applies to walk-in policies": "err.nonTurkWalkInOnly",
