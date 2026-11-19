@@ -3011,10 +3011,13 @@ async function loadEnabledBranches() {
 }
 
 async function adminDashboard() {
-  // Fetch all insurances and branch cash data
+  // Fetch all insurances and branch cash data. The branch balances are the same
+  // derived drawer figures the Current cash tab shows; tzOffset keeps "today"
+  // identical on both.
+  const tzOffset = -new Date().getTimezoneOffset();
   const [insuranceData, branchesData, allBranchesData] = await Promise.all([
     api("/admin/insurances"),
-    api("/currentcash/branches"),
+    api(`/currentcash/branches?tzOffset=${tzOffset}`),
     api("/admin/branches"),
   ]);
 
@@ -3093,7 +3096,7 @@ async function adminDashboard() {
         class: "secondary small",
       });
       manageBtn.addEventListener("click", () => {
-        const defs = NAV_DEFS[userRole] || [];
+        const defs = navDefs();
         const idx = defs.findIndex((d) => d.load === currentCashView);
         if (idx !== -1) {
           activeNav = defs[idx];
@@ -3912,7 +3915,12 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   let allBranchNames = [];
   if (isAdmin) {
-    const branchesData = await api("/currentcash/branches");
+    // The list carries the same derived drawer balance as this screen, so the
+    // dashboard and this tab cannot disagree. tzOffset lets the server work out
+    // the same "today".
+    const branchesData = await api(
+      `/currentcash/branches?tzOffset=${-now.getTimezoneOffset()}`
+    );
     allBranchNames = Object.keys(branchesData.branches || {}).sort();
     // If the admin's own login branch has no record yet, default to the
     // first known branch so the view is never blank.
@@ -3983,11 +3991,14 @@ async function currentCashView(overrideBranch, overrideDate) {
   let balanceCard = null;
   let cardCard = null;
   if (!isAdmin) {
+    // The worker's own drawer: the same figure the admin sees in the Drawers
+    // card, derived from the branch's cash policies and manual movements for
+    // the picked day (the day picker below switches it).
     balanceCard = el("div", null, { class: "balance-card" });
-    balanceCard.appendChild(el("h3", t("balance")));
+    balanceCard.appendChild(el("h3", t("availableCash")));
 
     // Show each currency only when its balance is above/below 0.
-    fillBalanceCard(balanceCard, data.balances);
+    fillBalanceCard(balanceCard, daily.availableCash || {});
     leftCol.appendChild(balanceCard);
   }
 
@@ -4160,9 +4171,11 @@ async function currentCashView(overrideBranch, overrideDate) {
     cardsRow.appendChild(handoverCard);
   }
 
-  // Drawers: the three places this branch's money can sit at the end of the
-  // picked day. It was previously mixed into the Daily report card; keeping it
-  // apart lets the report talk only about insurances.
+  // Drawers: where this branch's money sits at the end of the picked day -
+  // the cash drawer (derived from its policies), the money brokers handed over,
+  // and the card side (the day's card payments and the live card balance). It
+  // was previously mixed into the Daily report card; keeping it apart lets the
+  // report talk only about insurances.
   const drawersCard = el("div", null, { class: "balance-card drawers-card" });
   drawersCard.appendChild(el("h3", t("drawers")));
   drawersCard.appendChild(
@@ -4190,31 +4203,32 @@ async function currentCashView(overrideBranch, overrideDate) {
       t("cardPaymentsHint")
     )
   );
+  // The branch's live card balance (what the removed Card tab used to show).
+  // The day's card payments above explain how much of it came in on that day;
+  // the card balance itself is cleared by the branch's "End shift".
+  drawersCard.appendChild(
+    dailyStat(t("cardBalance"), money(data.cardBalance), t("cardBalanceHint"))
+  );
   cardsRow.appendChild(drawersCard);
 
   // Daily report: country-wide insurance statistics for the picked day. It is
   // independent of the branch selector above - insurances and money are
   // counted across ALL branches. The two halves are the number of insurances
   // and the money they brought in.
-  const walkInCash = dailyAll.totalDailyCash || { EUR: 0, TRY: 0 };
+  //
+  // Every money line is the price of the policies created on that day, split by
+  // payment channel: walk-in cash, walk-in card and broker-funded. Their sum is
+  // the day's Total daily balance, so the three sub-lines always add up to the
+  // total shown above them.
+  const walkInCash = cashRowsTotal(dailyAll.cashPayments);
   const walkInCard = cashRowsTotal(dailyAll.cardPayments);
   const brokerInsuranceMoney = cashRowsTotal(dailyAll.brokerBalance);
-  const totalInsuranceMoney = {
-    EUR:
-      Math.round(
-        ((Number(walkInCash.EUR) || 0) +
-          walkInCard.EUR +
-          brokerInsuranceMoney.EUR) *
-          100
-      ) / 100,
-    TRY:
-      Math.round(
-        ((Number(walkInCash.TRY) || 0) +
-          walkInCard.TRY +
-          brokerInsuranceMoney.TRY) *
-          100
-      ) / 100,
-  };
+  const totalDailyBalance =
+    dailyAll.totalDailyBalance ||
+    sumCashBalances(
+      sumCashBalances(walkInCash, walkInCard),
+      brokerInsuranceMoney
+    );
 
   const dailyCard = el("div", null, { class: "balance-card daily-report" });
   dailyCard.appendChild(el("h3", t("dailyReport")));
@@ -4254,9 +4268,9 @@ async function currentCashView(overrideBranch, overrideDate) {
   dailyCard.appendChild(dailyGroup(t("insuranceMoneyStatistics")));
   dailyCard.appendChild(
     dailyStat(
-      t("totalDailyCash"),
-      renderCashBalances(totalInsuranceMoney),
-      t("totalDailyCashHint")
+      t("totalDailyBalance"),
+      renderCashBalances(totalDailyBalance),
+      t("totalDailyBalanceHint")
     )
   );
   dailyCard.appendChild(
@@ -4289,11 +4303,12 @@ async function currentCashView(overrideBranch, overrideDate) {
   const actions = el("div", null, { class: "row" });
   const incBtn = el("button", t("increase"));
   // "Expense": money the branch spent - it leaves the drawer AND counts as an
-  // expense and in Total daily cash (the server records it as Type "reduce").
+  // expense (the server records it as Type "reduce"). The day's Total daily
+  // balance is insurance money only, so an expense never changes it.
   const expenseBtn = el("button", t("expense"), { class: "secondary" });
   // "Hand over": money given to a person. It leaves the drawer (Available cash)
-  // but is not a sale and not an expense, so Total daily cash and the expenses
-  // stay untouched. The person who took it is recorded with the entry.
+  // but is not a sale and not an expense, so the Total daily balance and the
+  // expenses stay untouched. The person who took it is recorded with the entry.
   const handOverBtn = el("button", t("handOver"), { class: "secondary" });
   const resetBtn = el("button", t("resetTo0"), { class: "danger" });
   actions.appendChild(incBtn);
@@ -4825,7 +4840,11 @@ async function currentCashView(overrideBranch, overrideDate) {
     const hadActivity =
       (data.transactions || []).length > 0 ||
       (data.expences || []).length > 0 ||
-      (data.brokerCashTransactions || []).length > 0;
+      (data.brokerCashTransactions || []).length > 0 ||
+      // A policy's own ledger rows are not transactions, so a day with nothing
+      // but insurance sales would look empty: its money counts as activity too.
+      hasNonZeroCash(daily.totalDailyBalance) ||
+      hasNonZeroCash(daily.availableCash);
     if (hadActivity && resetsOnDay === 0) {
       const warning = el("div", null, { class: "banner shift-missed" });
       warning.appendChild(
@@ -4843,7 +4862,11 @@ async function currentCashView(overrideBranch, overrideDate) {
   }
 
   // One section per ledger table, kept in variables so the balance cards above
-  // can open and scroll to them.
+  // can open and scroll to them. The Transactions list holds the movements typed
+  // in by hand plus hand-overs: a policy's own rows (its sale and every
+  // correction of it) are not drawer transactions - the price of the policy is
+  // read live from the policy itself - so an edit never shows up as a
+  // transaction, neither on the day it was made nor on any other day.
   const transactionsSection = collapsibleSection(
     t("transactions"),
     (data.transactions || []).length,
@@ -4891,7 +4914,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   activateCashCard(
     balanceCard,
     transactionsSection,
-    hasNonZeroCash(data.balances)
+    hasNonZeroCash(daily.availableCash)
   );
   activateCashCard(
     brokerCashCard,
@@ -4924,35 +4947,6 @@ async function currentCashView(overrideBranch, overrideDate) {
     cardInsurancesSection,
     resetsSection
   );
-}
-
-// Card balance overview (admin only): every branch's card balance, read-only.
-// A branch's card balance is cleared only by that branch's "Reset to 0" on the
-// Current cash screen, together with its cash. Workers see their own branch's
-// card balance there instead.
-async function cardView() {
-  const data = await api("/cardpayments");
-  const card = el("div", null, { class: "balance-card" });
-  card.appendChild(el("h3", t("cardBalanceTotal")));
-  card.appendChild(el("p", money(data.cardBalance), { class: "big" }));
-
-  const branchLabel = (b) => (b ? b : t("unassignedBranch"));
-  const branchTable = renderTable(data.branches || [], [
-    { key: "Branch", label: t("branch"), format: (v) => branchLabel(v) },
-    { key: "CardBalance", label: t("cardBalance"), format: (v) => money(v) },
-  ]);
-
-  const children = [el("h2", t("cardPayments")), card, branchTable];
-
-  const resetTable = renderTable(data.resets, [
-    { key: "Branch", label: t("branch"), format: (v) => branchLabel(v) },
-    { key: "Username", label: t("user") },
-    { key: "KeptAmount", label: t("kept"), format: (v) => money(v) },
-    { key: "CreatedAt", label: t("created"), format: (v) => formatDateTime(v) },
-  ]);
-  children.push(el("h3", t("resets")), resetTable);
-
-  Content.replaceChildren(...children);
 }
 
 // Sort state for the brokers table: key is null (server order), "CashBalance",
@@ -6637,6 +6631,8 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       { label: "", value: "" },
       { label: t("payment.Cash"), value: "Cash" },
       { label: t("payment.Card"), value: "Card" },
+      // Both walk-in channels at once (the server accepts the combination).
+      { label: t("payment.cardCash"), value: "cash+card" },
       { label: t("payment.Broker"), value: "Broker" },
     ],
     initial("payment")
@@ -7871,6 +7867,64 @@ async function adminDiagnostics() {
   const tableHost = el("div");
   const localHost = el("div");
 
+  // The collection switch. It lives here, in the tab itself, and it is the one
+  // control that stops the whole company's clients from being recorded: while it
+  // is off the server answers every upload with "nothing stored", so the PCs
+  // stop sending instead of retrying forever. Reports already stored stay
+  // readable, and the switch is always reachable to turn gathering back on.
+  const collectCard = el("div", null, { class: "balance-card diag-collect" });
+  collectCard.appendChild(el("h3", t("diag.collect")));
+  collectCard.appendChild(el("p", t("diag.collectHint"), { class: "muted" }));
+  const collectToggle = input("checkbox");
+  collectToggle.checked = diagnosticsEnabled;
+  const collectState = el("span", "", { class: "muted" });
+  const syncCollectState = () => {
+    collectState.textContent = collectToggle.checked
+      ? t("diag.collectingOn")
+      : t("diag.collectingOff");
+  };
+  syncCollectState();
+  collectToggle.addEventListener("change", async () => {
+    const wanted = collectToggle.checked;
+    collectToggle.disabled = true;
+    try {
+      const data = await api("/admin/diagnostics/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: wanted }),
+      });
+      diagnosticsEnabled = !data || data.enabled !== false;
+      collectToggle.checked = diagnosticsEnabled;
+      toast(t("settingsSaved"), "success");
+      // What has been gathered does not change by flipping the switch, so only
+      // this PC's queue line may need a redraw.
+      renderLocalQueue();
+    } catch (err) {
+      // Put the switch back where it was: nothing was saved.
+      collectToggle.checked = !wanted;
+      toast(err.message, "error");
+    } finally {
+      collectToggle.disabled = false;
+      syncCollectState();
+    }
+  });
+  const collectRow = el("div", null, { class: "row" });
+  const collectField = field(t("diag.collectToggle"), collectToggle);
+  collectField.title = t("diag.collectHint");
+  collectRow.appendChild(collectField);
+  collectRow.appendChild(collectState);
+  collectCard.appendChild(collectRow);
+  // Show what the server is actually doing, not what this screen assumed: a
+  // failed read leaves the default (gathering on).
+  try {
+    const settings = await api("/admin/diagnostics/settings");
+    diagnosticsEnabled = !settings || settings.enabled !== false;
+    collectToggle.checked = diagnosticsEnabled;
+    syncCollectState();
+  } catch (err) {
+    // Keep the default; the switch still works when saving.
+  }
+
   const statusSelect = select(
     [
       { value: "", label: t("diag.all") },
@@ -7969,7 +8023,11 @@ async function adminDiagnostics() {
         "p",
         `${info.queueLength}` +
           (info.clientId ? ` · #${String(info.clientId).slice(0, 8)}` : "") +
-          (info.lastFlushError ? ` · ${info.lastFlushError}` : "")
+          (info.lastFlushError ? ` · ${info.lastFlushError}` : "") +
+          // The server refuses to store anything while gathering is off; say so
+          // here instead of leaving the admin wondering why uploads "succeed"
+          // without adding rows.
+          (info.collectionDisabled ? ` · ${t("diag.collectingOff")}` : "")
       )
     );
     if (info.queueLength) {
@@ -8196,6 +8254,7 @@ async function adminDiagnostics() {
   Content.replaceChildren(
     title,
     hint,
+    collectCard,
     summary,
     controls,
     tableHost,
@@ -8216,7 +8275,8 @@ const NAV_DEFS = {
     { key: "nav.branches", load: adminBranches },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
     { key: "nav.currentCash", load: currentCashView },
-    { key: "nav.card", load: cardView },
+    // No separate Card tab: the branch's card balance, its reset history and
+    // the walk-in card insurances behind it are all on the Current cash screen.
     { key: "nav.brokers", load: brokersView },
     { key: "nav.reconcile", load: reconcileView },
     { key: "nav.diagnostics", load: adminDiagnostics },
@@ -8235,13 +8295,24 @@ const NAV_DEFS = {
   ],
 };
 
+// Admin switch: whether client diagnostics are being gathered. It is a
+// server-side setting (see Requests/Diagnostics.js) shown inside the
+// Diagnostics tab itself, so the tab is always part of the admin navigation.
+let diagnosticsEnabled = true;
+
+// The nav entries of the current role. Kept as a function because several
+// places (rendering, highlighting, init) must see exactly the same list.
+function navDefs() {
+  return NAV_DEFS[userRole] || [];
+}
+
 let activeNav = null;
 
 // Highlight and remember the nav entry whose loader is `load`. Used by links
 // inside views (e.g. a branch card's Manage button) and by the end-of-shift
 // reminder, so all of them behave exactly like a click on the nav button.
 function activateNav(load) {
-  const defs = NAV_DEFS[userRole] || [];
+  const defs = navDefs();
   const idx = defs.findIndex((d) => d.load === load);
   if (idx === -1) return false;
   activeNav = defs[idx];
@@ -8267,7 +8338,7 @@ function renderHeader() {
   HeaderSub.textContent = `${username} · ${roleLabel(userRole)}`;
   Nav.replaceChildren();
 
-  const defs = NAV_DEFS[userRole] || [];
+  const defs = navDefs();
   defs.forEach((d) => {
     const btn = el("button", t(d.key), { class: "secondary nav-btn" });
     btn.addEventListener("click", () => {
@@ -8280,6 +8351,14 @@ function renderHeader() {
     });
     Nav.appendChild(btn);
   });
+  // Keep the open view highlighted when only the navigation is redrawn (e.g.
+  // after an admin flips the Diagnostics switch).
+  if (activeNav) {
+    const idx = defs.findIndex((d) => d.load === activeNav.load);
+    if (idx !== -1 && Nav.children[idx]) {
+      Nav.children[idx].classList.add("active");
+    }
+  }
 
   if (userRole === "1" || userRole === "2") {
     const addBtn = el("button", t("addInsurance"));
@@ -8383,7 +8462,7 @@ async function init() {
     return;
   }
 
-  const defs = NAV_DEFS[userRole] || [];
+  const defs = navDefs();
   if (defs.length) {
     activeNav = defs[0];
     const first = Nav.children[0];

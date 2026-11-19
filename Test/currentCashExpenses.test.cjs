@@ -233,6 +233,14 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
       if (s.startsWith("SELECT CardBalance FROM branch_card_balance")) {
         return [[{ CardBalance: 0 }]];
       }
+      if (
+        s.startsWith(
+          "SELECT ct.*, p.BlancNumber AS PolicyBlanc FROM cash_transactions ct"
+        )
+      ) {
+        // No policy rows in these tests: every row was typed in by hand.
+        return [ledgerRows.map((r) => ({ ...r, PolicyBlanc: null }))];
+      }
       if (s.startsWith("SELECT * FROM cash_transactions")) return [ledgerRows];
       if (s.startsWith("SELECT * FROM cash_resets")) return [[]];
       if (s.startsWith("SELECT * FROM card_resets")) return [[]];
@@ -289,16 +297,19 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
     eq(res.body.totalExpences, { EUR: 5.55, TRY: 20 }, "total per currency");
   });
 
-  await checkAsync("the full ledger is still returned untouched", async () => {
+  await checkAsync("policy movements are not drawer transactions", async () => {
     const res = await callCurrentCash({
       branch: "Офис Харманли",
       date: DAY,
       tzOffset: "180",
     });
+    // The annulment and the deletion are bookkeeping of their policy (read live
+    // from `insurance`), so only the manual movements and the hand-over are
+    // listed - an edit never leaves a transaction behind either.
     eq(
       res.body.transactions.map((r) => r.id),
-      [1, 2, 3, 4, 5, 6],
-      "every entry: annulments, increases and the hand-over"
+      [2, 3, 5, 6],
+      "manual entries and the hand-over only"
     );
     eq(
       res.body.transactions.find((r) => r.id === 6).Recipient,

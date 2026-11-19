@@ -51,6 +51,9 @@
     lastFlushAt: null,
     lastFlushError: null,
     lastUploadStored: null,
+    // Set when the server answered that gathering is switched off: the batch
+    // was accepted and dropped, nothing reached the database.
+    lastUploadDisabled: false,
   };
 
   // -------------------------------------------------------------------------
@@ -813,6 +816,16 @@
       });
       const answer = await res.text().catch(() => "");
       if (res.ok) {
+        // The server may answer "nothing stored" when an admin switched
+        // gathering off. That is a success for the client: the batch is done
+        // with and must be dropped instead of retried.
+        let answerJson = null;
+        try {
+          answerJson = answer ? JSON.parse(answer) : null;
+        } catch {
+          answerJson = null;
+        }
+        const discarded = !!(answerJson && answerJson.disabled);
         const remainingCount = await lockQueue(async () => {
           const remaining = (await readQueue()).filter(
             (report) => !ids.has(report.id)
@@ -822,11 +835,17 @@
         });
         state.flushFailures = 0;
         state.lastFlushError = null;
-        state.lastUploadStored = ids.size;
+        state.lastUploadStored = discarded ? 0 : ids.size;
+        state.lastUploadDisabled = discarded;
         state.nextFlushAt = 0;
         state.blockedUntil = 0;
         if (remainingCount) scheduleFlush(2000);
-        return { uploaded: ids.size, pending: remainingCount, skipped: null };
+        return {
+          uploaded: discarded ? 0 : ids.size,
+          pending: remainingCount,
+          skipped: null,
+          disabled: discarded,
+        };
       }
 
       // 429: the server asked us to slow down. 401: the session is gone;
@@ -953,6 +972,7 @@
       lastFlushAt: state.lastFlushAt,
       lastFlushError: state.lastFlushError,
       lastUploadStored: state.lastUploadStored,
+      collectionDisabled: state.lastUploadDisabled,
       nextFlushAt: state.nextFlushAt
         ? new Date(state.nextFlushAt).toISOString()
         : null,

@@ -72,10 +72,40 @@ for (const key of [
   "diag.details",
   "diag.serverContext",
   "diag.polling",
+  // The collection switch inside the tab, and the renamed daily figures.
+  "diag.collect",
+  "diag.collectToggle",
+  "diag.collectHint",
+  "diag.collectingOn",
+  "diag.collectingOff",
+  "settingsSaved",
+  "totalDailyBalance",
+  "availableCash",
+  "payment.cardCash",
 ]) {
-  const occurrences = common.split(`"${key}":`).length - 1;
+  const occurrences =
+    common.split(`${key}:`).length - 1 + (common.split(`"${key}":`).length - 1);
   ok(occurrences >= 2, `translated in both languages: ${key}`);
 }
+
+// --- The collection switch lives inside the Diagnostics tab ----------------
+ok(
+  /async function adminDiagnostics\(\)/.test(workPage) &&
+    workPage.indexOf('t("diag.collectToggle")') > workPage.indexOf("async function adminDiagnostics()"),
+  "the switch is rendered by the Diagnostics tab"
+);
+ok(
+  workPage.includes('api("/admin/diagnostics/settings")'),
+  "the tab reads GET /admin/diagnostics/settings"
+);
+ok(
+  workPage.includes('body: JSON.stringify({ enabled: wanted })'),
+  "the switch saves PUT /admin/diagnostics/settings"
+);
+ok(
+  !workPage.includes('d.key !== "nav.diagnostics"'),
+  "the Diagnostics tab is never hidden from the navigation"
+);
 
 // --- diag.js is loaded before common.js on every page ----------------------
 for (const page of [

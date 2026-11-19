@@ -386,24 +386,29 @@ const txRow = (over = {}) => ({
   });
 
   // --- deleted rows are excluded from the reads --------------------------------
-  await checkAsync("the historical balance walk ignores deleted entries", async () => {
-    // getCurrentCashAsOf only needs current_cash and the two history queries.
+  await checkAsync("the historical balance ignores deleted entries", async () => {
+    // The derived drawer balance only needs the resets, the branch's cash
+    // policies and its manual movements.
     const conn = {
       query: async (text) => {
         const s = String(text).replace(/\s+/g, " ").trim();
-        if (s.startsWith("INSERT IGNORE INTO current_cash")) return [{}];
-        if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
+        if (
+          s.startsWith("SELECT Currency, CreatedAt FROM cash_resets")
+        ) {
           return [[]];
         }
-        if (s.startsWith("SELECT Currency, ROUND(SUM(CASE WHEN Type IN ('increase', 'handover_return')")) {
-          ok(s.includes("Deleted = 0"), "the movements query skips deleted rows");
+        if (s.includes("FROM insurance")) {
+          ok(s.includes("Deleted = 0"), "the policy query skips deleted rows");
           return [[]];
         }
-        if (s.startsWith("SELECT Currency, ROUND(SUM(KeptAmount)")) return [[]];
+        if (s.includes("FROM cash_transactions ct")) {
+          ok(s.includes("ct.Deleted = 0"), "the movements query skips deleted rows");
+          return [[]];
+        }
         throw new Error("fake DB: unhandled SQL -> " + s);
       },
     };
-    const balances = await CC.getCurrentCashAsOf(
+    const balances = await CC.getAvailableCashAsOf(
       conn,
       "Офис Харманли",
       "2026-12-12"

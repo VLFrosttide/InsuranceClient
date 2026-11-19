@@ -59,6 +59,8 @@ const db = {
   deletes: [],
   listRows: [],
   checks: [],
+  // The `app_settings` row behind the Diagnostics tab switch.
+  settings: undefined,
 };
 
 function fakeQuery(sql, params = []) {
@@ -69,6 +71,13 @@ function fakeQuery(sql, params = []) {
     return token === "admin-token"
       ? [[{ Username: "admin1", Role: 1 }]]
       : [[]];
+  }
+  if (/FROM app_settings/i.test(text)) {
+    return db.settings === undefined ? [[]] : [[{ value: db.settings }]];
+  }
+  if (/INSERT INTO app_settings/i.test(text)) {
+    db.settings = params[1];
+    return [{ affectedRows: 1 }];
   }
   if (/^INSERT INTO client_diagnostics/i.test(text)) {
     const match = /\(([\s\S]*?)\)\s*VALUES/i.exec(text);
@@ -274,17 +283,27 @@ async function main() {
     findRoute("get", "/admin/diagnostics/context"),
     "GET /admin/diagnostics/context registered"
   );
+  ok(
+    findRoute("get", "/admin/diagnostics/settings"),
+    "GET /admin/diagnostics/settings registered"
+  );
+  ok(
+    findRoute("put", "/admin/diagnostics/settings"),
+    "PUT /admin/diagnostics/settings registered"
+  );
   eq(
     roleChecks.filter((roles) => roles.length === 1 && String(roles[0]) === "1")
       .length,
-    3,
-    "all three admin routes use requireRole(1)"
+    5,
+    "all five admin routes use requireRole(1)"
   );
 
   const upload = handlerOf(findRoute("post", "/diag/client"));
   const list = handlerOf(findRoute("get", "/admin/diagnostics"));
   const remove = handlerOf(findRoute("delete", "/admin/diagnostics"));
   const context = handlerOf(findRoute("get", "/admin/diagnostics/context"));
+  const readSettings = handlerOf(findRoute("get", "/admin/diagnostics/settings"));
+  const saveSettings = handlerOf(findRoute("put", "/admin/diagnostics/settings"));
 
   // --- 2) A signed-in upload is stored with every field -------------------
   let res = makeRes();
@@ -486,6 +505,59 @@ async function main() {
   res = makeRes();
   await remove(makeReq({ method: "DELETE", body: {} }), res);
   eq(res.statusCode, 400, "delete without ids or all is rejected");
+
+  // --- 8) The Diagnostics tab switch ---------------------------------------
+  // Default: shown, so an existing deployment keeps its tab.
+  res = makeRes();
+  await readSettings(makeReq(), res);
+  eq(res.statusCode, 200, "settings status");
+  eq(res.body, { enabled: true }, "shown by default");
+  eq(db.checks[db.checks.length - 1].params, ["diagnostics_enabled"],
+    "the shared app_settings key is read");
+
+  res = makeRes();
+  await saveSettings(
+    makeReq({ method: "PUT", body: { enabled: false } }),
+    res
+  );
+  eq(res.body, { enabled: false }, "saved off");
+  eq(db.settings, "0", "stored as 0 in app_settings");
+
+  res = makeRes();
+  await readSettings(makeReq(), res);
+  eq(res.body, { enabled: false }, "read back as hidden");
+
+  res = makeRes();
+  await saveSettings(makeReq({ method: "PUT", body: {} }), res);
+  eq(res.statusCode, 400, "enabled is required");
+
+  // --- 9) Gathering switched off: uploads are answered but not stored -------
+  db.settings = "0";
+  const insertsBefore = db.inserts.length;
+  res = makeRes();
+  await upload(
+    makeReq({
+      headers: { authorization: "Bearer admin-token" },
+      body: { clientId: "c-1", reports: [report({ kind: "failure", status: 403 })] },
+    }),
+    res
+  );
+  eq(res.statusCode, 200, "the client still gets a success answer");
+  eq(res.body, { stored: 0, disabled: true, clientId: "c-1" },
+    "nothing is stored, and the client is told so");
+  eq(db.inserts.length, insertsBefore, "no row was written");
+
+  db.settings = "1";
+  res = makeRes();
+  await upload(
+    makeReq({
+      headers: { authorization: "Bearer admin-token" },
+      body: { clientId: "c-1", reports: [report({ kind: "failure", status: 403 })] },
+    }),
+    res
+  );
+  eq(res.statusCode, 201, "switched back on, uploads are stored again");
+  eq(db.inserts.length, insertsBefore + 1, "the row was written");
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;

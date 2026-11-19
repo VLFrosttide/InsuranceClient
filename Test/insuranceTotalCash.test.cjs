@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 // Node test for the TWO RECORDS OF CASH FLOW: current cash and total cash.
 //
@@ -48,6 +48,9 @@ const tables = {
   // "Cash from brokers, per branch" in Requests/CurrentCash.js).
   broker_movements: [],
   broker_cash_resets: [],
+  // Policies. The Current cash figures are derived from them: the cash drawer,
+  // the day's channels and the day's total insurance money.
+  insurance: [],
 };
 const cardOf = (branch) => tables.branch_card_balance.get(String(branch || "")) || 0;
 
@@ -261,18 +264,50 @@ async function query(sql, params = []) {
   }
 
   // --- day listings for the Current cash tab --------------------------------
-  // Soft-deleted ledger rows are kept in the table but never listed.
+  // Soft-deleted ledger rows are kept in the table but never listed. The join
+  // tells the endpoint which rows belong to a policy (their reason is the
+  // policy's blanc number), so their corrections can be kept out of the
+  // Transactions table.
   if (
-    s.startsWith("SELECT * FROM cash_transactions WHERE Branch = ? AND Deleted = 0 AND CreatedAt >= ?")
+    s.startsWith(
+      "SELECT ct.*, p.BlancNumber AS PolicyBlanc FROM cash_transactions ct LEFT JOIN insurance p"
+    )
   ) {
     return [
-      tables.cash_transactions.filter(
-        (r) =>
-          r.Branch === p[0] &&
-          !r.Deleted &&
-          r.CreatedAt >= p[1] &&
-          r.CreatedAt < p[2]
-      ),
+      tables.cash_transactions
+        .filter(
+          (r) =>
+            r.Branch === p[0] &&
+            !r.Deleted &&
+            r.CreatedAt >= p[1] &&
+            r.CreatedAt < p[2]
+        )
+        .map((r) => {
+          const policy = tables.insurance.find((i) => i.BlancNumber === r.Reason);
+          return { ...r, PolicyBlanc: policy ? policy.BlancNumber : null };
+        }),
+    ];
+  }
+  if (s.startsWith("SELECT * FROM cash_transactions WHERE Branch = ? AND Deleted = 0 AND CreatedAt >= ?")) {
+    return [tables.cash_transactions.filter(
+      (r) =>
+        r.Branch === p[0] &&
+        !r.Deleted &&
+        r.CreatedAt >= p[1] &&
+        r.CreatedAt < p[2]
+    )];
+  }
+  // The last reset per currency before a given day: the base of the derived
+  // drawer balance.
+  if (
+    s.startsWith(
+      "SELECT Currency, CreatedAt FROM cash_resets WHERE Branch = ? AND CreatedAt < ?"
+    )
+  ) {
+    return [
+      tables.cash_resets
+        .filter((r) => r.Branch === p[0] && r.CreatedAt < p[1])
+        .sort((a, b) => String(a.CreatedAt).localeCompare(String(b.CreatedAt))),
     ];
   }
   if (s.startsWith("SELECT * FROM cash_resets WHERE Branch = ? AND CreatedAt >= ?")) {
@@ -403,57 +438,39 @@ async function query(sql, params = []) {
     return [{ affectedRows: 1 }];
   }
 
-  // --- daily report aggregates ------------------------------------------------
-  // Two queries share this shape:
-  //   getCurrentCashAsOf - the branch's movements after the requested day
-  //                        (increase +, everything else out);
-  //   Total daily cash   - the country-wide net of the day (increase +,
-  //                        reduce -, hand-over ignored - see the Hand over note
-  //                        in Requests/CurrentCash.js).
-  const walkBackSql = s.startsWith(
-    "SELECT Currency, ROUND(SUM(CASE WHEN Type IN ('increase', 'handover_return') THEN Amount ELSE -Amount END), 2) AS Net"
-  );
-  const dailyNetSql = s.startsWith(
-    "SELECT Currency, ROUND(SUM(CASE WHEN Type = 'increase' THEN Amount WHEN Type = 'reduce' THEN -Amount ELSE 0 END), 2) AS Net"
-  );
-  if (walkBackSql || dailyNetSql) {
-    const scoped = s.includes("Branch = ?");
-    const from = scoped ? p[1] : p[0];
-    const to = scoped ? p[2] : p[1];
-    const totals = {};
-    for (const r of tables.cash_transactions) {
-      // Soft-deleted ledger rows are skipped by both queries (the drawer's
-      // reversal already took their money out).
-      if (r.Deleted) continue;
-      if (scoped && r.Branch !== p[0]) continue;
-      if (r.CreatedAt < from || r.CreatedAt >= to) continue;
-      let signed;
-      if (dailyNetSql) {
-        // Total daily cash: increase +, reduce -, every other type 0 (so a
-        // hand-over and its return never change what the day earned/spent).
-        if (r.Type === "increase") signed = Number(r.Amount);
-        else if (r.Type === "reduce") signed = -Number(r.Amount);
-        else continue;
-      } else if (r.Type === "increase" || r.Type === "handover_return") {
-        // The walk-back counts a returned hand-over as money in.
-        signed = Number(r.Amount);
-      } else if (r.Type === "handover") {
-        // A hand-over is not a sale and not an expense: it is left out of Total
-        // daily cash, but it did leave the drawer, so the walk-back counts it.
-        signed = -Number(r.Amount);
-      } else signed = -Number(r.Amount);
-      totals[r.Currency] = round((totals[r.Currency] || 0) + signed);
+  // The drawer movements the derived balance sums: one window per currency, and
+  // the policy a row belongs to (if any) joined through its reason.
+  if (
+    s.startsWith(
+      "SELECT ct.Type, ct.Amount, ct.Currency, ct.Reason, p.BlancNumber AS PolicyBlanc"
+    )
+  ) {
+    const branch = p[0];
+    const windows = new Map();
+    for (let i = 1; i + 1 < p.length; i += 2) {
+      windows.set(String(p[i]).toUpperCase(), p[i + 1]);
     }
-    return [Object.entries(totals).map(([Currency, Net]) => ({ Currency, Net }))];
+    const nextDate = p[p.length - 1];
+    return [
+      tables.cash_transactions
+        .filter((r) => {
+          if (r.Branch !== branch || r.Deleted) return false;
+          if (r.CreatedAt >= nextDate) return false;
+          const start = windows.get(String(r.Currency).toUpperCase());
+          return start !== undefined && r.CreatedAt >= start;
+        })
+        .map((r) => {
+          const policy = tables.insurance.find((i) => i.BlancNumber === r.Reason);
+          return { ...r, PolicyBlanc: policy ? policy.BlancNumber : null };
+        }),
+    ];
   }
-  if (s.startsWith("SELECT Currency, ROUND(SUM(KeptAmount), 2) AS Kept")) {
-    const totals = {};
-    for (const r of tables.cash_resets) {
-      if (r.Branch !== p[0] || r.CreatedAt < p[1]) continue;
-      totals[r.Currency] = round((totals[r.Currency] || 0) + Number(r.KeptAmount));
-    }
-    return [Object.entries(totals).map(([Currency, Kept]) => ({ Currency, Kept }))];
-  }
+
+  // --- insurance money ------------------------------------------------------
+  // Both the derived drawer balance (one currency at a time, from the branch's
+  // last reset) and the daily report (per branch, per channel) are computed
+  // from the policies themselves, so the fake sums the seeded rows the same way
+  // MySQL would.
   if (s.includes("COUNT(*) AS total")) {
     return [[{ total: 0, broker: 0, walkIn: 0 }]];
   }
@@ -461,8 +478,66 @@ async function query(sql, params = []) {
     return [[{ firstPolicy: null, lastPolicy: null }]];
   }
   if (s.includes("FROM insurance")) {
-    // Card/broker funding per branch: no policies in these tests.
-    return [[]];
+    const amountOf = (i) =>
+      Number(i.Annulled) ? Number(i.AnnulFee) || 0 : Number(i.Price) || 0;
+    const currencyOf = (v) => String(v || "EUR").toUpperCase();
+    const live = tables.insurance.filter((i) => !i.Deleted);
+    const totals = new Map();
+
+    if (s.includes("GROUP BY CurrencyType")) {
+      // Derived drawer balance: one row per currency, with its own window.
+      // p = [branch, cur1, start1, cur2, start2, ..., nextDate]
+      const branch = p[0];
+      const windows = new Map();
+      for (let i = 1; i + 1 < p.length; i += 2) {
+        windows.set(currencyOf(p[i]), p[i + 1]);
+      }
+      const nextDate = p[p.length - 1];
+      for (const i of live) {
+        if (i.Branch !== branch) continue;
+        if (i.BrokerId !== null && i.BrokerId !== undefined) continue;
+        if (String(i.PaymentType) !== "Cash") continue;
+        const cur = currencyOf(i.CurrencyType);
+        const start = windows.get(cur);
+        if (start === undefined) continue;
+        if (i.CreationDate < start || i.CreationDate >= nextDate) continue;
+        totals.set(cur, round((totals.get(cur) || 0) + amountOf(i)));
+      }
+      return [
+        [...totals].map(([Currency, Total]) => ({ Currency, Total })),
+      ];
+    }
+
+    // Daily report: the four channel queries, scoped to a branch when the
+    // trailing parameter is present.
+    const scoped = s.includes("AND Branch = ?");
+    const only = scoped ? p[p.length - 1] : null;
+    const [from, to] = p;
+    let filter = () => true;
+    if (s.includes("PaymentType = 'Cash'")) {
+      filter = (i) =>
+        (i.BrokerId === null || i.BrokerId === undefined) &&
+        String(i.PaymentType) === "Cash";
+    } else if (s.includes("PaymentType = 'Card'")) {
+      filter = (i) =>
+        (i.BrokerId === null || i.BrokerId === undefined) &&
+        String(i.PaymentType) === "Card";
+    } else if (s.includes("BrokerId IS NOT NULL")) {
+      filter = (i) => i.BrokerId !== null && i.BrokerId !== undefined;
+    }
+    for (const i of live) {
+      if (!filter(i)) continue;
+      if (scoped && i.Branch !== only) continue;
+      if (i.CreationDate < from || i.CreationDate >= to) continue;
+      const key = `${i.Branch || ""}|${currencyOf(i.CurrencyType)}`;
+      totals.set(key, round((totals.get(key) || 0) + amountOf(i)));
+    }
+    return [
+      [...totals].map(([key, Net]) => {
+        const [Branch, Currency] = key.split("|");
+        return { Branch, Currency, Net };
+      }),
+    ];
   }
 
   throw new Error("fake DB: unhandled SQL -> " + s);
@@ -568,6 +643,7 @@ function resetTables() {
   tables.branch_card_balance.clear();
   tables.broker_movements.length = 0;
   tables.broker_cash_resets.length = 0;
+  tables.insurance.length = 0;
   sqlLog.length = 0;
 }
 
@@ -590,8 +666,8 @@ function brokerTopUp(branch, amount, currency = "EUR", extra = {}) {
   });
 }
 
-const BRANCH = "ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸";
-const OTHER = "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾";
+const BRANCH = "Офис Харманли";
+const OTHER = "ГКПП Лесово";
 const USER = "admin1";
 
 // The identity the whole design rests on: Total cash is current cash plus the
@@ -626,7 +702,7 @@ const ledger = () =>
   );
 
 (async () => {
-  console.log("Total cash â€” the second record of cash flow");
+  console.log("Total cash — the second record of cash flow");
 
   await check("a fresh branch has zero current cash and zero total cash", async () => {
     resetTables();
@@ -658,7 +734,7 @@ const ledger = () =>
     eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 50, "total cash");
     eq(
       ledger(),
-      ["Cash increase 50 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"],
+      ["Cash increase 50 EUR @ Офис Харманли"],
       "total cash ledger"
     );
     await assertSuperset("after a cash payment");
@@ -687,7 +763,7 @@ const ledger = () =>
       );
       eq(
         ledger(),
-        ["Broker increase 100 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"],
+        ["Broker increase 100 EUR @ Офис Харманли"],
         "total cash ledger"
       );
       eq(
@@ -764,7 +840,7 @@ const ledger = () =>
     await CC.recordCashMovement(fakeDb, BRANCH, USER, "increase", 10, "A", "EUR");
     await CC.recordChannelMovement(
       fakeDb,
-      "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾",
+      "ГКПП Лесово",
       USER,
       "increase",
       20,
@@ -773,7 +849,7 @@ const ledger = () =>
       "Broker"
     );
     eq((await CC.getTotalCash(fakeDb, BRANCH)).EUR, 10, "branch A");
-    eq((await CC.getTotalCash(fakeDb, "Ð“ÐšÐŸÐŸ Ð›ÐµÑÐ¾Ð²Ð¾")).EUR, 20, "branch B");
+    eq((await CC.getTotalCash(fakeDb, "ГКПП Лесово")).EUR, 20, "branch B");
   });
 
   await check("resetting current cash drags total cash down with it", async () => {
@@ -800,7 +876,7 @@ const ledger = () =>
       "only the broker part survives"
     );
     ok(
-      ledger().includes("Cash reduce 50 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"),
+      ledger().includes("Cash reduce 50 EUR @ Офис Харманли"),
       "the reset is recorded in the total cash ledger"
     );
     await assertSuperset("after a current cash reset");
@@ -849,7 +925,7 @@ const ledger = () =>
       "card reset recorded with its branch"
     );
     ok(
-      ledger().includes("Card reduce 70 EUR @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸"),
+      ledger().includes("Card reduce 70 EUR @ Офис Харманли"),
       "the card clear is in the total cash ledger"
     );
     await assertSuperset("after Reset to 0");
@@ -1014,8 +1090,8 @@ const ledger = () =>
     eq(
       ledger(),
       [
-        "Cash increase 25 TRY @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸",
-        "Cash reduce 5 TRY @ ÐžÑ„Ð¸Ñ Ð¥Ð°Ñ€Ð¼Ð°Ð½Ð»Ð¸",
+        "Cash increase 25 TRY @ Офис Харманли",
+        "Cash reduce 5 TRY @ Офис Харманли",
       ],
       "the two records list the same movements"
     );
@@ -1024,7 +1100,7 @@ const ledger = () =>
   });
 
   // --- transaction history by day (one day at a time, default today) --------
-  console.log("\nCurrent cash history â€” one day at a time");
+  console.log("\nCurrent cash history — one day at a time");
   // 2026-10-10 01:30 UTC is already 04:30 on the 10th in UTC+3, but a client in
   // UTC-5 is still on the 9th.
   const NOW = new Date(Date.UTC(2026, 9, 10, 1, 30));
@@ -1057,33 +1133,127 @@ const ledger = () =>
     eq(CC.addDays("2026-12-31", 1), "2027-01-01", "new year");
   });
 
-  await check("getCurrentCashAsOf walks back the live balance", async () => {
-    // Live drawer: EUR 40, TRY 10. After the requested day the branch took in
-    // a net EUR 30 and then a reset kept EUR 5, so at the end of that day the
-    // branch had EUR 40 - 30 + 5 = 15 available.
-    const db = {
-      query: async (sql, params) => {
-        const s = String(sql).replace(/\s+/g, " ").trim();
-        if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
-        if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
-          return [[
-            { Currency: "EUR", CurrentCash: 40 },
-            { Currency: "TRY", CurrentCash: 10 },
-          ]];
-        }
-        if (/FROM cash_transactions/.test(s)) {
-          return [[{ Currency: "EUR", Net: 30 }]];
-        }
-        if (/FROM cash_resets/.test(s)) {
-          return [[{ Currency: "EUR", Kept: 5 }]];
-        }
-        throw new Error("unhandled SQL in getCurrentCashAsOf test: " + s);
+  await check("getAvailableCashAsOf derives the drawer from the policies", async () => {
+    // The drawer is derived, not walked back: the kept amount of the last reset
+    // plus the cash policies of the shift plus the manual movements. The sale
+    // rows carry the blanc number and the card policy touches no drawer, so
+    // neither may be counted twice.
+    resetTables();
+    tables.insurance.push(
+      {
+        BlancNumber: "A1",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "100.00",
+        CurrencyType: "EUR",
+        CreationDate: "2026-10-14 09:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
       },
-    };
+      {
+        BlancNumber: "A2",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "200.00",
+        CurrencyType: "TRY",
+        CreationDate: "2026-10-14 10:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      },
+      {
+        BlancNumber: "A3",
+        Branch: BRANCH,
+        PaymentType: "Card",
+        Price: "50.00",
+        CurrencyType: "EUR",
+        CreationDate: "2026-10-14 11:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      },
+      // Created before the shift's reset, so its money already left the drawer.
+      {
+        BlancNumber: "A0",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "40.00",
+        CurrencyType: "EUR",
+        CreationDate: "2026-10-13 09:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      }
+    );
+    tables.cash_resets.push({
+      Branch: BRANCH,
+      Currency: "EUR",
+      // What was handed over at the shift's start; the drawer itself is 0.
+      KeptAmount: 5,
+      CreatedAt: "2026-10-14 08:00:00",
+    });
+    tables.cash_transactions.push(
+      // The sale entry: same money as policy A1 above, so it is skipped.
+      {
+        Branch: BRANCH,
+        Type: "increase",
+        Amount: 100,
+        Currency: "EUR",
+        Reason: "A1",
+        CreatedAt: "2026-10-14 09:00:00",
+        Deleted: 0,
+      },
+      {
+        Branch: BRANCH,
+        Type: "reduce",
+        Amount: 20,
+        Currency: "EUR",
+        Reason: "rent",
+        CreatedAt: "2026-10-14 12:00:00",
+        Deleted: 0,
+      },
+      {
+        Branch: BRANCH,
+        Type: "handover",
+        Amount: 10,
+        Currency: "EUR",
+        Reason: "to the safe",
+        Recipient: "Ivan",
+        CreatedAt: "2026-10-14 13:00:00",
+        Deleted: 0,
+      },
+      {
+        Branch: BRANCH,
+        Type: "increase",
+        Amount: 30,
+        Currency: "TRY",
+        Reason: "top-up",
+        CreatedAt: "2026-10-14 14:00:00",
+        Deleted: 0,
+      }
+    );
+    // 100 cash - 20 expense - 10 handed over = 70 EUR; the drawer started that
+    // shift at 0 (the reset handed the earlier money over). TRY was never
+    // reset: 200 cash + 30 manual increase = 230.
     eq(
-      await CC.getCurrentCashAsOf(db, BRANCH, "2026-10-14"),
-      { EUR: 15, TRY: 10 },
+      await CC.getAvailableCashAsOf(
+        { query: async (sql, params) => query(sql, params) },
+        BRANCH,
+        "2026-10-15"
+      ),
+      { EUR: 70, TRY: 230 },
       "historical available cash"
+    );
+    // The historical name still resolves to the same calculation.
+    eq(
+      await CC.getCurrentCashAsOf(
+        { query: async (sql, params) => query(sql, params) },
+        BRANCH,
+        "2026-10-15"
+      ),
+      { EUR: 70, TRY: 230 },
+      "getCurrentCashAsOf alias"
     );
   });
 
@@ -1139,12 +1309,10 @@ const ledger = () =>
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
     eq(seen.length, 8, "transactions + resets + cash from brokers + card insurances queried");
-    // The day's history: cash movements, cash resets, card resets and the
-    // Cash from Brokers resets.
-    const dayScoped = seen.filter((q) =>
-      q.s.includes("CreatedAt >= ? AND CreatedAt < ?")
-    );
-    eq(dayScoped.length, 4, "one day-scoped query per history table");
+    // The day's history: cash movements, cash resets, card resets, the broker
+    // top-ups and the Cash from Brokers resets.
+    const dayScoped = seen.filter((q) => q.s.includes("CreatedAt < ?"));
+    eq(dayScoped.length, 5, "one day-scoped query per history table");
     for (const q of dayScoped) {
       eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
@@ -1201,8 +1369,28 @@ const ledger = () =>
         if (/COUNT\(\*\) AS total/.test(s)) {
           return [[{ total: 5, broker: 2, walkIn: 3 }]];
         }
-        if (/FROM cash_transactions/.test(s)) {
-          return [[{ Currency: "EUR", Net: 50 }, { Currency: "TRY", Net: -5 }]];
+        // The two policies that set the ends of the policy-number span.
+        if (/ORDER BY CAST\(PolicyNumber AS UNSIGNED\)/.test(s)) {
+          return [[]];
+        }
+        // The four insurance-money queries: walk-in cash, walk-in card,
+        // broker-funded and all of them together.
+        if (s.includes("PaymentType = 'Cash'")) {
+          return [[{ Branch: BRANCH, Currency: "EUR", Net: 30 }]];
+        }
+        if (s.includes("PaymentType = 'Card'")) {
+          return [[{ Branch: OTHER, Currency: "TRY", Net: 5 }]];
+        }
+        if (s.includes("BrokerId IS NOT NULL")) {
+          return [[{ Branch: BRANCH, Currency: "EUR", Net: 20 }]];
+        }
+        if (s.includes("FROM insurance")) {
+          return [
+            [
+              { Branch: BRANCH, Currency: "EUR", Net: 50 },
+              { Branch: OTHER, Currency: "TRY", Net: 5 },
+            ],
+          ];
         }
         return [[]];
       },
@@ -1237,11 +1425,13 @@ const ledger = () =>
         totalInsurances: 5,
         brokerInsurances: 2,
         walkInInsurances: 3,
-        totalDailyCash: { EUR: 50, TRY: -5 },
+        // The price of every insurance of the day: 30 + 20 EUR and 5 TRY.
+        totalDailyBalance: { EUR: 50, TRY: 5 },
         countryWideInsurances: 3,
         countryWideRange: { first: null, last: null },
-        cardPayments: [],
-        brokerBalance: [],
+        cashPayments: [{ Branch: BRANCH, EUR: 30, TRY: 0 }],
+        cardPayments: [{ Branch: OTHER, EUR: 0, TRY: 5 }],
+        brokerBalance: [{ Branch: BRANCH, EUR: 20, TRY: 0 }],
         cashFromBrokers: { EUR: 0, TRY: 0 },
       },
       "defaults to today and computes the report"
@@ -1249,8 +1439,8 @@ const ledger = () =>
     const dayQueries = seen.filter((q) => q.params && q.params.length);
     eq(
       dayQueries.length,
-      8,
-      "counts + span + range ends + cash + card + broker + cash from brokers queries"
+      9,
+      "counts + span + its two ends + cash + card + broker + all insurances + cash from brokers"
     );
     for (const q of dayQueries) {
       eq(q.params, [today, CC.addDays(today, 1)], "day bounds: " + q.s);
@@ -1279,23 +1469,36 @@ const ledger = () =>
         if (/COUNT\(\*\) AS total/.test(s)) {
           return [[{ total: 5, broker: 2, walkIn: 3 }]];
         }
-        if (/FROM cash_transactions/.test(s)) {
-          if (s.includes("Branch = ?")) {
-            // getCurrentCashAsOf: movements recorded after the requested day.
-            return [[{ Currency: "EUR", Net: 30 }]];
-          }
-          // Country-wide total daily cash.
-          return [[{ Currency: "EUR", Net: 50 }, { Currency: "TRY", Net: -5 }]];
+        // The branch's cash policies for the derived drawer balance.
+        if (s.includes("GROUP BY CurrencyType")) {
+          return [[{ Currency: "EUR", Total: 100 }]];
         }
+        // Its last reset before the requested day: the shift's drawer starts
+        // at 0 there (the reset handed the money over).
         if (/FROM cash_resets/.test(s)) {
-          return [[{ Currency: "EUR", Kept: 5 }]];
+          return [
+            [
+              {
+                Currency: "EUR",
+                KeptAmount: 5,
+                CreatedAt: "2026-11-01 08:00:00",
+              },
+            ],
+          ];
         }
-        if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
-        if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
-          return [[
-            { Currency: "EUR", CurrentCash: 40 },
-            { Currency: "TRY", CurrentCash: 10 },
-          ]];
+        // Its manual drawer movements: one expense of 20 EUR.
+        if (/FROM cash_transactions ct/.test(s)) {
+          return [
+            [
+              {
+                Type: "reduce",
+                Amount: 20,
+                Currency: "EUR",
+                Reason: "rent",
+                PolicyBlanc: null,
+              },
+            ],
+          ];
         }
         return [[]];
       },
@@ -1328,15 +1531,18 @@ const ledger = () =>
         totalInsurances: 5,
         brokerInsurances: 2,
         walkInInsurances: 3,
-        totalDailyCash: { EUR: 50, TRY: -5 },
+        totalDailyBalance: { EUR: 0, TRY: 0 },
         countryWideInsurances: 3,
         countryWideRange: { first: null, last: null },
+        cashPayments: [],
         cardPayments: [],
         brokerBalance: [],
         cashFromBrokers: { EUR: 0, TRY: 0 },
-        availableCash: { EUR: 15, TRY: 10 },
+        // The shift started at 0 (the reset handed the earlier money over):
+        // 100 cash - the 20 expense.
+        availableCash: { EUR: 80, TRY: 0 },
       },
-      "the report carries the branch's walked-back available cash"
+      "the report carries the branch's derived available cash"
     );
   });
 
@@ -1825,18 +2031,57 @@ const ledger = () =>
     await CC.recordCashMovement(
       fakeDb, BRANCH, USER, "increase", 15, "walk-in", "EUR", "2026-10-20 08:00:00"
     );
+    // The day's insurance money: a walk-in cash policy and a policy funded
+    // from a broker's balance. A manual increase (above) is not insurance
+    // money, so it does not change the Total daily balance.
+    tables.insurance.push(
+      {
+        BlancNumber: "T1",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "25.00",
+        CurrencyType: "EUR",
+        CreationDate: "2026-10-20 09:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      },
+      {
+        BlancNumber: "T2",
+        Branch: OTHER,
+        PaymentType: "Broker",
+        Price: "40.00",
+        CurrencyType: "TRY",
+        CreationDate: "2026-10-20 10:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: 3,
+      }
+    );
 
     const call = routeCaller("/currentcash/daily");
     let r = await call({ date: "2026-10-20", tzOffset: "0" });
     eq(r.code, 200, "status");
     eq(r.body.cashFromBrokers, { EUR: 150, TRY: 0 },
       "all branches, manual top-ups of the day only");
-    eq(r.body.totalDailyCash, { EUR: 15, TRY: 0 }, "cash stays cash");
+    eq(
+      r.body.totalDailyBalance,
+      { EUR: 25, TRY: 40 },
+      "every insurance of the day, whatever the payment type"
+    );
 
     r = await call({ date: "2026-10-20", tzOffset: "0", branch: BRANCH });
     eq(r.body.cashFromBrokers, { EUR: 100, TRY: 0 }, "scoped to the branch");
-    eq(r.body.availableCash, { EUR: 15, TRY: 0 },
-      "the drawer balance of that day, without the broker money");
+    eq(
+      r.body.totalDailyBalance,
+      { EUR: 25, TRY: 0 },
+      "the branch's own insurance money"
+    );
+    eq(
+      r.body.availableCash,
+      { EUR: 40, TRY: 0 },
+      "the drawer balance of that day: the 25 cash policy + the 15 manual increase, without the broker money"
+    );
   });
 
 
@@ -1848,8 +2093,22 @@ const ledger = () =>
     "a hand-over lowers the drawer but is neither an expense nor daily cash",
     async () => {
       resetTables();
+      // A cash policy of the day. Its sale row is written to the same ledger
+      // (reason = the blanc number), and the drawer is 100 whether that row is
+      // read or the policy is.
+      tables.insurance.push({
+        BlancNumber: "H1",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "100.00",
+        CurrencyType: "EUR",
+        CreationDate: "2026-10-20 08:00:00",
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      });
       await CC.recordCashMovement(
-        fakeDb, BRANCH, USER, "increase", 100, "walk-in", "EUR", "2026-10-20 08:00:00"
+        fakeDb, BRANCH, USER, "increase", 100, "H1", "EUR", "2026-10-20 08:00:00"
       );
       await CC.recordCashMovement(
         fakeDb, BRANCH, USER, "reduce", 10, "pens", "EUR", "2026-10-20 09:00:00"
@@ -1893,16 +2152,16 @@ const ledger = () =>
       );
       eq(
         r.body.transactions.map((t) => t.Type),
-        ["increase", "reduce", "handover"],
-        "but it is listed in the day's Transactions"
+        ["reduce", "handover"],
+        "the sale row is the policy, not a transaction; the hand-over is listed"
       );
 
       const daily = routeCaller("/currentcash/daily");
       r = await daily({ date: "2026-10-20", tzOffset: "0" });
       eq(
-        r.body.totalDailyCash,
-        { EUR: 90, TRY: 0 },
-        "100 in - 10 spent; the hand-over is left out"
+        r.body.totalDailyBalance,
+        { EUR: 100, TRY: 0 },
+        "the policy's price; the hand-over never reduces the Total daily balance"
       );
       r = await daily({ date: "2026-10-20", tzOffset: "0", branch: BRANCH });
       eq(

@@ -585,28 +585,54 @@ async function rejects(fn, message) {
       const conn = {
         query: async (text) => {
           const s = String(text).replace(/\s+/g, " ").trim();
-          if (s.startsWith("INSERT IGNORE INTO current_cash")) return [[]];
-          if (s.startsWith("SELECT Currency, CurrentCash FROM current_cash")) {
-            return [[{ Currency: "EUR", CurrentCash: 100 }]];
+          if (
+            s.startsWith(
+              "SELECT Currency, CreatedAt FROM cash_resets"
+            )
+          ) {
+            return [[]];
           }
-          if (s.includes("FROM cash_transactions")) {
+          if (s.includes("FROM insurance")) {
+            return [[{ Currency: "EUR", Total: 100 }]];
+          }
+          if (s.includes("FROM cash_transactions ct")) {
             sawSql = s;
-            return [[{ Currency: "EUR", Net: 15 }]];
+            return [
+              [
+                {
+                  Type: "handover",
+                  Amount: 30,
+                  Currency: "EUR",
+                  Reason: "to the safe",
+                  PolicyBlanc: null,
+                },
+                {
+                  Type: "handover_return",
+                  Amount: 15,
+                  Currency: "EUR",
+                  Reason: "Return 3",
+                  PolicyBlanc: null,
+                },
+              ],
+            ];
           }
-          if (s.startsWith("SELECT Currency, ROUND(SUM(KeptAmount)")) return [[]];
           throw new Error("fake DB: unhandled SQL -> " + s);
         },
       };
-      const balances = await CC.getCurrentCashAsOf(
+      const balances = await CC.getAvailableCashAsOf(
         conn,
         BRANCH,
         "2026-11-18"
       );
       ok(
-        sawSql.includes("handover_return"),
-        "the movements query counts the return as money in"
+        sawSql.includes("LEFT JOIN insurance"),
+        "the policy join keeps a policy's own rows out of the movements"
       );
-      eq(balances, { EUR: 85, TRY: 0 }, "the drawer walked back");
+      eq(
+        balances,
+        { EUR: 85, TRY: 0 },
+        "100 cash - 30 handed over + 15 returned"
+      );
     }
   );
 

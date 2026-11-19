@@ -369,14 +369,15 @@ async function search(query, user = { role: 2, username: "worker1" }) {
   });
 
   // -------------------------------------------------------------------------
-  // payment - restrict the result to a single payment type (Cash/Card/Broker).
+  // payment - restrict the result to one OR MORE payment types
+  // (Cash/Card/Broker). "Card + cash" sends the combination.
   // -------------------------------------------------------------------------
 
   await check("payment=Cash alone is accepted as a search criterion", async () => {
     const r = await search({ payment: "Cash" });
     eq(r.status, 200, "status");
     eq(r.queried, true, "hits the database");
-    ok(flat(r.sql).includes("PaymentType = ?"), flat(r.sql));
+    ok(flat(r.sql).includes("PaymentType IN (?)"), flat(r.sql));
     eq(r.params, ["Cash"], "bound params");
   });
 
@@ -384,8 +385,20 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     for (const v of ["Card", "Broker"]) {
       const r = await search({ payment: v });
       eq(r.status, 200, "status");
-      ok(flat(r.sql).includes("PaymentType = ?"), `${v}: ` + flat(r.sql));
+      ok(flat(r.sql).includes("PaymentType IN (?)"), `${v}: ` + flat(r.sql));
       eq(r.params, [v], `bound param for ${v}`);
+    }
+  });
+
+  await check("card + cash filters both walk-in channels at once", async () => {
+    for (const v of ["cash+card", "Cash,Card", "card+cash"]) {
+      const r = await search({ payment: v });
+      eq(r.status, 200, `${v}: status`);
+      ok(
+        flat(r.sql).includes("PaymentType IN (?, ?)"),
+        `${v}: ` + flat(r.sql)
+      );
+      eq(r.params, ["Cash", "Card"], `${v}: bound params`);
     }
   });
 
@@ -412,7 +425,7 @@ async function search(query, user = { role: 2, username: "worker1" }) {
     const r = await search({ date: "2026-10-01", payment: "Broker" });
     eq(r.status, 200, "status");
     ok(flat(r.sql).includes("DATE(CreationDate) = DATE(?)"), "date condition");
-    ok(flat(r.sql).includes("PaymentType = ?"), "payment condition");
+    ok(flat(r.sql).includes("PaymentType IN (?)"), "payment condition");
     eq(r.params, ["2026-10-01", "Broker"], "bound params in order");
   });
 

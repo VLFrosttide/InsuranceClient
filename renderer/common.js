@@ -80,14 +80,20 @@ const I18N = {
     "nav.insurances": "Insurances",
     "nav.insurancesByDate": "Insurances by date",
     "nav.currentCash": "Current cash",
-    "nav.card": "Card",
     "nav.reconcile": "Reconcile daily report",
     "nav.diagnostics": "Diagnostics",
+    settingsSaved: "Setting saved",
 
     // Admin > Diagnostics: the failed requests recorded on every client PC.
     "diag.title": "Client diagnostics",
     "diag.hint":
       "Failed requests recorded on the PCs (403s and the first successful request after them), uploaded as soon as the client can reach the server. They stay here until you delete them.",
+    "diag.collect": "Data collection",
+    "diag.collectToggle": "Gather client diagnostics",
+    "diag.collectHint":
+      "Switches data gathering on or off for every PC. While it is off, uploads are answered but nothing is stored: the clients drop their queued reports instead of retrying. Reports already stored stay readable.",
+    "diag.collectingOn": "Gathering is on",
+    "diag.collectingOff": "Gathering is off - new reports are discarded",
     "diag.refresh": "Refresh",
     "diag.download": "Download JSON",
     "diag.clear": "Delete all",
@@ -179,7 +185,7 @@ const I18N = {
     balance: "Balance",
     currentCash: "Current cash",
     currentCashHint:
-      "Only the cash balance: money that physically arrived as cash. Card payments, email payments funded by a broker balance and money handed over by brokers (cash from brokers) are tracked separately. Both “Expense” and “Hand over” take money out of this balance, but only an expense counts as spending for the day.",
+      "Available cash is the cash actually in the drawer, derived from the policies: the walk-in cash policies of the open shift plus manual increases, minus expenses and hand-overs. Card payments, email payments funded by a broker balance and money handed over by brokers (cash from brokers) are tracked separately. Correcting a policy changes the drawer by exactly its new price - it never leaves a transaction behind.",
     cardBalance: "Card balance",
     users: "Users",
     brokers: "Brokers",
@@ -451,6 +457,7 @@ const I18N = {
     "payment.Cash": "Cash",
     "payment.Card": "Card",
     "payment.Broker": "Broker balance",
+    "payment.cardCash": "Card + cash",
     clearBalance: "Clear balance",
     clearCardBalanceConfirm:
       "Clear the card balance to 0? This will record the kept amount.",
@@ -473,20 +480,21 @@ const I18N = {
       "Money funded from a broker's balance by the policies created on this day.",
     balanceFromWalkInsCash: "Balance from walk-ins cash",
     balanceFromWalkInsCashHint:
-      "Cash money collected from walk-in policies on this day.",
+      "The price of the walk-in policies paid in cash on this day (annulled ones count with their annulment fee).",
     balanceFromWalkInsCard: "Balance from walk-ins card",
     balanceFromWalkInsCardHint:
-      "Card payments collected from walk-in policies on this day.",
+      "The price of the walk-in policies paid by card on this day (annulled ones count with their annulment fee).",
     lastPayment: "Last payment",
     totalInsurances: "Total insurances",
     brokerInsurances: "Broker insurances",
     walkInInsurances: "Walk-in insurances",
-    totalDailyCash: "Total daily cash",
-    totalDailyCashHint:
-      "The day's total insurance money: the balance funded from broker insurances, plus walk-in cash payments and walk-in card payments. It combines the three figures below.",
+    totalDailyBalance: "Total daily balance",
+    totalDailyBalanceHint:
+      "The price of every insurance created on this day, whatever the payment type - cash, card or a broker's balance. It is the sum of the three figures below.",
+    availableCash: "Available cash",
     availableCashBranch: "Available cash ({branch})",
     availableCashHint:
-      "This branch's cash drawer balance at the end of the selected day. Walking the dates back shows how much cash the branch actually had available then.",
+      "The branch's cash drawer at the end of the selected day: the walk-in cash policies of its current shift plus manual increases, minus expenses and hand-overs. Walking the dates back shows how much cash the branch actually had available then.",
     countryWideInsurances: "Country-wide insurances",
     countryWideInsurancesHint:
       "The range of policy numbers issued in the country on this day: the highest number minus the lowest. The policies listed below set the ends of that range, so a mistyped or out-of-series number at either end changes the figure.",
@@ -495,6 +503,8 @@ const I18N = {
     countryWideSinglePolicy: "Only policy",
     cardPaymentsHint:
       "Card payments collected at this branch on this day.",
+    cardBalanceHint:
+      "This branch's live card balance: the walk-in card policies since its last reset (an “End shift” clears it together with the drawer).",
     cardInsurances: "Walk-in card insurances",
     cardInsurancesHint:
       "Walk-in policies paid by card at this branch on the selected day. The Card balance card opens this list.",
@@ -889,14 +899,20 @@ const I18N = {
     "nav.insurances": "Застраховки",
     "nav.insurancesByDate": "Застраховки по дата",
     "nav.currentCash": "Наличен кеш",
-    "nav.card": "Карта",
     "nav.reconcile": "Дневен отчет",
     "nav.diagnostics": "Диагностика",
+    settingsSaved: "Настройката е запазена",
 
     // Админ > Диагностика: неуспешните заявки, записани на всеки клиент.
     "diag.title": "Клиентска диагностика",
     "diag.hint":
       "Неуспешни заявки, записани на компютрите (403 и първата успешна заявка след тях), качени веднага щом клиентът достигне сървъра. Стоят тук, докато не ги изтриете.",
+    "diag.collect": "Събиране на данни",
+    "diag.collectToggle": "Събирай клиентска диагностика",
+    "diag.collectHint":
+      "Включва или изключва събирането на данни за всички компютри. Докато е изключено, качванията получават отговор, но нищо не се записва: клиентите изхвърлят чакащите отчети, вместо да ги опитват отново. Вече записаните отчети остават за преглед.",
+    "diag.collectingOn": "Събирането е включено",
+    "diag.collectingOff": "Събирането е изключено - новите отчети се изхвърлят",
     "diag.refresh": "Опресни",
     "diag.download": "Изтегли JSON",
     "diag.clear": "Изтрий всички",
@@ -987,7 +1003,7 @@ const I18N = {
     balance: "Баланс",
     currentCash: "Наличен кеш",
     currentCashHint:
-      "Само кешовият баланс: пари, които са постъпили физически в брой. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно. Бутоните „Разход“ и „Предай пари“ и двата изваждат пари от този баланс, но само разходът се брои като изразходване за деня.",
+      "Наличният кеш е кешът, който реално е в касата, изчислен от полиците: застраховките на място, платени в брой, от текущата смяна, плюс ръчните увеличения, минус разходите и предадените пари. Картовите плащания, имейл плащанията, финансирани от баланс на брокер, и парите, предадени от брокери (кеш от брокери), се отчитат отделно. Корекцията на полица променя касата точно с новата ѝ цена и не оставя транзакция след себе си.",
     cardBalance: "Баланс карта",
     users: "Потребители",
     brokers: "Брокери",
@@ -1274,6 +1290,7 @@ const I18N = {
     "payment.Cash": "В брой",
     "payment.Card": "С карта",
     "payment.Broker": "От баланс на брокер",
+    "payment.cardCash": "Карта + кеш",
     clearBalance: "Изчисти баланса",
     clearCardBalanceConfirm:
       "Да се нулира ли балансът на картата? Ще бъде записана задържаната сума.",
@@ -1296,20 +1313,21 @@ const I18N = {
       "Пари, финансирани от баланс на брокер чрез застраховките, създадени на този ден.",
     balanceFromWalkInsCash: "Баланс от плащания в брой на място",
     balanceFromWalkInsCashHint:
-      "Пари в брой, събрани от застраховки на място на този ден.",
+      "Цената на застраховките на място, платени в брой на този ден (анулираните се броят с таксата за анулиране).",
     balanceFromWalkInsCard: "Баланс от плащания с карта на място",
     balanceFromWalkInsCardHint:
-      "Плащания с карта, събрани от застраховки на място на този ден.",
+      "Цената на застраховките на място, платени с карта на този ден (анулираните се броят с таксата за анулиране).",
     lastPayment: "Последно плащане",
     totalInsurances: "Общо застраховки",
     brokerInsurances: "Брокерски застраховки",
     walkInInsurances: "Застраховки на място",
-    totalDailyCash: "Общ дневен кеш",
-    totalDailyCashHint:
-      "Общите пари от застраховки за деня: балансът от брокерски застраховки плюс плащанията в брой и с карта на място. Обединява трите стойности по-долу.",
+    totalDailyBalance: "Общ дневен баланс",
+    totalDailyBalanceHint:
+      "Цената на всички застраховки, създадени на този ден, независимо от начина на плащане - в брой, с карта или от баланс на брокер. Това е сборът на трите стойности по-долу.",
+    availableCash: "Наличен кеш",
     availableCashBranch: "Наличен кеш ({branch})",
     availableCashHint:
-      "Наличният кеш в касата на този клон в края на избрания ден. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
+      "Кешът в касата на клона в края на избрания ден: застраховките на място, платени в брой, от текущата смяна, плюс ръчните увеличения, минус разходите и предадените пари. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
     countryWideInsurances: "Застраховки в страната",
     countryWideInsurancesHint:
       "Диапазонът на номерата на полиците, издадени в страната за този ден: най-високият номер минус най-ниският. Полиците по-долу определят краищата на диапазона, така че сгрешен или чужд номер в някой от краищата променя стойността.",
@@ -1318,6 +1336,8 @@ const I18N = {
     countryWideSinglePolicy: "Единствена полица",
     cardPaymentsHint:
       "Плащания с карта, събрани в този клон на този ден.",
+    cardBalanceHint:
+      "Текущият баланс на картата за този клон: застраховките с карта на място от последното нулиране („Завърши смяна“ го изчиства заедно с касата).",
     cardInsurances: "Застраховки с карта (на място)",
     cardInsurancesHint:
       "Застраховки на място, платени с карта в този клон на избрания ден. Картата „Баланс на картата“ отваря този списък.",
