@@ -104,6 +104,7 @@ check("every requested column is sortable", () => {
     "Price",
     "CreationDate",
     "Broker",
+    "BrokerCode",
     "Author",
     "Annulled",
     "PaymentType",
@@ -162,6 +163,17 @@ check("Cyrillic broker names sort by alphabet", () => {
     { BlancNumber: "C2", Broker: "Армеец" },
   ];
   eq(sorted("Broker", "asc", cyr), ["C2", "C1"]);
+});
+
+check("broker ID sorts naturally, blanks last", () => {
+  const codeRows = [
+    { BlancNumber: "X1", BrokerCode: "2.10" },
+    { BlancNumber: "X2", BrokerCode: "2.1" },
+    { BlancNumber: "X3", BrokerCode: "" },
+    { BlancNumber: "X4", BrokerCode: "10.1" },
+  ];
+  eq(sorted("BrokerCode", "asc", codeRows), ["X2", "X1", "X4", "X3"]);
+  eq(sorted("BrokerCode", "desc", codeRows), ["X4", "X1", "X2", "X3"]);
 });
 
 check("equal values keep the server order (stable sort)", () => {

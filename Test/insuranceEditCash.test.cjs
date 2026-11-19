@@ -576,11 +576,28 @@ async function patch(body, opts = {}) {
     eq(r.row.CurrencyType, "TRY", "stored currency");
   });
 
-  await check("an annulled policy no longer contributes, so nothing moves", async () => {
-    const r = await patch({ Price: 200 }, { row: { Annulled: 1 } });
-    eq(r.status, 200, "status");
-    eq(r.movements, [], "no movements expected");
-    eq(r.row.Price, "200", "the correction itself is still stored");
+  await check("the price of an annulled policy is its tax, not a separate field", async () => {
+    // A converted row stores the tax in Price and the sale price in
+    // OriginalPrice. Price is not edited directly (the client keeps it
+    // read-only; the Fee field changes both), so a body carrying only Price
+    // has nothing to update and must not move money.
+    const r = await patch(
+      { Price: 200 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 9,
+          Price: 9,
+          OriginalPrice: 100,
+        },
+      }
+    );
+    eq(r.status, 400, "nothing to update");
+    eq(r.body, { error: "Nothing to update" }, "error");
+    eq(r.movements, [], "no movements");
+    eq(r.row.Price, 9, "the tax stays the price");
+    eq(r.row.AnnulFee, 9, "and the fee is unchanged");
   });
 
   await check("the user making the edit is recorded on both movements", async () => {
@@ -1344,9 +1361,12 @@ async function patch(body, opts = {}) {
       brokerRestores: brokerRestores.map(
         (r) => `${r.amount} -> broker ${r.brokerId}`
       ),
-      // AnnulReason (who pays) and AnnulFee as written to the row.
+      // AnnulReason (who pays), AnnulFee, OriginalPrice and the new Price as
+      // written to the row. Price is the tax once annulled.
       storedPayer: update ? update.params[0] : undefined,
       storedFee: update ? update.params[1] : undefined,
+      storedOriginalPrice: update ? update.params[2] : undefined,
+      storedPrice: update ? update.params[3] : undefined,
     };
   }
 
@@ -1398,6 +1418,8 @@ async function patch(body, opts = {}) {
     eq(r.body.inEffect, true, "in effect");
     eq(r.body.refund, 91, "refund = price - fee");
     eq(r.storedPayer, "broker", "stored payer");
+    eq(r.storedOriginalPrice, 100, "the sale price is kept");
+    eq(r.storedPrice, 9, "the tax becomes the new price");
   });
 
   await check("a policy starting today is already in effect", async () => {
@@ -1666,6 +1688,8 @@ async function patch(body, opts = {}) {
           Annulled: 1,
           AnnulReason: "worker",
           AnnulFee: 9,
+          Price: 9,
+          OriginalPrice: 100,
           StartDate: dayOffset(-1),
           PaymentType: "Cash",
         },
@@ -1674,6 +1698,7 @@ async function patch(body, opts = {}) {
     eq(r.status, 200, "status");
     eq(r.row.AnnulReason, "worker", "payer unchanged");
     eq(r.row.AnnulFee, 5, "stored fee");
+    eq(r.row.Price, 5, "the tax is the new price");
     eq(
       r.movements,
       ["cash reduce 4 EUR @ Офис Харманли (Annul 1234567) by admin1"],
@@ -1702,6 +1727,32 @@ async function patch(body, opts = {}) {
     eq(r.status, 400, "status");
     eq(r.body, { error: "fee must be a non-negative number" }, "error");
     eq(r.movements, [], "no money moves");
+  });
+
+  await check("an annulment computes the refund from OriginalPrice, not the tax in Price", async () => {
+    // A converted row: Price already holds the previous tax (9), the sale
+    // price lives in OriginalPrice (100). Changing the fee to 5 must refund
+    // 100 - 5 and keep Price in step with the new tax.
+    const r = await annul(
+      { payer: "worker", fee: 5 },
+      {
+        Annulled: 1,
+        AnnulReason: "worker",
+        AnnulFee: 9,
+        Price: 9,
+        OriginalPrice: 100,
+        StartDate: dayOffset(-1),
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.body.refund, 95, "refund = original price - new fee");
+    eq(r.storedOriginalPrice, 100, "the sale price is preserved");
+    eq(r.storedPrice, 5, "the new tax is the price");
+    eq(
+      r.movements,
+      ["cash reduce 4 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the 4 difference leaves the drawer"
+    );
   });
 
   await check("an admin can also update fault via POST /insurances/:blancNumber/annul", async () => {
@@ -1738,6 +1789,8 @@ async function patch(body, opts = {}) {
           Annulled: 1,
           AnnulReason: "worker",
           AnnulFee: 9,
+          Price: 9,
+          OriginalPrice: 100,
           StartDate: dayOffset(-1),
           PaymentType: "Cash",
         },
@@ -1747,6 +1800,8 @@ async function patch(body, opts = {}) {
     eq(r.row.Annulled, 0, "annulled flag cleared");
     eq(r.row.AnnulReason, null, "annul reason cleared");
     eq(r.row.AnnulFee, null, "annul fee cleared");
+    eq(r.row.Price, 100, "the sale price is back in Price");
+    eq(r.row.OriginalPrice, null, "and the saved original is cleared");
     eq(
       r.movements,
       ["cash increase 91 EUR @ Офис Харманли (Restore 1234567) by admin1"],
@@ -1762,6 +1817,8 @@ async function patch(body, opts = {}) {
           Annulled: 1,
           AnnulReason: "worker",
           AnnulFee: 9,
+          Price: 9,
+          OriginalPrice: 100,
           StartDate: dayOffset(-1),
           BrokerId: 7,
           PaymentType: "Broker",

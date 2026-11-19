@@ -348,6 +348,16 @@ function open(row, response, onDone) {
     }
   });
 
+  await check("the price of an annulled policy is read-only", async () => {
+    // The stored Price is the annulment tax; admins change it through the Fee
+    // field, so the Price control must never be typed over.
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+    const price = lastSpec.find((s) => s.key === "Price");
+    eq(price && price.readonly, true, "admin cannot type the annulled price");
+    eq(e.specValue("AnnulFee"), 7, "the fee is the editable value");
+  });
+
   await check("an admin editing an annulled policy sees the fee field", async () => {
     CTX.userRole = "1";
     const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });

@@ -1,8 +1,10 @@
 "use strict";
 
 // Node test for the GET /insurances search filters: the `broker` parameter
-// (added for the "My insurances" lookup tab) and the `annulled` parameter
-// (added for the "Annulled" filter).
+// (added for the "My insurances" lookup tab), the `brokerCode` parameter (the
+// "Broker ID" field) and the `annulled` parameter (added for the "Annulled"
+// filter). It also covers GET /insurances/suggestions, the autocomplete source
+// for the author / broker / broker-ID inputs.
 //
 // The route handler lives in InsuranceServer/Requests/TierEndpoints.js (see
 // Test/serverPath.cjs). It is a CommonJS module that only needs `express` and a
@@ -622,6 +624,179 @@ async function search(query, user = { role: 2, username: "worker1" }) {
       0,
       "no broker lookup"
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // brokerCode - the "Broker ID" search filter. It matches the human-readable
+  // code the ID column shows, after that code is resolved from the broker (or
+  // the branch's broker, for a walk-in).
+  // -------------------------------------------------------------------------
+  const CODE_ROWS = [
+    {
+      BlancNumber: "1",
+      Branch: "ГКПП Капитан Андреево",
+      Broker: "ГКПП Капитан Андреево",
+      BrokerId: null,
+    },
+    {
+      BlancNumber: "2",
+      Branch: "ГКПП Лесово",
+      Broker: "ГКПП Лесово",
+      BrokerId: null,
+    },
+    {
+      BlancNumber: "3",
+      Branch: "ГКПП Капитан Андреево",
+      Broker: "Euroins",
+      BrokerId: 9,
+    },
+  ];
+  const CODE_BROKERS = [
+    { Name: "KapAndreevo", Code: "2.1" },
+    { Name: "Lesovo", Code: "4.2" },
+    { id: 9, Code: "1.9" },
+  ];
+  const idsOf = (r) => (r.body.insurances || []).map((i) => i.BlancNumber);
+
+  await check("brokerCode alone is accepted as a search criterion", async () => {
+    const r = await searchWithBrokers(
+      { brokerCode: "2.1" },
+      undefined,
+      CODE_ROWS,
+      CODE_BROKERS
+    );
+    eq(r.status, 200, "status");
+    eq(r.queried, true, "hits the database");
+  });
+
+  await check("brokerCode filters by the resolved broker ID", async () => {
+    const r = await searchWithBrokers(
+      { brokerCode: "2.1" },
+      undefined,
+      CODE_ROWS,
+      CODE_BROKERS
+    );
+    eq(idsOf(r), ["1"], "Kapitan Andreevo (2.1)");
+  });
+
+  await check("brokerCode matches partially and case-insensitively", async () => {
+    const r = await searchWithBrokers(
+      { brokerCode: "4" },
+      undefined,
+      CODE_ROWS,
+      CODE_BROKERS
+    );
+    eq(idsOf(r), ["2"], "Lesovo (4.2)");
+  });
+
+  await check("brokerCode finds an email broker's ID", async () => {
+    const r = await searchWithBrokers(
+      { brokerCode: "1.9" },
+      undefined,
+      CODE_ROWS,
+      CODE_BROKERS
+    );
+    eq(idsOf(r), ["3"], "Euroins (1.9)");
+  });
+
+  await check("brokerCode combines with the broker name", async () => {
+    const r = await searchWithBrokers(
+      { broker: "Lesovo", brokerCode: "4.2" },
+      undefined,
+      CODE_ROWS,
+      CODE_BROKERS
+    );
+    eq(idsOf(r), ["2"], "both filters agree");
+  });
+
+  await check("brokerCode excludes rows without an ID", async () => {
+    const r = await searchWithBrokers(
+      { brokerCode: "2.1" },
+      undefined,
+      [
+        {
+          BlancNumber: "office",
+          Branch: "Офис Харманли",
+          Broker: "Офис Харманли",
+          BrokerId: null,
+        },
+      ],
+      []
+    );
+    eq(idsOf(r), [], "the office has no broker ID");
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /insurances/suggestions - the lookup's author/broker autocomplete.
+  // -------------------------------------------------------------------------
+  const suggestionsRoute = routes.find(
+    (r) => r.method === "get" && r.path === "/insurances/suggestions"
+  );
+  if (!suggestionsRoute) {
+    console.error("GET /insurances/suggestions route was not registered");
+    process.exit(1);
+  }
+  const suggestionsHandler =
+    suggestionsRoute.handlers[suggestionsRoute.handlers.length - 1];
+  async function suggestions(user = { role: 2, username: "worker1" }) {
+    const res = {
+      statusCode: 200,
+      body: undefined,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      },
+    };
+    await suggestionsHandler(
+      { query: {}, params: {}, body: {}, user },
+      res
+    );
+    return res;
+  }
+
+  await check("suggestions list distinct authors and broker names", async () => {
+    returnRows = [
+      { Author: "worker1", Broker: "ГКПП Лесово" },
+      { Author: "admin1", Broker: "Euroins" },
+      { Author: "worker1", Broker: "ГКПП Лесово" },
+    ];
+    brokerRows = [
+      { Name: "Euroins", Code: "1.9" },
+      { Name: "Lesovo", Code: "4.2" },
+    ];
+    const r = await suggestions();
+    eq(r.statusCode, 200, "status");
+    eq(r.body.authors, ["admin1", "worker1"], "deduplicated authors");
+    const names = r.body.brokers.map((b) => b.Name);
+    ok(names.includes("Euroins"), "current broker name");
+    ok(names.includes("Lesovo"), "current broker without policies");
+    ok(names.includes("ГКПП Лесово"), "legacy name from a policy");
+    eq(
+      r.body.brokers.find((b) => b.Name === "Euroins").Code,
+      "1.9",
+      "code of a current broker"
+    );
+    eq(
+      r.body.brokers.find((b) => b.Name === "Lesovo").Code,
+      "4.2",
+      "code of a broker without policies"
+    );
+    eq(
+      r.body.brokers.find((b) => b.Name === "ГКПП Лесово").Code,
+      "",
+      "a legacy name has no code"
+    );
+  });
+
+  await check("suggestions are available to workers too", async () => {
+    const r = await suggestions({ role: 2, username: "worker1" });
+    eq(r.statusCode, 200, "status");
+    ok(Array.isArray(r.body.authors), "authors array");
+    ok(Array.isArray(r.body.brokers), "brokers array");
   });
 
   // The branch → broker-name map is defined once, in BrokerInfo.js. The copy in

@@ -1295,11 +1295,14 @@ function money(value) {
 // Price plus the +2 card fee for walk-in (broker-less) policies paid by card.
 // The +2 is a bank tax, so it is visible here and on the add form but is never
 // stored in the database (the server keeps CardFee at 0 and Price excludes it).
+// An annulled policy has already been refunded and its stored Price is the
+// annulment tax now, so no card fee is added on top of it.
 const CARD_FEE = 2;
 
 function chargePrice(item) {
   const raw = Number(item && item.Price);
   if (!Number.isFinite(raw)) return raw;
+  if (item && Boolean(Number(item.Annulled))) return raw;
   const isWalkIn =
     item.BrokerId === null ||
     item.BrokerId === undefined ||
@@ -1308,16 +1311,44 @@ function chargePrice(item) {
   return isWalkIn && isCard ? Math.round((raw + CARD_FEE) * 100) / 100 : raw;
 }
 
-// The amount an exported policy contributes to the price column. A normal
-// policy contributes its charge price (stored price, plus the visual-only
-// +2 card fee for walk-in card payments). An annulled policy has already been
-// refunded (price - fee), so it only contributes its annulment fee.
+// The amount a policy contributes to the price column (table and Excel
+// export). A normal policy contributes its charge price (stored price, plus the
+// visual-only +2 card fee for walk-in card payments). An annulled policy's
+// price IS the annulment tax now (the server keeps Price = AnnulFee and saves
+// the sale price in OriginalPrice), so it contributes exactly that tax.
 function insuranceExportPrice(item) {
-  if (item && item.Annulled) {
+  if (item && Boolean(Number(item.Annulled))) {
     const fee = Number(item.AnnulFee);
     return Number.isFinite(fee) ? fee : 0;
   }
   return chargePrice(item);
+}
+
+// Total of the shown policies, per currency. Each row contributes the amount
+// its Price column shows (insuranceExportPrice): an active policy its price
+// plus the visual-only +2 card fee of a walk-in card payment, and an annulled
+// policy its annulment tax (the tax is the policy's price now), so the total
+// includes what annulled policies kept. `canSee` is the same price-visibility
+// predicate the table uses; a row whose price the user may not see contributes
+// nothing, so a worker's total cannot reveal a broker (email) price. Deleted
+// policies are counted when the admin asked to show them (they are shown rows
+// then).
+// Returns [{ currency, amount }] sorted by currency, so EUR and TRY stay
+// apart instead of being added together.
+function sumShownInsurancePrices(items, canSee) {
+  const visible = typeof canSee === "function" ? canSee : () => true;
+  const cents = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || !visible(item)) continue;
+    const amount = Number(insuranceExportPrice(item));
+    if (!Number.isFinite(amount)) continue;
+    const currency = String(item.CurrencyType || "EUR").trim().toUpperCase();
+    cents.set(currency, (cents.get(currency) || 0) + Math.round(amount * 100));
+  }
+  return Array.from(cents, ([currency, value]) => ({
+    currency,
+    amount: value / 100,
+  })).sort((a, b) => a.currency.localeCompare(b.currency));
 }
 
 // Display label for a stored payment type (Cash / Card / Broker). Unknown
@@ -2397,6 +2428,10 @@ function openInsuranceEditor(insurance, onDone) {
     // walk-ins (the non-Turk / card-fee fees below apply to walk-ins and the
     // recalculated price has to stay visible to them) and can read but not type
     // it. Broker (email) prices stay hidden from workers.
+    //
+    // Once a policy is annulled its stored Price IS the annulment tax, so the
+    // field is read-only for everyone: the tax is changed through the Fee field
+    // below (the server keeps Price = AnnulFee).
     ...(userRole === "1" || !isEmailPolicy
       ? [
           {
@@ -2404,7 +2439,7 @@ function openInsuranceEditor(insurance, onDone) {
             label: t("price"),
             type: "number",
             value: insurance.Price,
-            readonly: userRole !== "1",
+            readonly: userRole !== "1" || Boolean(Number(insurance.Annulled)),
           },
         ]
       : []),
@@ -2590,7 +2625,9 @@ function openInsuranceEditor(insurance, onDone) {
     },
     t("saveChanges")
   );
-  wireEditPriceRecalc(form, insurance);
+  // An annulled policy's price is its fixed annulment tax, not a tariff price,
+  // so the duration / vehicle type dropdowns must not recalculate it.
+  if (!Boolean(Number(insurance.Annulled))) wireEditPriceRecalc(form, insurance);
 
   openModal(`${t("editInsurance")} ${insurance.BlancNumber}`, form);
 }
@@ -5360,6 +5397,7 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
       { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
       { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
       { key: "Reason", label: t("reason") },
+      { key: "Author", label: t("author"), format: (v) => v || "—" },
       {
         key: "Amount",
         label: t("amount"),
@@ -5398,6 +5436,7 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
             label: t("reason"),
             format: (v, m) => `${v || ""}${m.DeletedBy ? ` (${m.DeletedBy})` : ""}`,
           },
+          { key: "Author", label: t("author"), format: (v) => v || "—" },
           {
             key: "Amount",
             label: t("amount"),
@@ -5942,10 +5981,143 @@ const INSURANCE_SORT_KEYS = [
   "Price",
   "CreationDate",
   "Broker",
+  "BrokerCode",
   "Author",
   "Annulled",
   "PaymentType",
 ];
+
+// Last search of each lookup tab (admins: "Insurances by date", workers:
+// "Insurances"), keyed by the tab's title key. Switching tabs destroys the
+// view, so the filters, results and sort are kept here and re-rendered when the
+// tab is opened again - the user does not have to retype or re-run the search.
+const insuranceSearchStates = new Map();
+
+// Autocomplete data for the lookup filters (authors and broker names/codes).
+// The dedicated /insurances/suggestions endpoint is preferred, but the lists
+// must still work against an older server (or while it is unreachable), so the
+// loader falls back to endpoints that already exist:
+//   - /brokers          -> broker names + their IDs (roles 1 and 2),
+//   - /admin/users      -> author usernames (admins only),
+//   - the signed-in user and every search's own rows are merged in as well, so
+//     workers gradually get their colleagues' names from the policies they see.
+// The pool is shared by every lookup tab and one failed load is not cached, so
+// opening the tab again retries the primary source.
+const insuranceSuggestionAuthors = new Set();
+const insuranceSuggestionBrokers = new Map(); // broker name -> code
+let insuranceFilterSuggestionsRequest = null;
+let insuranceFilterSuggestionsLoaded = false;
+
+// Add authors/brokers to the shared pool. Returns true when anything new was
+// learned, so the caller can refresh its dropdowns only when needed.
+function mergeInsuranceSuggestions(authors, brokers) {
+  let changed = false;
+  for (const raw of Array.isArray(authors) ? authors : []) {
+    const name = String(raw ?? "").trim();
+    if (name && !insuranceSuggestionAuthors.has(name)) {
+      insuranceSuggestionAuthors.add(name);
+      changed = true;
+    }
+  }
+  for (const raw of Array.isArray(brokers) ? brokers : []) {
+    const name = String((raw && raw.Name) || "").trim();
+    if (!name) continue;
+    const code = String((raw && raw.Code) || "").trim();
+    const previous = insuranceSuggestionBrokers.get(name);
+    if (previous === undefined) {
+      insuranceSuggestionBrokers.set(name, code);
+      changed = true;
+    } else if (!previous && code) {
+      // The brokers table knows the ID of a name first seen on an old policy.
+      insuranceSuggestionBrokers.set(name, code);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+// The current pool in the order the dropdowns show it.
+function currentInsuranceSuggestions() {
+  return {
+    authors: Array.from(insuranceSuggestionAuthors).sort((a, b) =>
+      a.localeCompare(b)
+    ),
+    brokers: Array.from(
+      insuranceSuggestionBrokers,
+      ([Name, Code]) => ({ Name, Code })
+    ).sort((a, b) => a.Name.localeCompare(b.Name)),
+  };
+}
+
+// Learn from the rows of a search the user just ran. This is what gives a
+// worker author suggestions without an admin-only users endpoint.
+function rememberInsuranceSuggestionsFromRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return mergeInsuranceSuggestions(
+    list.map((r) => r && r.Author),
+    list.map((r) => ({ Name: r && r.Broker, Code: r && r.BrokerCode }))
+  );
+}
+
+function loadInsuranceFilterSuggestions() {
+  if (insuranceFilterSuggestionsLoaded) {
+    return Promise.resolve(currentInsuranceSuggestions());
+  }
+  if (!insuranceFilterSuggestionsRequest) {
+    insuranceFilterSuggestionsRequest = (async () => {
+      let primaryLoaded = false;
+      let fallbackLoaded = false;
+      // Preferred source: the dedicated endpoint (authors + brokers, including
+      // broker names that only survive on old policies).
+      try {
+        const data = await api("/insurances/suggestions");
+        mergeInsuranceSuggestions(data && data.authors, data && data.brokers);
+        primaryLoaded = true;
+      } catch (err) {
+        console.warn("Failed to load insurance filter suggestions:", err);
+      }
+      // Older server: brokers are available to both admins and workers.
+      if (!primaryLoaded) {
+        try {
+          const data = await api("/brokers");
+          mergeInsuranceSuggestions([], data && data.brokers);
+          fallbackLoaded = true;
+        } catch (err) {
+          console.warn("Failed to load broker suggestions:", err);
+        }
+      }
+      // Author names for admins, who may list every account (including the
+      // soft-deleted ones whose policies still exist).
+      if (!primaryLoaded && userRole === "1") {
+        try {
+          const data = await api("/admin/users?includeDeleted=1");
+          mergeInsuranceSuggestions(
+            [
+              ...((data && data.users) || []).map((u) => u && u.Username),
+              ...((data && data.deleted) || []).map((u) => u && u.Username),
+            ],
+            []
+          );
+          fallbackLoaded = true;
+        } catch (err) {
+          console.warn("Failed to load author suggestions:", err);
+        }
+      }
+      // The signed-in user is always a valid author.
+      if (typeof username === "string" && username) {
+        mergeInsuranceSuggestions([username], []);
+      }
+      insuranceFilterSuggestionsLoaded = primaryLoaded || fallbackLoaded;
+      return currentInsuranceSuggestions();
+    })().finally(() => {
+      insuranceFilterSuggestionsRequest = null;
+    });
+  }
+  return insuranceFilterSuggestionsRequest;
+}
+
+// Unique id source for the visible autocomplete dropdowns.
+let suggestionListSeq = 0;
 
 // Comparable value of one cell: a number for price/status, a timestamp for the
 // creation date (parsed exactly like formatDateTime, so the order matches what
@@ -6078,6 +6250,137 @@ function brokerRowMatchesNameFilter(name, query) {
   return brokerNameMatches(name, text);
 }
 
+// A small visible autocomplete dropdown for a text input. Native <datalist>
+// suggestions are easy to miss (they only appear while typing and cannot be
+// opened programmatically), so the lookup filters use this instead:
+//   - clicking or focusing the field shows the current suggestions at once,
+//   - typing filters them (the caller decides how),
+//   - clicking or Enter selects one, ArrowUp/Down move, Escape closes.
+// `getItems` returns [{ value, hint? }] from the current suggestion pool, so
+// names learned later (a search, the async loader) are used automatically.
+function attachAutocomplete(inputNode, getItems, matches) {
+  const fieldWrap = inputNode.closest(".field") || inputNode.parentNode;
+  if (!fieldWrap) return { refresh() {} };
+  fieldWrap.classList.add("autocomplete-field");
+  const listId = `autocomplete-list-${++suggestionListSeq}`;
+  const list = el("div", null, {
+    class: "autocomplete-list hidden",
+    id: listId,
+    role: "listbox",
+  });
+  fieldWrap.appendChild(list);
+  inputNode.setAttribute("autocomplete", "off");
+  inputNode.setAttribute("aria-autocomplete", "list");
+  inputNode.setAttribute("aria-controls", listId);
+  inputNode.setAttribute("aria-expanded", "false");
+
+  let items = [];
+  let active = -1;
+
+  function close() {
+    list.classList.add("hidden");
+    inputNode.setAttribute("aria-expanded", "false");
+    inputNode.removeAttribute("aria-activedescendant");
+    active = -1;
+  }
+
+  function open() {
+    const query = String(inputNode.value || "").trim();
+    items = (getItems() || [])
+      .filter((item) => item && matches(item, query))
+      .slice(0, 12);
+    if (!items.length) {
+      close();
+      return;
+    }
+    active = -1;
+    list.replaceChildren(
+      ...items.map((item, index) => {
+        const option = el("div", null, {
+          class: "autocomplete-option",
+          role: "option",
+          id: `${listId}-${index}`,
+        });
+        option.appendChild(
+          el("span", item.value, { class: "autocomplete-value" })
+        );
+        if (item.hint) {
+          option.appendChild(
+            el("span", item.hint, { class: "autocomplete-hint" })
+          );
+        }
+        option.addEventListener("mousedown", (e) => {
+          // Keep the focus in the input; a click would blur it first and the
+          // blur timer would close the list before the selection was handled.
+          e.preventDefault();
+          pick(index);
+        });
+        return option;
+      })
+    );
+    list.classList.remove("hidden");
+    inputNode.setAttribute("aria-expanded", "true");
+  }
+
+  function pick(index) {
+    const item = items[index];
+    if (!item) return;
+    inputNode.value = item.value;
+    // Tell the rest of the view (persistence, filters) that the value changed.
+    inputNode.dispatchEvent(new Event("input", { bubbles: true }));
+    close();
+  }
+
+  function highlight(index) {
+    if (!items.length) return;
+    active = (index + items.length) % items.length;
+    Array.from(list.children).forEach((node, i) =>
+      node.classList.toggle("active", i === active)
+    );
+    inputNode.setAttribute(
+      "aria-activedescendant",
+      `${listId}-${active}`
+    );
+  }
+
+  inputNode.addEventListener("focus", open);
+  inputNode.addEventListener("click", open);
+  inputNode.addEventListener("input", open);
+  inputNode.addEventListener("blur", () => setTimeout(close, 120));
+  inputNode.addEventListener("keydown", (e) => {
+    if (list.classList.contains("hidden")) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      highlight(active + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      highlight(active - 1);
+    } else if (e.key === "Enter" && active >= 0) {
+      // Select the highlighted suggestion instead of running the search.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      pick(active);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
+
+  return {
+    refresh() {
+      // Re-open (or fill while the input is focused) when names arrive later,
+      // e.g. from the async loader or from a search the user just ran.
+      if (
+        !list.classList.contains("hidden") ||
+        document.activeElement === inputNode
+      ) {
+        open();
+      }
+    },
+    close,
+  };
+}
+
 // Hide/show already-rendered broker rows for the Name filter. `rows` holds
 // { name, row } entries in table order; returns how many rows stay visible. The
 // rows are toggled in place (never rebuilt), so the header input keeps its
@@ -6097,25 +6400,41 @@ function applyBrokerNameFilterToRows(rows, query) {
 
 
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
-  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&annulled=&payment=
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&brokerCode=&annulled=&payment=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
   // only a car number is not silently narrowed to the current user's own
   // records. Workers reach this view through the "Insurances" tab, which also
   // leaves the author field empty so they can find and edit any policy.
-  // PolicyNumber/BlancNumber/CarNumber/Broker match partially (substring) on
-  // the server, so a worker can search by a fragment of the number, or by a
-  // partially typed broker name ("Euro" finds the "Euroins" policies) too.
-  // The result table also lists the broker and the author of every policy and
-  // can be sorted by price, creation date, broker, author, status and payment
-  // type by clicking the column headers (see the sorting helpers above).
-  const authorInput = input("text", defaultAuthor);
-  const brokerInput = input("text", "");
-  const dateInput = input("date", "");
-  const policyNumberInput = input("text", "");
-  const blancNumberInput = input("text", "");
-  const carNumberInput = input("text", "");
+  // PolicyNumber/BlancNumber/CarNumber/Broker/BrokerCode match partially
+  // (substring) on the server, so a worker can search by a fragment of the
+  // number, a partially typed broker name ("Euro" finds the "Euroins"
+  // policies), or a broker ID ("2.1"). Author, Broker and Broker ID have
+  // autocomplete from the values already in the database.
+  // The result table also lists the broker, its ID and the author of every
+  // policy and can be sorted by price, creation date, broker, broker ID, author,
+  // status and payment type by clicking the column headers (see the sorting
+  // helpers above).
+  //
+  // The tab remembers its last search: switching to another tab and back
+  // restores the filters, the results and the chosen sort (see
+  // insuranceSearchStates). Clearing the form forgets it.
+  const savedSearch = insuranceSearchStates.get(titleKey) || null;
+  // Restore the sort the tab was left with.
+  if (savedSearch && savedSearch.sort) {
+    insuranceSort = { ...savedSearch.sort };
+  }
+  const initial = (key, fallback = "") =>
+    savedSearch && savedSearch[key] !== undefined ? savedSearch[key] : fallback;
+
+  const authorInput = input("text", initial("author", defaultAuthor));
+  const brokerInput = input("text", initial("broker"));
+  const brokerIdInput = input("text", initial("brokerCode"));
+  const dateInput = input("date", initial("date"));
+  const policyNumberInput = input("text", initial("policyNumber"));
+  const blancNumberInput = input("text", initial("blancNumber"));
+  const carNumberInput = input("text", initial("carNumber"));
   const paymentInput = select(
     [
       { label: "", value: "" },
@@ -6123,9 +6442,15 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       { label: t("payment.Card"), value: "Card" },
       { label: t("payment.Broker"), value: "Broker" },
     ],
-    ""
+    initial("payment")
   );
   const annulledInput = input("checkbox");
+  annulledInput.checked = Boolean(savedSearch && savedSearch.annulled);
+
+  // Autocomplete for the free-text filters is attached after the inputs are
+  // wrapped in their .field containers (see below): the dropdown is positioned
+  // relative to that wrapper, which only exists once the form is built.
+
   const apply = el("button", t("load"));
   const clearBtn = el("button", t("clear"), {
     class: "secondary",
@@ -6134,6 +6459,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   const form = el("div", null, { class: "row filter-row" });
   form.appendChild(field(t("author"), authorInput));
   form.appendChild(field(t("broker"), brokerInput));
+  form.appendChild(field(t("brokerIdFilter"), brokerIdInput));
   form.appendChild(field(t("date"), dateInput));
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
@@ -6146,8 +6472,58 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   const isAdminSearch = userRole === "1";
   const includeDeletedInput = isAdminSearch ? input("checkbox") : null;
   if (includeDeletedInput) {
+    includeDeletedInput.checked = Boolean(
+      savedSearch && savedSearch.includeDeleted
+    );
     form.appendChild(field(t("includeDeleted"), includeDeletedInput));
   }
+  // Attach the visible autocomplete dropdowns now that the inputs are inside
+  // their .field wrappers.
+  const authorAutocomplete = attachAutocomplete(
+    authorInput,
+    () =>
+      currentInsuranceSuggestions().authors.map((name) => ({ value: name })),
+    (item, query) =>
+      !query || item.value.toLowerCase().includes(query.toLowerCase())
+  );
+  const brokerAutocomplete = attachAutocomplete(
+    brokerInput,
+    () =>
+      currentInsuranceSuggestions().brokers.map((b) => ({
+        value: b.Name,
+        hint: b.Code ? `${t("brokerIdFilter")} ${b.Code}` : "",
+      })),
+    (item, query) =>
+      brokerRowMatchesNameFilter(item.value, query) ||
+      !query ||
+      String(item.hint || "")
+        .toLowerCase()
+        .includes(query.toLowerCase())
+  );
+  const brokerCodeAutocomplete = attachAutocomplete(
+    brokerIdInput,
+    () =>
+      currentInsuranceSuggestions()
+        .brokers.filter((b) => b.Code)
+        .map((b) => ({ value: b.Code, hint: b.Name })),
+    (item, query) =>
+      !query ||
+      item.value.toLowerCase().includes(query.toLowerCase()) ||
+      String(item.hint || "")
+        .toLowerCase()
+        .includes(query.toLowerCase())
+  );
+  function refreshAutocompletes() {
+    authorAutocomplete.refresh();
+    brokerAutocomplete.refresh();
+    brokerCodeAutocomplete.refresh();
+  }
+  function closeAutocompletes() {
+    authorAutocomplete.close();
+    brokerAutocomplete.close();
+    brokerCodeAutocomplete.close();
+  }
+  loadInsuranceFilterSuggestions().then(refreshAutocompletes);
   // Exports exactly what the table shows (same rows, same order, same row
   // numbers) as an .xlsx file. Disabled until a search returns rows. Workers
   // get the same button; the broker prices they cannot see stay blank.
@@ -6163,9 +6539,93 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
 
   const result = el("div");
 
+  // Live search feedback. The spinner makes a request visible even when it
+  // finishes in milliseconds; the text then says whether anything came back or
+  // whether the result is the same as the previous search. `aria-live` lets a
+  // screen reader announce it as well.
+  const searchStatus = el("div", null, {
+    class: "search-status hidden",
+    "aria-live": "polite",
+  });
+  const searchSpinner = el("span", null, {
+    class: "search-spinner",
+    "aria-hidden": "true",
+  });
+  const searchStatusText = el("span", null, { class: "search-status-text" });
+  searchSpinner.hidden = true;
+  searchStatus.appendChild(searchSpinner);
+  searchStatus.appendChild(searchStatusText);
+
+  function setSearchStatus(state, text) {
+    searchStatus.classList.remove(
+      "hidden",
+      "is-searching",
+      "is-done",
+      "is-empty"
+    );
+    if (!state) {
+      searchStatus.classList.add("hidden");
+      searchSpinner.hidden = true;
+      searchStatusText.textContent = "";
+      return;
+    }
+    searchStatus.classList.add(`is-${state}`);
+    searchSpinner.hidden = state !== "searching";
+    searchStatusText.textContent = text || "";
+    // Restart the short slide-in even when the line was already visible (a
+    // second search), so every completed lookup is visibly acknowledged.
+    if (text) {
+      searchStatusText.classList.remove("search-status-text");
+      void searchStatusText.offsetWidth;
+      searchStatusText.classList.add("search-status-text");
+    }
+  }
+
+  // Same idea for the results themselves: a brief fade/slide on every completed
+  // search, including one that leaves the rows exactly as they were.
+  function flashSearchResults() {
+    result.classList.remove("search-result-flash");
+    void result.offsetWidth;
+    result.classList.add("search-result-flash");
+  }
+
   // Rows of the last successful search, kept so clicking a column header can
-  // re-sort and re-render them without asking the server again.
-  let lastRows = [];
+  // re-sort and re-render them without asking the server again. They (and the
+  // fact that a search was run) are restored when the tab is reopened.
+  let lastRows =
+    savedSearch && Array.isArray(savedSearch.rows) ? savedSearch.rows : [];
+  let hasSearched = Boolean(
+    savedSearch &&
+      (savedSearch.searched ||
+        (Array.isArray(savedSearch.rows) && savedSearch.rows.length > 0))
+  );
+  // True while a request is in flight: blocks a second search and keeps the
+  // Load button disabled until the answer arrives.
+  let searching = false;
+  // Incremented by Clear so a reply that arrives after clearing is ignored
+  // instead of re-filling the results the user just removed.
+  let searchSeq = 0;
+
+  // Snapshot of everything the tab should remember when it is left.
+  function rememberSearch() {
+    insuranceSearchStates.set(titleKey, {
+      author: authorInput.value,
+      broker: brokerInput.value,
+      brokerCode: brokerIdInput.value,
+      date: dateInput.value,
+      policyNumber: policyNumberInput.value,
+      blancNumber: blancNumberInput.value,
+      carNumber: carNumberInput.value,
+      payment: paymentInput.value,
+      annulled: annulledInput.checked,
+      includeDeleted: Boolean(
+        includeDeletedInput && includeDeletedInput.checked
+      ),
+      rows: lastRows,
+      sort: { ...insuranceSort },
+      searched: hasSearched,
+    });
+  }
 
   // Header extras for a sortable column: an arrow on the currently sorted
   // column plus the click handler. The first click on a column sorts
@@ -6228,10 +6688,13 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
             key: "Price",
             label: t("price"),
             // Admins always see the price. Workers see walk-in (broker-less)
-            // prices but never a broker (email) price. For a walk-in card
-            // payment the +2 bank fee is shown on top so the worker knows the
-            // total to charge (it is never stored).
-            format: (_v, item) => (canSeePrice(item) ? money(chargePrice(item)) : ""),
+            // prices but never a broker (email) price. For an active walk-in
+            // card payment the +2 bank fee is shown on top so the worker knows
+            // the total to charge (it is never stored). An annulled policy
+            // shows the annulment tax (see insuranceExportPrice), never the
+            // original sale price.
+            format: (_v, item) =>
+              canSeePrice(item) ? money(insuranceExportPrice(item)) : "",
             ...sortHeader("Price"),
           },
           { key: "CurrencyType", label: t("currency") },
@@ -6248,7 +6711,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
           // brokers - so a policy issued at ГКПП Капитан Андреево shows 2.1 and
           // one from ГКПП Лесово shows 4.2. Branches that are not brokers (the
           // Harmanli office) have no ID and stay blank.
-          { key: "BrokerCode", label: t("brokerId") },
+          { key: "BrokerCode", label: t("brokerIdFilter"), ...sortHeader("BrokerCode") },
           { key: "Author", label: t("author"), ...sortHeader("Author") },
           {
             key: "CreationDate",
@@ -6315,11 +6778,38 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
         (i) => (i.Deleted ? "row-deleted" : annulledRowClass(i))
       )
     );
+    // The sum of the shown policies, right-aligned under the table and split
+    // per currency (the rows can mix EUR and TRY). Each row contributes what
+    // its Price cell shows: an active policy its price, an annulled policy its
+    // annulment tax, so the total includes the tax kept from annulled rows. A
+    // row whose price this user may not see contributes nothing, exactly like
+    // its blank Price cell - a worker's total never reveals a broker (email)
+    // price.
+    if (sorted.length) {
+      const totals = sumShownInsurancePrices(sorted, canSeePrice);
+      const totalText = totals.length
+        ? totals
+            .map(({ currency, amount }) => `${money(amount)} ${currency}`)
+            .join(" · ")
+        : money(0);
+      const totalRow = el("div", null, { class: "row insurance-total-row" });
+      totalRow.appendChild(
+        el("span", `${t("totalIncludingAnnulled")}: ${totalText}`, {
+          class: "muted",
+        })
+      );
+      result.appendChild(totalRow);
+    }
+    // Keep the tab's search state current for the next visit (also when a
+    // header click changed only the sort).
+    rememberSearch();
   }
 
   async function runSearch() {
+    if (searching) return;
     const author = authorInput.value.trim();
     const broker = brokerInput.value.trim();
+    const brokerCode = brokerIdInput.value.trim();
     const date = dateInput.value;
     const policyNumber = policyNumberInput.value.trim();
     const blancNumber = blancNumberInput.value.trim();
@@ -6330,6 +6820,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (
       !author &&
       !broker &&
+      !brokerCode &&
       !date &&
       !policyNumber &&
       !blancNumber &&
@@ -6341,9 +6832,19 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       return;
     }
 
+    searching = true;
+    const requestId = ++searchSeq;
+    apply.disabled = true;
+    const previousRows = lastRows;
+    const wasSearched = hasSearched;
+    const startedAt = Date.now();
+    closeAutocompletes();
+    setSearchStatus("searching", t("searching"));
+
     const params = new URLSearchParams();
     if (author) params.set("author", author);
     if (broker) params.set("broker", broker);
+    if (brokerCode) params.set("brokerCode", brokerCode);
     if (date) params.set("date", date);
     if (policyNumber) params.set("policyNumber", policyNumber);
     if (blancNumber) params.set("blancNumber", blancNumber);
@@ -6356,6 +6857,16 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
 
     try {
       const data = await api(`/insurances?${params.toString()}`);
+      // Keep the spinner on screen long enough to register even when the server
+      // answers in a few milliseconds. The result flash then confirms that the
+      // lookup finished.
+      const remaining = 260 - (Date.now() - startedAt);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+      // The user cleared the form while the request was running: drop this
+      // answer so it cannot bring the results back.
+      if (requestId !== searchSeq) return;
       let rows = data.insurances || [];
       // The server matches the broker name itself (script-insensitively). This
       // extra pass only matters while the deployed server still predates the
@@ -6365,11 +6876,46 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       if (broker) {
         rows = rows.filter((r) => brokerNameMatches(r.Broker, broker));
       }
+      // The broker ID is matched locally too so the field also works when it is
+      // combined with another criterion against an older server (a request that
+      // carries only brokerCode is accepted by the updated server, which treats
+      // it as a search criterion). The comparison is the same case-insensitive
+      // substring the server uses on the resolved code.
+      if (brokerCode) {
+        const wanted = brokerCode.toLowerCase();
+        rows = rows.filter((r) =>
+          String(r.BrokerCode ?? "")
+            .toLowerCase()
+            .includes(wanted)
+        );
+      }
+      // The rows themselves are the best autocomplete source: every author and
+      // broker the user can see is added to the shared pool (this is how a
+      // worker gets colleagues' names without the admin-only users endpoint).
+      rememberInsuranceSuggestionsFromRows(rows);
+      refreshAutocompletes();
       // Keep the rows so the column headers can re-sort them locally.
+      const unchanged =
+        wasSearched && JSON.stringify(previousRows) === JSON.stringify(rows);
       lastRows = rows;
+      hasSearched = true;
       renderResults();
+      // A short fade/slide confirms the search even when the rows match the
+      // previous ones; the status line says which of the three cases happened.
+      flashSearchResults();
+      if (!rows.length) {
+        setSearchStatus("empty", t("searchNoResults"));
+      } else if (unchanged) {
+        setSearchStatus("done", t("searchUnchanged"));
+      } else {
+        setSearchStatus("done", fmt(t("searchFound"), { n: rows.length }));
+      }
     } catch (err) {
       toast(err.message, "error");
+      setSearchStatus(null);
+    } finally {
+      searching = false;
+      apply.disabled = false;
     }
   }
 
@@ -6378,21 +6924,40 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   [
     authorInput,
     brokerInput,
+    brokerIdInput,
     dateInput,
     policyNumberInput,
     blancNumberInput,
     carNumberInput,
   ].forEach((inp) => {
     inp.addEventListener("keydown", (e) => {
+      if (e.defaultPrevented) return;
       if (e.key === "Enter") {
         e.preventDefault();
         runSearch();
       }
     });
   });
+  // Keep the form's current values even when the user leaves without pressing
+  // Load, so returning to the tab shows exactly what was being typed.
+  [
+    authorInput,
+    brokerInput,
+    brokerIdInput,
+    dateInput,
+    policyNumberInput,
+    blancNumberInput,
+    carNumberInput,
+  ].forEach((inp) => inp.addEventListener("input", rememberSearch));
+  paymentInput.addEventListener("change", rememberSearch);
+  annulledInput.addEventListener("change", rememberSearch);
+  if (includeDeletedInput) {
+    includeDeletedInput.addEventListener("change", rememberSearch);
+  }
   clearBtn.addEventListener("click", () => {
     authorInput.value = "";
     brokerInput.value = "";
+    brokerIdInput.value = "";
     dateInput.value = "";
     policyNumberInput.value = "";
     blancNumberInput.value = "";
@@ -6401,10 +6966,16 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     annulledInput.checked = false;
     if (includeDeletedInput) includeDeletedInput.checked = false;
     // Clearing drops the results, so the sort order is reset with them: the
-    // next search starts in the default (server) order again.
+    // next search starts in the default (server) order again. The tab is
+    // forgotten too, so returning to it later shows a fresh form.
     lastRows = [];
+    hasSearched = false;
+    searchSeq++;
     insuranceSort = { key: null, dir: "desc" };
+    insuranceSearchStates.delete(titleKey);
     exportBtn.disabled = true;
+    setSearchStatus(null);
+    closeAutocompletes();
     result.replaceChildren();
   });
   exportBtn.addEventListener("click", () => {
@@ -6424,7 +6995,15 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     }
   });
 
-  Content.replaceChildren(el("h2", t(titleKey)), form, result);
+  Content.replaceChildren(
+    el("h2", t(titleKey)),
+    form,
+    searchStatus,
+    result
+  );
+  // Re-render the search the tab was left with (filters are already in the
+  // form): its rows, order and total come back without another request.
+  if (hasSearched) renderResults();
 }
 
 // Shorthand for a stored duration (in days) used in the Excel export:
@@ -6463,7 +7042,7 @@ function insuranceExportSheet(rows, canSeePrice) {
     { label: t("currency"), width: 9 },
     { label: t("payment"), width: 14 },
     { label: t("broker"), width: 20 },
-    { label: t("brokerId"), width: 8 },
+    { label: t("brokerIdFilter"), width: 8 },
     { label: t("author"), width: 14 },
     { label: t("created"), width: 17 },
     { label: t("status"), width: 12 },

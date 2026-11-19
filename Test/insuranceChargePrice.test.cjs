@@ -88,6 +88,22 @@ function eq(actual, expected, msg) {
     );
   });
 
+  check("an annulled walk-in card policy shows only its annulment tax", () => {
+    // After annulment the stored Price is the tax (9 here). The +2 card fee is
+    // a client charge, so it must not be added to a refunded policy.
+    eq(
+      chargePrice({
+        Price: "9.00",
+        PaymentType: "Card",
+        BrokerId: null,
+        Annulled: 1,
+        AnnulFee: 9,
+      }),
+      9,
+      "9"
+    );
+  });
+
   check("a missing price passes through as not-a-number", () => {
     const r = chargePrice({ Price: undefined, PaymentType: "Card", BrokerId: null });
     eq(Number.isFinite(r), false, "not finite");

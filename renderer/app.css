@@ -945,6 +945,12 @@ td.num-neg {
   justify-content: flex-end;
   margin-bottom: 8px;
 }
+/* Total of the shown insurances (annulled ones at their tax), right-aligned
+   under the table. */
+.insurance-total-row {
+  justify-content: flex-end;
+  margin-top: 8px;
+}
 .small {
   font-size: 12px;
 }
