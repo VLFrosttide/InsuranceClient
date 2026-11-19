@@ -40,17 +40,40 @@ const block = src.slice(start, end);
 
 const CTX = {};
 vm.createContext(CTX);
+// The heading-count helpers label their counts through t(); the keys themselves
+// are what these tests check, so the translator is a pass-through.
+CTX.t = (key) => key;
 vm.runInContext(
   block +
     "\nglobalThis.movementRowClass = movementRowClass;" +
     "\nglobalThis.reasonRowClass = reasonRowClass;" +
     "\nglobalThis.cashLedgerRowClass = cashLedgerRowClass;" +
-    "\nglobalThis.amountCellClass = amountCellClass;",
+    "\nglobalThis.amountCellClass = amountCellClass;" +
+    "\nglobalThis.cashLedgerCountKind = cashLedgerCountKind;" +
+    "\nglobalThis.cashLedgerTypeTiers = cashLedgerTypeTiers;" +
+    "\nglobalThis.cashLedgerCountLabel = cashLedgerCountLabel;" +
+    "\nglobalThis.cardPaymentStatusKind = cardPaymentStatusKind;" +
+    "\nglobalThis.cardPaymentStatusTiers = cardPaymentStatusTiers;" +
+    "\nglobalThis.cardPaymentStatusCountLabel = cardPaymentStatusCountLabel;" +
+    "\nglobalThis.formatTierGroup = formatTierGroup;" +
+    "\nglobalThis.compactMoney = compactMoney;",
   CTX,
   { filename: "WorkPage.js#cashLedgerTinting" }
 );
-const { movementRowClass, reasonRowClass, cashLedgerRowClass, amountCellClass } =
-  CTX;
+const {
+  movementRowClass,
+  reasonRowClass,
+  cashLedgerRowClass,
+  amountCellClass,
+  cashLedgerCountKind,
+  cashLedgerTypeTiers,
+  cashLedgerCountLabel,
+  cardPaymentStatusKind,
+  cardPaymentStatusTiers,
+  cardPaymentStatusCountLabel,
+  formatTierGroup,
+  compactMoney,
+} = CTX;
 
 let passed = 0;
 let failed = 0;
@@ -271,6 +294,202 @@ check("movement and reason tints are combined", () => {
     cashLedgerRowClass("reduce", 6000, "TRY", "Наем за офиса"),
     "row-reduce row-large-reduce row-text-reason",
     "a 6 000 TRY expense is big"
+  );
+});
+
+// --- per-type, per-price heading breakdown ---------------------------------
+check("cash rows are grouped per type and price tier", () => {
+  const txs = [
+    { Type: "handover", Reason: "Ivan", Amount: 20, Currency: "EUR" },
+    { Type: "increase", Reason: "123456", Amount: "40.00", Currency: "EUR" },
+    { Type: "reduce", Reason: "Rent", Amount: 100, Currency: "EUR" },
+    { Type: "increase", Reason: "654321", Amount: 40, Currency: "eur" },
+    { Type: "increase", Reason: "111111", Amount: 25, Currency: "EUR" },
+    { Type: "increase", Reason: "222222", Amount: 5500, Currency: "TRY" },
+    { Type: "handover_return", Reason: "Ivan", Amount: 20, Currency: "EUR" },
+  ];
+  eq(
+    cashLedgerTypeTiers(txs),
+    [
+      {
+        kind: "increase",
+        tiers: [
+          { amount: 40, currency: "EUR", count: 2 },
+          { amount: 25, currency: "EUR", count: 1 },
+          { amount: 5500, currency: "TRY", count: 1 },
+        ],
+      },
+      {
+        kind: "reduce",
+        tiers: [{ amount: 100, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "handover",
+        tiers: [{ amount: 20, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "handover_return",
+        tiers: [{ amount: 20, currency: "EUR", count: 1 }],
+      },
+    ],
+    "each price counted within its type, biggest first"
+  );
+  eq(
+    formatTierGroup(cashLedgerTypeTiers(txs)[0], cashLedgerCountLabel),
+    "increase: 2× 40 EUR, 1× 25 EUR, 1× 5500 TRY",
+    "the heading words the tiers as N× price currency"
+  );
+});
+
+check("an annulment is counted apart, with its own price tiers", () => {
+  eq(
+    cashLedgerTypeTiers([
+      { Type: "reduce", Reason: "Annul 123456", Amount: 45, Currency: "EUR" },
+      { Type: "reduce", Reason: "Annul 777", Amount: 45, Currency: "EUR" },
+      { Type: "reduce", Reason: "annul 42", Amount: 45, Currency: "EUR" },
+      { Type: "reduce", Reason: "Rent", Amount: 100, Currency: "EUR" },
+      { Type: "increase", Reason: "123456", Amount: 40, Currency: "EUR" },
+    ]),
+    [
+      {
+        kind: "increase",
+        tiers: [{ amount: 40, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "reduce",
+        tiers: [{ amount: 100, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "annul",
+        tiers: [{ amount: 45, currency: "EUR", count: 3 }],
+      },
+    ],
+    "the annuls get their own line and their own prices"
+  );
+  eq(
+    formatTierGroup(
+      { kind: "annul", tiers: [{ amount: 45, currency: "EUR", count: 7 }] },
+      cashLedgerCountLabel
+    ),
+    "annulments: 7× 45 EUR",
+    "7 annuls of 45 EUR read as one tier"
+  );
+  eq(
+    cashLedgerCountKind({ Type: "reduce", Reason: "Annul" }),
+    "annul",
+    "the bare word"
+  );
+  eq(
+    cashLedgerCountKind({ Type: "reduce", Reason: "Annulled 42" }),
+    "reduce",
+    "an ordinary word is not an annulment"
+  );
+  eq(
+    cashLedgerCountKind({ Type: "reduce", Reason: "Rent" }),
+    "reduce",
+    "normal reason"
+  );
+  eq(cashLedgerCountLabel("annul"), "annulments", "an annul has its own label");
+  eq(
+    cashLedgerCountLabel("reduce"),
+    "expense",
+    "other types use the table label"
+  );
+});
+
+check("an unknown or missing type never breaks a heading", () => {
+  eq(cashLedgerTypeTiers(), [], "no list");
+  eq(cashLedgerTypeTiers(null), [], "null list");
+  eq(cashLedgerTypeTiers([{ Reason: "Rent" }]), [], "a row without a type");
+  eq(
+    cashLedgerTypeTiers([{ Type: "bonus", Amount: 15 }, { Type: "increase" }]),
+    [
+      {
+        kind: "increase",
+        tiers: [{ amount: 0, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "bonus",
+        tiers: [{ amount: 15, currency: "EUR", count: 1 }],
+      },
+    ],
+    "a new type still gets a line, after the known ones"
+  );
+});
+
+check("prices are shown short, without padded cents", () => {
+  eq(compactMoney(40), "40", "a whole euro");
+  eq(compactMoney("40.00"), "40", "a stored string");
+  eq(compactMoney(25.5), "25.5", "half a euro");
+  eq(compactMoney(12.75), "12.75", "cents");
+  eq(compactMoney(undefined), "0", "a missing amount");
+});
+
+check("card payments are grouped per status and price, annulled apart", () => {
+  const items = [
+    { Annulled: 0, Price: "40.00", CurrencyType: "EUR" },
+    { Annulled: 0, Price: 40, CurrencyType: "EUR" },
+    { Annulled: 0, Price: 25, CurrencyType: "EUR" },
+    { Annulled: 1, AnnulReason: "worker", Price: 45, CurrencyType: "EUR" },
+    { Annulled: 1, AnnulReason: "broker", Price: 40, CurrencyType: "EUR" },
+    { Annulled: 1, AnnulReason: "broker", Price: 40, CurrencyType: "EUR" },
+    { Annulled: 1, Price: 45, CurrencyType: "EUR" },
+  ];
+  eq(
+    cardPaymentStatusTiers(items),
+    [
+      {
+        kind: "active",
+        tiers: [
+          { amount: 40, currency: "EUR", count: 2 },
+          { amount: 25, currency: "EUR", count: 1 },
+        ],
+      },
+      {
+        kind: "annulled-worker",
+        tiers: [{ amount: 45, currency: "EUR", count: 1 }],
+      },
+      {
+        kind: "annulled-broker",
+        tiers: [{ amount: 40, currency: "EUR", count: 2 }],
+      },
+      {
+        kind: "annulled",
+        tiers: [{ amount: 45, currency: "EUR", count: 1 }],
+      },
+    ],
+    "each annulled type keeps its own prices"
+  );
+  eq(
+    formatTierGroup(
+      cardPaymentStatusTiers(items)[2],
+      cardPaymentStatusCountLabel
+    ),
+    "annulled (annul.payer.broker): 2× 40 EUR",
+    "an annulled type's heading"
+  );
+  eq(cardPaymentStatusKind(null), "", "no row");
+  eq(cardPaymentStatusKind({ Deleted: 1 }), "deleted", "a deleted policy");
+  eq(cardPaymentStatusCountLabel("active"), "active", "active label");
+  eq(cardPaymentStatusCountLabel("annulled"), "annulled", "legacy annul label");
+});
+
+check("the tables' headings carry the price breakdown", () => {
+  ok(
+    /collapsibleSection\(\s*t\("transactions"\),[\s\S]{0,300}?cashLedgerTypeTiers\(data\.transactions\)/.test(
+      src
+    ),
+    "the Transactions heading lists its prices per type"
+  );
+  ok(
+    /collapsibleSection\(\s*t\("cardInsurances"\),[\s\S]{0,300}?cardPaymentStatusTiers\(data\.cardInsurances\)/.test(
+      src
+    ),
+    "the Card payments heading lists its prices per status"
+  );
+  ok(
+    /class: "collapsible-counts"/.test(src),
+    "the breakdown is rendered inside the heading"
   );
 });
 

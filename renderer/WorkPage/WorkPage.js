@@ -1444,6 +1444,164 @@ function cashTypeLabel(type) {
   return kind;
 }
 
+// ---------------------------------------------------------------------------
+// Per-type, per-price counts for the collapsible section headings
+// ---------------------------------------------------------------------------
+// Every collapsible ledger table shows what it holds in its heading, grouped by
+// type and then by price tier - "Increase: 10× 40 EUR, 20× 25 EUR" - so the
+// day's prices can be read without opening anything. The type order is fixed (a
+// type the order does not name yet still appears, after the known ones) so the
+// heading reads the same way every day.
+
+// The type a cash-ledger row is counted under. An annulment is a policy
+// movement, not ordinary money in or out of the drawer: its reason says
+// "Annul <blanc>", so it is counted as its own type instead of swelling the
+// Increase or Expense total next to it.
+function cashLedgerCountKind(tx) {
+  const reason = String((tx && tx.Reason) || "").trim();
+  if (/^annul\b/i.test(reason)) return "annul";
+  return String((tx && tx.Type) || "");
+}
+
+const CASH_LEDGER_COUNT_ORDER = [
+  "increase",
+  "reduce",
+  "handover",
+  "handover_return",
+  "annul",
+];
+
+// Who paid the annulment fee, as the Status column names it: "broker",
+// "worker" or "none" (no fault). Anything else is a legacy row without a payer.
+const ANNUL_PAYER_KINDS = ["broker", "worker", "none"];
+
+function annulPayerKey(value) {
+  const payer = String(value || "").trim().toLowerCase();
+  return ANNUL_PAYER_KINDS.includes(payer) ? payer : "";
+}
+
+// The parenthesised payer of an annulment (" (Broker)" ...), or "" when the row
+// carries no known payer. The Status column and the heading counts share it, so
+// the two can never word the payer differently.
+function annulPayerSuffix(value) {
+  const payer = annulPayerKey(value);
+  return payer ? ` (${t(`annul.payer.${payer}`)})` : "";
+}
+
+// The type a card payment is counted under: a policy still standing is
+// "active"; an annulled one is counted per who paid the fee, so the annulled
+// types stay apart from each other and from the normal payments.
+function cardPaymentStatusKind(item) {
+  if (!item) return "";
+  if (item.Deleted) return "deleted";
+  if (!item.Annulled) return "active";
+  const payer = annulPayerKey(item.AnnulReason);
+  return payer ? `annulled-${payer}` : "annulled";
+}
+
+const CARD_PAYMENT_STATUS_ORDER = [
+  "active",
+  "annulled-worker",
+  "annulled-broker",
+  "annulled-none",
+  "annulled",
+  "deleted",
+];
+
+// Every row of a table grouped by type and then by its price tier (amount and
+// currency): [{ kind, tiers: [{ amount, currency, count }] }]. Rows stored as a
+// string ("40.00") and as a number (40) land in the same tier, and a currency
+// keeps its own tiers together, biggest price first - exactly how the heading
+// reads them.
+function groupRowsByKindAndTier(items, kindOf, tierOf, order) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const kind = kindOf(item);
+    if (!kind) continue;
+    const tier = tierOf(item) || {};
+    const amount = Number(tier.amount) || 0;
+    const currency = String(tier.currency || "EUR").toUpperCase();
+    if (!groups.has(kind)) groups.set(kind, new Map());
+    const tiers = groups.get(kind);
+    const key = `${currency}|${amount}`;
+    const seen = tiers.get(key);
+    if (seen) seen.count += 1;
+    else tiers.set(key, { amount, currency, count: 1 });
+  }
+  const rank = (kind) => {
+    const index = order.indexOf(kind);
+    return index === -1 ? order.length : index;
+  };
+  // The sort is stable, so the unnamed types keep the order they first appear.
+  return [...groups]
+    .map(([kind, tiers]) => ({
+      kind,
+      tiers: [...tiers.values()].sort((a, b) =>
+        a.currency === b.currency
+          ? b.amount - a.amount
+          : a.currency.localeCompare(b.currency)
+      ),
+    }))
+    .sort((a, b) => rank(a.kind) - rank(b.kind));
+}
+
+// The Current cash ledger's rows grouped per type and price (the Amount column).
+function cashLedgerTypeTiers(items) {
+  return groupRowsByKindAndTier(
+    items,
+    cashLedgerCountKind,
+    (tx) => ({ amount: tx && tx.Amount, currency: tx && tx.Currency }),
+    CASH_LEDGER_COUNT_ORDER
+  );
+}
+
+// The Card payments rows grouped per status and price (the Price column).
+function cardPaymentStatusTiers(items) {
+  return groupRowsByKindAndTier(
+    items,
+    cardPaymentStatusKind,
+    (item) => ({ amount: item && item.Price, currency: item && item.CurrencyType }),
+    CARD_PAYMENT_STATUS_ORDER
+  );
+}
+
+// A price as a heading shows it: "40", "25.5", "12.75". The tables keep the
+// cents everywhere else (money()); a heading is a summary, so a whole amount is
+// not padded with ".00".
+function compactMoney(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : "0";
+}
+
+// One type's price tiers as the heading words them:
+// "Increase: 10× 40 EUR, 20× 25 EUR".
+function formatTierGroup(group, labelOf) {
+  const tiers = group.tiers
+    .map(
+      (tier) => `${tier.count}× ${compactMoney(tier.amount)} ${tier.currency}`
+    )
+    .join(", ");
+  return `${labelOf(group.kind)}: ${tiers}`;
+}
+
+// The heading label of a cash-ledger count. An annulment keeps its own name so
+// it is never read as an Increase or an Expense.
+function cashLedgerCountLabel(kind) {
+  return kind === "annul" ? t("annulments") : cashTypeLabel(kind);
+}
+
+// The heading label of a card-payment count, worded exactly like the table's
+// Status column: "Annulled (Broker)", "Annulled (Worker)", "Annulled (No
+// fault)", with "Active" for a payment that is still standing.
+function cardPaymentStatusCountLabel(kind) {
+  if (kind === "active") return t("active");
+  if (kind === "deleted") return t("deleted");
+  const payer = String(kind).startsWith("annulled-")
+    ? String(kind).slice("annulled-".length)
+    : "";
+  return `${t("annulled")}${annulPayerSuffix(payer)}`;
+}
+
 function openModal(title, bodyNode) {
   ModalTitle.textContent = title;
   ModalBody.replaceChildren(bodyNode);
@@ -1908,11 +2066,19 @@ function sortableTable(items, columns, actions, rowClass, onRowClick, options) {
 }
 
 // A collapsible table section: the heading stays visible - with the number of
-// rows it holds - and the body only opens when the heading is clicked, so a busy
-// day does not bury the rest of the page. Every render starts collapsed.
-function collapsibleSection(title, count, nodes) {
+// rows it holds and, when given, a per-type price breakdown such as
+// "Increase: 10× 40 EUR, 20× 25 EUR" - and the body only opens when the heading
+// is clicked, so a busy day does not bury the rest of the page. Every render
+// starts collapsed.
+function collapsibleSection(title, count, nodes, breakdown) {
   const details = el("details", null, { class: "collapsible-section" });
-  details.appendChild(el("summary", `${title} (${count})`));
+  const summary = el("summary", `${title} (${count})`);
+  if (breakdown && breakdown.length > 0) {
+    summary.appendChild(
+      el("span", `— ${breakdown.join(" · ")}`, { class: "collapsible-counts" })
+    );
+  }
+  details.appendChild(summary);
   const body = el("div", null, { class: "collapsible-body" });
   for (const node of nodes) body.appendChild(node);
   details.appendChild(body);
@@ -4470,7 +4636,12 @@ async function currentCashView(overrideBranch, overrideDate) {
   const transactionsSection = collapsibleSection(
     t("transactions"),
     (data.transactions || []).length,
-    [txTable]
+    [txTable],
+    // The heading lists the day's prices per type, with the annulments kept
+    // apart (and their own prices) instead of inside the increases and expenses.
+    cashLedgerTypeTiers(data.transactions).map((group) =>
+      formatTierGroup(group, cashLedgerCountLabel)
+    )
   );
   const expensesSection = collapsibleSection(
     t("expenses"),
@@ -4489,7 +4660,12 @@ async function currentCashView(overrideBranch, overrideDate) {
   const cardInsurancesSection = collapsibleSection(
     t("cardInsurances"),
     (data.cardInsurances || []).length,
-    [cardInsurancesTable]
+    [cardInsurancesTable],
+    // The heading lists the day's card prices per status, so the annulled ones
+    // (who paid the fee, and at which price) are visible without opening it.
+    cardPaymentStatusTiers(data.cardInsurances).map((group) =>
+      formatTierGroup(group, cardPaymentStatusCountLabel)
+    )
   );
   const resetsSection = collapsibleSection(
     t("resets"),
@@ -5849,11 +6025,7 @@ function insuranceStatusLabel(item) {
     return `${t("deleted")}${by}`;
   }
   if (!item.Annulled) return "";
-  const reason = String(item.AnnulReason || "").trim().toLowerCase();
-  const payer = ["broker", "worker", "none"].includes(reason)
-    ? ` (${t(`annul.payer.${reason}`)})`
-    : "";
-  return `${t("annulled")}${payer}`;
+  return `${t("annulled")}${annulPayerSuffix(item.AnnulReason)}`;
 }
 
 // Row tint for a policy in a table. Annulled rows are tinted by who was at
@@ -5861,11 +6033,8 @@ function insuranceStatusLabel(item) {
 // plain annulled tint.
 function annulledRowClass(item) {
   if (!item || !item.Annulled) return "";
-  const reason = String(item.AnnulReason || "").trim().toLowerCase();
-  if (["broker", "worker", "none"].includes(reason)) {
-    return `row-annulled-${reason}`;
-  }
-  return "row-annulled";
+  const payer = annulPayerKey(item.AnnulReason);
+  return payer ? `row-annulled-${payer}` : "row-annulled";
 }
 
 // ---------------------------------------------------------------------------

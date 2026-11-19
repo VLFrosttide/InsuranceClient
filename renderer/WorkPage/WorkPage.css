@@ -274,6 +274,15 @@ body {
 .collapsible-section > summary::marker {
   color: var(--muted);
 }
+/* The per-type price breakdown next to a heading ("Increase: 10× 40 EUR,
+   20× 25 EUR") stays inside the click target, but recedes behind the section's
+   own name. */
+.collapsible-counts {
+  margin-left: 8px;
+  font-size: 0.85em;
+  font-weight: 400;
+  color: var(--muted);
+}
 .collapsible-section[open] > summary {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
