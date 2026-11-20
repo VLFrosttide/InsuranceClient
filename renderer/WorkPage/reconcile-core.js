@@ -418,7 +418,8 @@ function reconAddDays(ymd, days) {
 
 function reconShowDate(ymd) {
   const m = (ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? `${m[3]}.${m[2]}.${m[1]}` : "";
+  // Every date in the app is shown as dd-mm-yyyy.
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
 }
 
 // A stored duration (in days) written the way the reports do: 30 -> "1M",

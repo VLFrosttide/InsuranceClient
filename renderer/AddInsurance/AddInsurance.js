@@ -676,7 +676,9 @@ function renderEmailSegment(segment, index, thread) {
     meta.appendChild(el("div", `${t("email.from")} ${from || "?"}`));
   }
   if (isLatest || date) {
-    meta.appendChild(el("div", `${t("email.date")} ${date || "?"}`));
+    // A date is always shown as dd-mm-yyyy HH:mm, like every other date.
+    const when = formatConversationDate(date);
+    meta.appendChild(el("div", `${t("email.date")} ${when || "?"}`));
   }
   if (!isLatest && !from && !date && segment.attribution) {
     meta.appendChild(el("div", segment.attribution));
@@ -706,14 +708,15 @@ function conversationKey() {
   return PendingEmail.conversationKey || emailConversationKey(PendingEmail);
 }
 
-// "12.11.2026 14:05" from a Gmail date header or an epoch-ms value.
+// "12-11-2026 14:05" from a Gmail date header or an epoch-ms value. A value
+// that is not a date (a header the client cannot parse) is shown as it came.
 function formatConversationDate(value) {
   if (value === undefined || value === null || value === "") return "";
   const parsed = typeof value === "number" ? value : Date.parse(value);
   if (!Number.isFinite(parsed)) return String(value);
   const d = new Date(parsed);
   const p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${p(
     d.getHours()
   )}:${p(d.getMinutes())}`;
 }

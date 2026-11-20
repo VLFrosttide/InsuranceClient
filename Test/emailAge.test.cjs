@@ -129,9 +129,13 @@ check("overdue only after more than 10 minutes", () => {
   eq(isEmailOverdue(NOW - 120 * MIN, NOW), true, "2 h");
 });
 
-check("arrival time shows HH:mm today and dd.mm HH:mm on older days", () => {
+check("arrival time shows HH:mm today and dd-mm-yyyy HH:mm on older days", () => {
   eq(formatEmailArrival(new Date(2026, 9, 8, 9, 5).getTime(), NOW), "09:05", "today");
-  eq(formatEmailArrival(new Date(2026, 9, 7, 23, 59).getTime(), NOW), "07.10 23:59", "yesterday");
+  eq(
+    formatEmailArrival(new Date(2026, 9, 7, 23, 59).getTime(), NOW),
+    "07-10-2026 23:59",
+    "yesterday"
+  );
 });
 
 check("cards sort oldest first", () => {

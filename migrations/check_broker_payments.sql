@@ -17,7 +17,7 @@
 --   CashBalance = StartingBalance
 --               + SUM(broker_balance_movements.Amount  WHERE Type IN ('increase','handover') AND Deleted = 0)
 --               - SUM(insurance charge                  WHERE Deleted = 0,
---                       Annulled = 1 ? AnnulFee : Price)
+--                       Annulled = 1 AND AnnulReason = 'broker' ? AnnulFee : (Annulled = 0 ? Price : 0))
 
 -- ---------------------------------------------------------------------------
 -- 0) What types does the ledger contain at all, and how much money is in each?
@@ -129,7 +129,11 @@ SELECT x.id,
           LEFT JOIN (
                 SELECT BrokerId,
                        SUM(CASE WHEN Annulled = 1
-                                THEN CAST(COALESCE(AnnulFee, Price, 0) AS DECIMAL(15,2))
+                                THEN CASE
+                                       WHEN LOWER(TRIM(COALESCE(AnnulReason, ''))) = 'broker'
+                                       THEN CAST(COALESCE(AnnulFee, Price, 0) AS DECIMAL(15,2))
+                                       ELSE 0
+                                     END
                                 ELSE CAST(COALESCE(Price, 0) AS DECIMAL(15,2))
                            END) AS Charged
                   FROM insurance
@@ -181,7 +185,11 @@ SELECT x.id,
           LEFT JOIN (
                 SELECT BrokerId,
                        SUM(CASE WHEN Annulled = 1
-                                THEN CAST(COALESCE(AnnulFee, Price, 0) AS DECIMAL(15,2))
+                                THEN CASE
+                                       WHEN LOWER(TRIM(COALESCE(AnnulReason, ''))) = 'broker'
+                                       THEN CAST(COALESCE(AnnulFee, Price, 0) AS DECIMAL(15,2))
+                                       ELSE 0
+                                     END
                                 ELSE CAST(COALESCE(Price, 0) AS DECIMAL(15,2))
                            END) AS Charged
                   FROM insurance

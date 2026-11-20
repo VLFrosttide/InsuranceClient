@@ -290,9 +290,12 @@ const I18N = {
     startingBalanceNotSet: "Not set",
     startingBalanceDate: "Starting balance date",
     startingBalanceHint:
-      "The broker's balance before the first insurance was created. Saving it recalculates the broker's balance from all of its insurances (an annulled one at its annulment tax) and all of its payments (top-ups and hand-overs).",
+      "The broker's balance before the first insurance was created. Saving it rebuilds the whole balance history from this figure - every insurance then shows the balance after it - and recalculates the broker's balance from all of its insurances (an annulled one at its annulment tax only when the broker paid it) and all of its payments (top-ups and hand-overs).",
     startingBalanceSaved:
       "Starting balance saved — the broker balance has been recalculated",
+    increaseDate: "Date of the increase",
+    increaseDateHint:
+      "Pick the day the broker handed the money over. An earlier day is allowed: that day's reports and the branch's Cash from brokers then include it.",
     balanceAtDayEnd: "Balance at the end of the day",
     balanceAtDayEndHint:
       "The broker's balance when the shown day ended: the starting balance plus every payment, minus every insurance up to that moment.",
@@ -458,10 +461,19 @@ const I18N = {
     movementDeleted: "Movement deleted",
     movementRestored: "Movement restored",
     deletedMovements: "Deleted movements",
+    retiredTag: "Retired",
+    retiredTagHint:
+      "A retired reduce/adjust row. It is kept as history only and does not count towards the broker's balance; deleting it leaves the balance unchanged.",
+    retiredMovementNote:
+      "Retired rows (reduce/adjust) are listed for history but are not included in the total or the balance. Delete them if they are no longer needed.",
     deleteMovementConfirm:
       "Hide this balance movement? It is kept in the database and can be restored; its amount is added back to the broker's balance.",
+    deleteRetiredMovementConfirm:
+      "Hide this retired movement? It is kept in the database and can be restored. It does not count towards the balance, so the broker's balance stays unchanged.",
     restoreMovementConfirm:
       "Restore this balance movement? Its amount is applied to the broker's balance again.",
+    restoreRetiredMovementConfirm:
+      "Restore this retired movement? It will be listed again but still does not count towards the broker's balance.",
     exportFailed: "Export failed",
     balanceUpdated: "Balance updated",
     settingSaved: "Setting saved",
@@ -1149,9 +1161,12 @@ const I18N = {
     startingBalanceNotSet: "Не е зададен",
     startingBalanceDate: "Дата на началния баланс",
     startingBalanceHint:
-      "Балансът на брокера преди създаването на първата му застраховка. При запазване балансът се преизчислява от всички негови застраховки (анулираните – по тяхната такса за анулиране) и всички негови плащания (увеличения и предадени суми).",
+      "Балансът на брокера преди създаването на първата му застраховка. При запазване цялата история на баланса се построява от тази сума - всяка застраховка показва баланса след нея - а балансът на брокера се преизчислява от всички негови застраховки (анулираните – по тяхната такса за анулиране само когато брокерът я е платил) и всички негови плащания (увеличения и предадени суми).",
     startingBalanceSaved:
       "Началният баланс е запазен — балансът на брокера е преизчислен",
+    increaseDate: "Дата на увеличението",
+    increaseDateHint:
+      "Изберете деня, в който брокерът е предал парите. По-ранен ден е позволен: отчетите за този ден и „Кеш от брокери“ на клона го включват.",
     balanceAtDayEnd: "Баланс в края на деня",
     balanceAtDayEndHint:
       "Балансът на брокера в края на показания ден: началният баланс плюс всички плащания, минус всички застраховки до този момент.",
@@ -1318,10 +1333,19 @@ const I18N = {
     movementDeleted: "Движението е изтрито",
     movementRestored: "Движението е възстановено",
     deletedMovements: "Изтрити движения",
+    retiredTag: "Оттеглено",
+    retiredTagHint:
+      "Оттеглено движение „намаление“/„корекция“. Запазва се само като история и не се брои към баланса на брокера; изтриването му не променя баланса.",
+    retiredMovementNote:
+      "Оттеглените движения (намаление/корекция) се показват като история, но не се включват в общата сума или баланса. Изтрийте ги, ако вече не са нужни.",
     deleteMovementConfirm:
       "Да се скрие ли това движение? То се запазва в базата данни и може да бъде възстановено; сумата му се връща към баланса на брокера.",
+    deleteRetiredMovementConfirm:
+      "Да се скрие ли това оттеглено движение? То се запазва в базата данни и може да бъде възстановено. Не се брои към баланса, затова балансът на брокера остава непроменен.",
     restoreMovementConfirm:
       "Да се възстанови ли това движение? Сумата му ще бъде приложена отново към баланса на брокера.",
+    restoreRetiredMovementConfirm:
+      "Да се възстанови ли това оттеглено движение? То ще се покаже отново, но пак няма да се брои към баланса на брокера.",
     exportFailed: "Експортът не успя",
     balanceUpdated: "Балансът е обновен",
     settingSaved: "Настройката е запазена",
@@ -2006,7 +2030,9 @@ function translatePage() {
 }
 
 // Format a date/datetime (Date object or MySQL "YYYY-MM-DD HH:MM:SS" string)
-// as "dd-mm-yy HH:mm". Used for the current-cash transaction/reset timestamps.
+// as "dd-mm-yyyy HH:mm". Every date shown in the app uses this order; a value
+// without a time keeps the same date part. Used for the current-cash
+// transaction/reset timestamps, the tables and the broker history.
 function formatDateTime(value) {
   if (value === undefined || value === null || value === "") return "";
   let d;
@@ -2032,9 +2058,32 @@ function formatDateTime(value) {
   if (!d || isNaN(d.getTime())) return String(value ?? "");
   const p = (n) => String(n).padStart(2, "0");
   return (
-    `${p(d.getDate())}-${p(d.getMonth() + 1)}-${p(d.getFullYear() % 100)} ` +
+    `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ` +
     `${p(d.getHours())}:${p(d.getMinutes())}`
   );
+}
+
+// Format a calendar day (Date object or "YYYY-MM-DD" string) as "dd-mm-yyyy",
+// without a time. Same date order as formatDateTime, for the places that show
+// only a day (e.g. a broker's starting balance date or a day pager).
+function formatDateOnly(value) {
+  if (value === undefined || value === null || value === "") return "";
+  let d;
+  if (value instanceof Date) {
+    d = value;
+  } else if (typeof value === "string") {
+    const s = value.trim();
+    // Parse the calendar day directly so no timezone shift can move it. A
+    // stored DATETIME ("2026-10-01 00:00:00") keeps its day as well.
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$/);
+    if (!m) return s;
+    d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  } else {
+    d = new Date(value);
+  }
+  if (!d || isNaN(d.getTime())) return String(value ?? "");
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
 }
 
 function getToken() {

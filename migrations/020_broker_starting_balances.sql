@@ -8,11 +8,12 @@
 --              recalculates the broker's CashBalance from the source data:
 --
 --                CashBalance = StartingBalance
---                            + manual movements (top-ups, hand-overs,
---                              expenses and admin corrections)
+--                            + manual payments (top-ups and hand-overs only;
+--                              legacy reduce/adjust rows are ignored)
 --                            - every live insurance of the broker, an annulled
 --                              one at its annulment tax (AnnulFee; Price mirrors
---                              it since migration 018)
+--                              it since migration 018) only when the broker paid
+--                              that fee (AnnulReason = 'broker')
 --
 --              The policy-derived ledger rows (policy / annulment / deletion /
 --              price_change) are deliberately ignored by that calculation: the

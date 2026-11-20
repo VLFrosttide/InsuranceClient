@@ -158,6 +158,11 @@ async function query(sql, params = []) {
     const charged = rows.reduce((sum, x) => {
       const price = Number(x.Price) || 0;
       if (!x.Annulled) return sum + price;
+      // An annulled policy is charged its tax only when the broker paid it; a
+      // worker/no-fault annulment refunded the full price.
+      if (String(x.AnnulReason || "").trim().toLowerCase() !== "broker") {
+        return sum;
+      }
       const fee =
         x.AnnulFee === null || x.AnnulFee === undefined ? null : Number(x.AnnulFee);
       return sum + (fee === null ? price : fee);
@@ -237,11 +242,15 @@ async function query(sql, params = []) {
     );
     return [mov ? [mov] : []];
   }
-  if (s.startsWith("SELECT id, Amount, Deleted FROM broker_balance_movements")) {
+  if (s.startsWith("SELECT id, Amount, Type, Deleted FROM broker_balance_movements")) {
     const mov = db.movements.find(
       (m) => m.id === Number(p[0]) && m.BrokerId === Number(p[1])
     );
-    return [mov ? [{ id: mov.id, Amount: mov.Amount, Deleted: mov.Deleted }] : []];
+    return [
+      mov
+        ? [{ id: mov.id, Amount: mov.Amount, Type: mov.Type, Deleted: mov.Deleted }]
+        : [],
+    ];
   }
   if (
     s.startsWith(
@@ -279,6 +288,41 @@ async function query(sql, params = []) {
         Math.round((Number(broker.CashBalance) + Number(p[0])) * 100) / 100;
     }
     return [{ affectedRows: broker ? 1 : 0 }];
+  }
+  if (
+    s.startsWith(
+      "SELECT BlancNumber, Duration, Otomobil, PaymentType, NonTurk, CardFee, Annulled, AnnulReason, AnnulFee, CreationDate FROM insurance"
+    )
+  ) {
+    // The sub-broker display data reads its own policies (display prices only).
+    return [
+      db.policies.filter(
+        (x) => Number(x.BrokerId) === Number(p[0]) && x.Deleted !== 1
+      ),
+    ];
+  }
+  if (
+    s.startsWith(
+      "SELECT Type, Amount FROM broker_balance_movements WHERE BrokerId = ? AND Deleted = 0 AND Type NOT IN"
+    )
+  ) {
+    const rows = db.movements.filter(
+      (m) =>
+        m.BrokerId === Number(p[0]) &&
+        m.Deleted !== 1 &&
+        !["policy", "annulment", "price_change", "deletion", "reduce", "adjust"].includes(
+          String(m.Type || "").trim()
+        )
+    );
+    return [rows];
+  }
+  if (
+    s.startsWith(
+      "SELECT Amount FROM broker_starting_balances WHERE BrokerId = ?"
+    )
+  ) {
+    const row = db.startingBalances[String(Number(p[0]))];
+    return [row ? [{ Amount: row.Amount }] : []];
   }
   throw new Error("unexpected SQL in test: " + s);
 }
@@ -1048,6 +1092,19 @@ resetDb();
     eq(r.body.broker.CashBalance, 55, "returned broker balance");
   });
 
+  await check("history PATCH: a retired row does not move the balance", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00", { Type: "reduce" });
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { amount: -25, reason: "corrected" },
+    });
+    eq(r.status, 200, "status");
+    eq(db.movements[0].Amount, -25, "stored amount");
+    eq(db.brokers[0].CashBalance, 70, "retired rows never shift the balance");
+    eq(r.body.broker.CashBalance, 70, "returned balance unchanged");
+  });
+
   await check("history DELETE: soft-deletes the movement and reverses the balance", async () => {
     resetDb();
     addMovement(1, -10, "2026-10-10 00:00:00");
@@ -1100,6 +1157,64 @@ resetDb();
     eq(db.movements[0].DeletedBy, null, "DeletedBy cleared");
     eq(db.brokers[0].CashBalance, 70, "balance re-applied");
     eq(r.body.broker.CashBalance, 70, "returned balance");
+  });
+
+  await check("history DELETE: a retired movement leaves the balance alone", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00", { Type: "reduce" });
+    const r = await call("delete", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+    });
+    eq(r.status, 200, "status");
+    eq(db.movements[0].Deleted, 1, "flagged deleted");
+    eq(db.brokers[0].CashBalance, 70, "retired rows are not reversed");
+    eq(r.body.broker.CashBalance, 70, "returned balance unchanged");
+
+    const restored = await call(
+      "post",
+      "/brokers/:id/history/:movementId/restore",
+      { params: { id: "1", movementId: "1" } }
+    );
+    eq(restored.status, 200, "restore status");
+    eq(db.movements[0].Deleted, 0, "flag cleared");
+    eq(db.brokers[0].CashBalance, 70, "restore does not re-apply it either");
+  });
+
+  await check("history GET: retired rows are tagged and do not move the balance", async () => {
+    resetDb();
+    addMovement(1, 10, "2026-10-10 00:00:00", { Type: "increase" });
+    addMovement(1, -5, "2026-10-11 00:00:00", { Type: "reduce" });
+    addMovement(1, 3, "2026-10-12 00:00:00", { Type: "adjust" });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    const byType = Object.fromEntries(
+      r.body.movements.map((m) => [m.Type, m])
+    );
+    eq(byType.adjust.Retired, true, "adjust is retired");
+    eq(byType.reduce.Retired, true, "reduce is retired");
+    eq(byType.increase.Retired, false, "increase is live");
+    eq(byType.reduce.Amount, -5, "the original amount is still shown");
+    eq(r.body.netChange, 10, "only the increase counts");
+    eq(r.body.movements[0].BalanceAfter, 70, "the newest retired row leaves the balance");
+  });
+
+  await check("history GET: a deleted retired row is tagged too", async () => {
+    resetDb();
+    addMovement(1, -10, "2026-10-10 00:00:00", {
+      Type: "adjust",
+      Deleted: true,
+      DeletedBy: "admin1",
+    });
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { ...WINDOW, includeDeleted: "1" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.deleted[0].Retired, true, "the deleted list carries the tag");
   });
 
   await check("history restore: a live movement cannot be restored", async () => {
@@ -1177,7 +1292,9 @@ resetDb();
 
   await check("starting balance: saving it recalculates the broker balance", async () => {
     resetDb();
-    // Live insurances: one active at 30, one annulled charged its 9 tax.
+    // Live insurances: one active at 30, one annulled with the worker paying its
+    // 9 tax. The broker was refunded the full price of the annulled one, so only
+    // the active policy is charged.
     addPolicy("100001", { Price: 30, BrokerId: 1 });
     addPolicy("100002", {
       Price: 9,
@@ -1218,10 +1335,72 @@ resetDb();
     eq(r.body.message, "Starting balance saved", "message");
     eq(r.body.startingBalance.amount, 50, "stored amount");
     eq(r.body.startingBalance.date, "2026-10-01", "stored date");
-    eq(r.body.insuranceCharges, 39, "active price + annulled tax");
+    eq(r.body.insuranceCharges, 30, "only the active price; the worker paid the tax");
     eq(r.body.payments, 140, "only the top-up and the hand-over count");
-    eq(r.body.broker.CashBalance, 151, "50 + 140 - 39");
-    eq(db.brokers[0].CashBalance, 151, "the balance is stored");
+    eq(r.body.broker.CashBalance, 160, "50 + 140 - 30");
+    eq(db.brokers[0].CashBalance, 160, "the balance is stored");
+
+    // The history reads forward from the same starting balance and ignores the
+    // retired reduce/adjust rows, so both screens agree.
+    const h = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(h.status, 200, "history status");
+    eq(h.body.balanceAtEnd, 160, "history agrees with the recalculated balance");
+    eq(h.body.netChange, 110, "-30 active -40 +40 refunded +100 +40");
+    eq(
+      h.body.movements.filter((m) => m.Retired).map((m) => m.Type).sort(),
+      ["adjust", "reduce"],
+      "retired rows are tagged in the history"
+    );
+  });
+
+  await check("starting balance: a broker-paid annulment fee is still charged", async () => {
+    resetDb();
+    addPolicy("100001", {
+      Price: 9,
+      OriginalPrice: 40,
+      AnnulFee: 9,
+      Annulled: true,
+      AnnulReason: "broker",
+      BrokerId: 1,
+    });
+    addPolicy("100002", {
+      Price: 9,
+      OriginalPrice: 40,
+      AnnulFee: 9,
+      Annulled: true,
+      AnnulReason: "worker",
+      BrokerId: 1,
+    });
+    addMovement(1, 100, "2026-10-10 12:00:00", { Type: "increase" });
+    addMovement(1, -40, "2026-10-06 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, 31, "2026-10-07 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100001",
+    });
+    addMovement(1, -40, "2026-10-08 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100002",
+    });
+    addMovement(1, 40, "2026-10-09 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100002",
+    });
+
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 0, date: "2026-10-01" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.insuranceCharges, 9, "only the broker-fault tax is charged");
+    eq(r.body.payments, 100, "the top-up");
+    eq(r.body.broker.CashBalance, 91, "100 - 9");
+    eq(db.brokers[0].CashBalance, 91, "the balance is stored");
   });
 
   await check("starting balance: the stored value is shown in the history", async () => {
@@ -1258,6 +1437,146 @@ resetDb();
     eq(r.body.startingBalance.date, "2026-10-02", "new date");
     eq(r.body.broker.CashBalance, 75, "100 - 25");
     eq(Object.keys(db.startingBalances).length, 1, "one row per broker");
+  });
+
+  await check("starting balance: the history is rebuilt from it, insurance by insurance", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 30, BrokerId: 1 });
+    addPolicy("100002", { Price: 20, BrokerId: 1 });
+    addMovement(1, -30, "2026-10-02 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, -20, "2026-10-03 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100002",
+    });
+    addMovement(1, 100, "2026-10-04 10:00:00", { Type: "increase" });
+
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 200, date: "2026-09-30" },
+    });
+    // A hand-fixed balance that no longer follows the ledger: the history must
+    // be read forward from the starting balance, not back-solved from this.
+    db.brokers[0].CashBalance = 999;
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    const ms = r.body.movements; // newest first: top-up, then the two sales
+    eq(ms[0].Amount, 100, "the newest row is the top-up");
+    eq(ms[0].BalanceAfter, 250, "200 + 100 - 30 - 20");
+    eq(ms[1].BalanceAfter, 150, "200 + 100 - 30 after the newer sale");
+    eq(ms[2].BalanceAfter, 170, "200 + 100 after the older sale");
+    eq(r.body.netChange, 50, "net change of the shown movements");
+    eq(r.body.balanceAtEnd, 250, "the history ends at the starting balance + its own rows");
+    eq(r.body.balanceAtStart, 200, "and starts at the starting balance");
+    eq(r.body.broker.CashBalance, 999, "the stored balance is not rewritten by the read");
+  });
+
+  await check("starting balance: changing it shifts every row by the same amount", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 40, BrokerId: 1 });
+    addMovement(1, -40, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, 10, "2026-10-06 10:00:00", { Type: "increase" });
+
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 100, date: "2026-10-01" },
+    });
+    const before = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 600, date: "2026-10-01" },
+    });
+    const after = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+
+    eq(after.body.startingBalance.amount, 600, "the new figure is stored");
+    eq(before.body.movements.length, after.body.movements.length, "same rows");
+    for (let i = 0; i < before.body.movements.length; i++) {
+      eq(
+        after.body.movements[i].BalanceAfter,
+        before.body.movements[i].BalanceAfter + 500,
+        `row ${i} moved with the starting balance`
+      );
+    }
+    eq(after.body.balanceAtStart, 600, "the window starts at the new figure");
+    eq(after.body.balanceAtEnd, 570, "600 - 40 + 10");
+  });
+
+  await check("starting balance: a past window also follows it", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 30, BrokerId: 1 });
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, 50, "2026-10-20 10:00:00", { Type: "increase" });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 100, date: "2026-10-01" },
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-10-01", until: "2026-10-10" },
+    });
+    eq(r.body.total, 1, "only the October 5 policy is in the window");
+    eq(r.body.balanceAtStart, 100, "the window starts at the starting balance");
+    eq(r.body.balanceAtEnd, 70, "100 - 30 at the end of the window");
+    eq(r.body.movements[0].BalanceAfter, 70, "the insurance shows its own balance");
+  });
+
+  await check("a sub-broker's displayed balance includes its starting balance", async () => {
+    resetDb();
+    // A tariff-priced policy (40 EUR) and a 25 EUR top-up on top of a starting
+    // balance of 100: the display balance must start from that 100.
+    db.policies.push({
+      BlancNumber: "300001",
+      BrokerId: 1,
+      Otomobil: "Automobile",
+      Duration: "1 year",
+      NonTurk: 0,
+      Annulled: 0,
+      Deleted: 0,
+    });
+    addMovement(1, 25, "2026-10-05 10:00:00", { Type: "increase" });
+    // A retired reduce row is history only: it must not change the display
+    // balance, but its amount is still shown in the ledger.
+    addMovement(1, -10, "2026-10-06 10:00:00", { Type: "reduce" });
+    db.startingBalances["1"] = {
+      Amount: 100,
+      EffectiveDate: "2026-10-01",
+      UpdatedBy: "admin1",
+      UpdatedAt: "2026-11-20 10:00:00",
+    };
+
+    const disp = await M.computeSubBrokerDisplayData(fakeDb, 1, {
+      Auto: { "365": 40 },
+    });
+    eq(disp.displayCashBalance, 85, "100 starting + 25 top-up - 40 policy");
+    eq(
+      disp.mapMovementAmount({ Type: "policy", BlancNumber: "300001" }),
+      -40,
+      "the policy row is priced from the tariff"
+    );
+    eq(
+      disp.mapMovementAmount({ Type: "reduce", Amount: -10 }),
+      -10,
+      "a retired row keeps its ledger amount for display"
+    );
   });
 
   await check("starting balance: a deleted insurance is not charged", async () => {

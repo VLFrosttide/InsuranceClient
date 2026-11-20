@@ -83,7 +83,8 @@ function isEmailOverdue(arrivalMs, now = Date.now()) {
 }
 
 /**
- * Local arrival time: "HH:mm" for today, "dd.mm HH:mm" for older emails.
+ * Local arrival time: "HH:mm" for today, "dd-mm-yyyy HH:mm" for older emails.
+ * The date part always uses the app's dd-mm-yyyy order.
  *
  * @param {number} arrivalMs
  * @param {number} [now]
@@ -98,7 +99,9 @@ function formatEmailArrival(arrivalMs, now = Date.now()) {
     d.getFullYear() === today.getFullYear() &&
     d.getMonth() === today.getMonth() &&
     d.getDate() === today.getDate();
-  return sameDay ? time : `${p(d.getDate())}.${p(d.getMonth() + 1)} ${time}`;
+  return sameDay
+    ? time
+    : `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()} ${time}`;
 }
 
 /** Sort comparator: oldest arrival first (process these first). */

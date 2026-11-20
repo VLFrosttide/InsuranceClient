@@ -418,9 +418,15 @@ async function restore(opts = {}) {
     eq(r.row.Deleted, 0, "Deleted cleared");
   });
 
-  await check("an annulled broker policy is not charged back to the broker", async () => {
+  await check("an annulled broker policy is not charged back when the worker paid the fee", async () => {
     const r = await restore({
-      row: { BrokerId: 7, Broker: "Euroins", Annulled: 1, AnnulFee: 9 },
+      row: {
+        BrokerId: 7,
+        Broker: "Euroins",
+        Annulled: 1,
+        AnnulReason: "worker",
+        AnnulFee: 9,
+      },
     });
     eq(
       r.movements,
@@ -431,6 +437,21 @@ async function restore(opts = {}) {
     );
     eq(r.brokerCharges, [], "the broker is not charged again");
     eq(r.body.brokerCharge, 0, "broker charge amount");
+    eq(r.row.Deleted, 0, "Deleted cleared");
+  });
+
+  await check("an annulled broker policy is charged the fee again when the broker paid it", async () => {
+    const r = await restore({
+      row: {
+        BrokerId: 7,
+        Broker: "Euroins",
+        Annulled: 1,
+        AnnulReason: "broker",
+        AnnulFee: 9,
+      },
+    });
+    eq(r.brokerCharges, ["9 -> broker 7"], "the fee is charged back");
+    eq(r.body.brokerCharge, 9, "broker charge amount");
     eq(r.row.Deleted, 0, "Deleted cleared");
   });
 

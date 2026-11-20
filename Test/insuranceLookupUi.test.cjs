@@ -25,12 +25,14 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const WORKPAGE_JS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.js");
 const WORKPAGE_CSS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.css");
+const APP_CSS = path.join(ROOT, "renderer", "app.css");
 const COMMON_JS = path.join(ROOT, "renderer", "common.js");
 
 // Normalised to LF so the multi-line checks below match on every checkout
 // (the renderer files are stored with CRLF).
 const src = fs.readFileSync(WORKPAGE_JS, "utf8").replace(/\r\n/g, "\n");
 const css = fs.readFileSync(WORKPAGE_CSS, "utf8");
+const appCss = fs.readFileSync(APP_CSS, "utf8");
 const common = fs.readFileSync(COMMON_JS, "utf8");
 
 let passed = 0;
@@ -212,6 +214,12 @@ check("the balance history shows the starting balance and lets an admin set it",
       block.includes("starting.date"),
     "the starting balance date is shown"
   );
+  // The date is a plain calendar day: it is shown as dd-mm-yyyy, not as the
+  // server's YYYY-MM-DD and without a time.
+  ok(
+    block.includes("formatDateOnly(starting.date)"),
+    "the starting balance date uses the dd-mm-yyyy format"
+  );
   // Only admins may change it; workers and broker clients just read it.
   ok(
     block.includes('if (userRole === "1")') &&
@@ -253,6 +261,98 @@ check("the balance history shows the starting balance and lets an admin set it",
       `${key} in EN and BG`
     );
   }
+});
+
+check("retired broker movements are tagged and stand out", () => {
+  const start = src.indexOf("function renderBrokerHistory(");
+  const end = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    start
+  );
+  ok(start >= 0 && end > start, "renderBrokerHistory block not found");
+  const block = src.slice(start, end);
+  ok(src.includes("function movementTypeCell("), "the Type cell helper exists");
+  ok(block.includes("movementTypeCell(v, m)"), "the Type cell uses the helper");
+  ok(block.includes("row-broker-retired"), "the retired row class is applied");
+  ok(block.includes('t("retiredMovementNote")'), "the page explains the tag");
+  ok(
+    block.includes('t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm")'),
+    "the delete confirmation explains that a retired row leaves the balance"
+  );
+  ok(
+    src.includes('t(\n        movement && movement.Retired\n          ? "restoreRetiredMovementConfirm"'),
+    "the restore confirmation mentions retired rows"
+  );
+  ok(appCss.includes(".movement-retired-tag"), "the tag has a style");
+  ok(appCss.includes("tr.row-broker-retired"), "the row has a tint");
+  ok(appCss.includes(".pagination.pagination-top"), "the top pager has a style");
+});
+
+check("the history pager sits above and below the table", () => {
+  const start = src.indexOf("function renderBrokerHistory(");
+  const end = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    start
+  );
+  ok(start >= 0 && end > start, "renderBrokerHistory block not found");
+  const block = src.slice(start, end);
+  ok(block.includes('buildPagers("pagination-top")'), "a pager above the table");
+  ok(block.includes("...buildPagers()"), "a pager below the table");
+  ok(
+    block.indexOf('buildPagers("pagination-top")') < block.indexOf("table,"),
+    "the top pager comes before the table"
+  );
+});
+
+check("retired movement strings exist in EN and BG", () => {
+  for (const key of [
+    "retiredTag",
+    "retiredTagHint",
+    "retiredMovementNote",
+    "deleteRetiredMovementConfirm",
+    "restoreRetiredMovementConfirm",
+  ]) {
+    eq(
+      (common.match(new RegExp(`\\b${key}:`, "g")) || []).length,
+      2,
+      `${key} in EN and BG`
+    );
+  }
+});
+
+check("dates are rendered as dd-mm-yyyy (with the time when there is one)", () => {
+  const commonSrc = common.replace(/\r\n/g, "\n");
+  function cutFunction(name) {
+    const start = commonSrc.indexOf(`function ${name}(value) {`);
+    const end = commonSrc.indexOf("\n}\n", start);
+    ok(start >= 0 && end > start, `${name} is defined in common.js`);
+    return commonSrc.slice(start, end + 3);
+  }
+  const dateOnly = new Function(
+    `${cutFunction("formatDateOnly")}return formatDateOnly;`
+  )();
+  eq(dateOnly("2026-10-01"), "01-10-2026", "a stored calendar day");
+  eq(
+    dateOnly("2026-10-01 00:00:00"),
+    "01-10-2026",
+    "a stored DATETIME keeps its day"
+  );
+  eq(dateOnly("2005-01-09"), "09-01-2005", "the year is never truncated");
+  eq(dateOnly(new Date(2026, 10, 20)), "20-11-2026", "a Date object");
+  eq(dateOnly(""), "", "nothing to show");
+  eq(dateOnly(null), "", "nothing to show for null");
+
+  const dateTime = new Function(
+    `${cutFunction("formatDateTime")}return formatDateTime;`
+  )();
+  eq(dateTime("2026-10-01 14:05:06"), "01-10-2026 14:05", "a DATETIME");
+  eq(dateTime("2026-10-01T14:05:06"), "01-10-2026 14:05", "an ISO datetime");
+  eq(
+    dateTime(new Date(2026, 10, 20, 9, 7)),
+    "20-11-2026 09:07",
+    "a Date object"
+  );
+  eq(dateTime(""), "", "nothing to show");
 });
 
 check("the brokers table has no Reduce action any more", () => {

@@ -1678,6 +1678,18 @@ function field(labelText, inputNode) {
   return wrap;
 }
 function input(type, value, placeholder) {
+  // A date field always reads dd/mm/yyyy, whatever locale the PC runs in (see
+  // renderer/dateField.js). The wrapper behaves like the input it replaces:
+  // `.value` is the ISO string, "change" events bubble and min/max pass through.
+  if (
+    (type === "date" || type === "datetime-local") &&
+    typeof createDateField === "function"
+  ) {
+    return createDateField({
+      mode: type === "datetime-local" ? "datetime" : "date",
+      value: value === undefined || value === null ? "" : value,
+    });
+  }
   const node = el("input");
   node.type = type || "text";
   if (value !== undefined && value !== null) node.value = value;
@@ -1833,6 +1845,10 @@ function buildForm(spec, onSubmit, submitLabel) {
       control.checked = !!s.value;
     } else control = input(s.type, s.value, s.placeholder);
     if (s.step !== undefined && s.step !== null) control.step = s.step;
+    // A date field can be bounded: the broker top-up's date picker opens on
+    // today and must not name a day that has not happened yet.
+    if (s.min !== undefined && s.min !== null) control.min = s.min;
+    if (s.max !== undefined && s.max !== null) control.max = s.max;
     if (s.readonly) control.readOnly = true;
     // A disabled control is shown but cannot be changed (e.g. the broker of an
     // annulled policy, which the server refuses to move). buildForm still reads
@@ -3444,7 +3460,7 @@ async function adminBranches() {
       {
         key: "CreatedAt",
         label: t("created"),
-        format: (v) => (v ? String(v).replace("T", " ").slice(0, 19) : ""),
+        format: (v) => formatDateTime(v),
       },
     ],
     (branch) => [
@@ -3694,6 +3710,17 @@ function localDateTimeNow(d = new Date()) {
   );
 }
 
+// The CreatedAt of a broker movement recorded for a chosen calendar day: that
+// day at the current time of day, so a backdated top-up still sorts last
+// within its day. An empty or malformed day means "now".
+function brokerMovementCreatedAt(day, now = new Date()) {
+  const stamp = localDateTimeNow(now);
+  const picked = String(day === undefined || day === null ? "" : day).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(picked)
+    ? `${picked} ${stamp.slice(11)}`
+    : stamp;
+}
+
 // "YYYY-MM-DD" one calendar day after the given local date string.
 function nextLocalDate(dateString) {
   const [y, m, d] = dateString.split("-").map(Number);
@@ -3768,8 +3795,8 @@ function openForgottenShiftFix(branch, defaultDate) {
       }
       const confirmed = window.confirm(
         fmt(t("fixShiftConfirm"), {
-          date: shiftDate,
-          cutoff,
+          date: formatDateOnly(shiftDate),
+          cutoff: formatDateTime(cutoff),
           keptCash: fixShiftCashLabel(preview.kept.cash),
           keptCard: money(preview.kept.card),
           keptBroker: fixShiftCashLabel(preview.kept.brokerCash),
@@ -3788,7 +3815,7 @@ function openForgottenShiftFix(branch, defaultDate) {
       }
       toast(
         fmt(t("fixShiftDone"), {
-          date: shiftDate,
+          date: formatDateOnly(shiftDate),
           keptCash: fixShiftCashLabel(applied.kept.cash),
           keptCard: money(applied.kept.card),
           keptBroker: fixShiftCashLabel(applied.kept.brokerCash),
@@ -4847,7 +4874,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     type: "button",
     class: "secondary date-step",
     title: fmt(t("previousDay"), {
-      date: previousLocalDate(dateInput.value || date),
+      date: formatDateOnly(previousLocalDate(dateInput.value || date)),
     }),
   });
   previousDayBtn.setAttribute("aria-label", previousDayBtn.title);
@@ -4858,7 +4885,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     type: "button",
     class: "secondary date-step",
     title: fmt(t("nextDay"), {
-      date: nextLocalDate(dateInput.value || date),
+      date: formatDateOnly(nextLocalDate(dateInput.value || date)),
     }),
   });
   nextDayBtn.setAttribute("aria-label", nextDayBtn.title);
@@ -4872,7 +4899,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   dateNav.appendChild(nextDayBtn);
   // field() points its label at the control; the wrapper itself is not
   // focusable, so the label follows the input inside it (like passwordField).
-  dateNav.focusTarget = dateInput;
+  dateNav.focusTarget = dateInput.focusTarget || dateInput;
 
   const dateRow = el("div", null, { class: "row filter-row" });
   dateRow.appendChild(field(t("date"), dateNav));
@@ -4900,7 +4927,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     if (hadActivity && resetsOnDay === 0) {
       const warning = el("div", null, { class: "banner shift-missed" });
       warning.appendChild(
-        el("p", fmt(t("shiftMissedWarning"), { date }), {
+        el("p", fmt(t("shiftMissedWarning"), { date: formatDateOnly(date) }), {
           class: "shift-missed-text",
         })
       );
@@ -5468,6 +5495,23 @@ function movementTypeLabel(type) {
   return t(`movement.${type}`, type || "");
 }
 
+// The Type cell of a broker movement. A retired row (reduce/adjust) gets a tag
+// next to its label, so it stands out and can be reviewed or soft-deleted; the
+// tooltip explains that the balance rule ignores it.
+function movementTypeCell(value, movement) {
+  const wrap = el("span", null, { class: "movement-type" });
+  wrap.appendChild(el("span", movementTypeLabel(value)));
+  if (movement && movement.Retired) {
+    wrap.appendChild(
+      el("span", t("retiredTag"), {
+        class: "movement-retired-tag",
+        title: t("retiredTagHint"),
+      })
+    );
+  }
+  return wrap;
+}
+
 // Signed, currency-precise amount (e.g. "+25.00" / "-10.00").
 function signedMoney(value) {
   const n = Number(value);
@@ -5510,13 +5554,15 @@ function dayPagerControls(date, onDate) {
   const prev = el("button", t("previous"), {
     class: "secondary small",
     type: "button",
-    title: fmt(t("previousDay"), { date: previousLocalDate(date) }),
+    title: fmt(t("previousDay"), {
+      date: formatDateOnly(previousLocalDate(date)),
+    }),
   });
   prev.addEventListener("click", () => onDate(previousLocalDate(date)));
   const next = el("button", t("next"), {
     class: "secondary small",
     type: "button",
-    title: fmt(t("nextDay"), { date: nextLocalDate(date) }),
+    title: fmt(t("nextDay"), { date: formatDateOnly(nextLocalDate(date)) }),
   });
   next.disabled = date >= localDateString();
   next.addEventListener("click", () => {
@@ -5524,7 +5570,7 @@ function dayPagerControls(date, onDate) {
     onDate(nextLocalDate(date));
   });
   wrap.appendChild(prev);
-  wrap.appendChild(el("span", date, { class: "muted" }));
+  wrap.appendChild(el("span", formatDateOnly(date), { class: "muted" }));
   wrap.appendChild(next);
   return wrap;
 }
@@ -5536,7 +5582,8 @@ function dayPagerControls(date, onDate) {
 // original sale row by the server, so that row simply shows the policy's current
 // price - its annulment tax once annulled - and is tinted like its row in
 // "Insurances by date". A policy that was moved to another broker disappears
-// from this broker's history entirely.
+// from this broker's history entirely. Retired reduce/adjust rows stay listed
+// with a tag, never move the balance and can be soft-deleted from their row.
 async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = false) {
   Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
@@ -5609,7 +5656,11 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
   }
   if (starting && starting.date) {
     startingRow.appendChild(
-      el("span", ` · ${t("startingBalanceDate")}: ${starting.date}`)
+      // A calendar day only, so it is shown as dd-mm-yyyy (no time of day).
+      el(
+        "span",
+        ` · ${t("startingBalanceDate")}: ${formatDateOnly(starting.date)}`
+      )
     );
   }
 
@@ -5676,7 +5727,13 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
             class: "danger",
             hover: true,
             onClick: async (m) => {
-              if (!confirm(t("deleteMovementConfirm"))) return;
+              if (
+                !confirm(
+                  t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm")
+                )
+              ) {
+                return;
+              }
               try {
                 await api(`/brokers/${broker.id}/history/${m.id}`, {
                   method: "DELETE",
@@ -5695,7 +5752,11 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     data.movements || [],
     [
       { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
-      { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
+      {
+        key: "Type",
+        label: t("type"),
+        render: (v, m) => movementTypeCell(v, m),
+      },
       { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
       { key: "Reason", label: t("reason") },
       { key: "Author", label: t("author"), format: (v) => v || "—" },
@@ -5717,37 +5778,56 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     // sale row, so the Amount already shows the current price or tax. Tint an
     // annulled policy exactly like its row in the insurance tabs, so who paid
     // the tax is readable at a glance.
-    (m) =>
-      annulledRowClass({
+    (m) => {
+      const classes = [];
+      const annulled = annulledRowClass({
         Annulled: m.PolicyAnnulled,
         AnnulReason: m.PolicyAnnulReason,
-      })
+      });
+      if (annulled) classes.push(annulled);
+      if (m.Retired) classes.push("row-broker-retired");
+      return classes.join(" ");
+    }
   );
 
   // With a date picked the history is a single day, so its Previous / Next walk
   // the calendar instead of sitting disabled (see dayPagerControls). A day with
-  // more movements than one page keeps the ordinary pager underneath.
-  const pagers = [];
-  if (date) {
-    pagers.push(
-      dayPagerControls(date, (d) =>
-        brokerHistoryView(broker, 1, d, includeDeleted)
-      )
-    );
-    if (data.totalPages > 1) {
+  // more movements than one page keeps the ordinary pager too. The controls are
+  // rendered above and below the table.
+  const buildPagers = (extraClass = "") => {
+    const pagers = [];
+    if (date) {
+      pagers.push(
+        dayPagerControls(date, (d) =>
+          brokerHistoryView(broker, 1, d, includeDeleted)
+        )
+      );
+      if (data.totalPages > 1) {
+        pagers.push(
+          pagerControls(data.totalPages, page, (p) =>
+            brokerHistoryView(broker, p, date, includeDeleted)
+          )
+        );
+      }
+    } else {
       pagers.push(
         pagerControls(data.totalPages, page, (p) =>
           brokerHistoryView(broker, p, date, includeDeleted)
         )
       );
     }
-  } else {
-    pagers.push(
-      pagerControls(data.totalPages, page, (p) =>
-        brokerHistoryView(broker, p, date, includeDeleted)
-      )
-    );
-  }
+    if (extraClass) pagers.forEach((p) => p.classList.add(extraClass));
+    return pagers;
+  };
+
+  // A retired reduce/adjust row is history only: it is listed (and can be
+  // soft-deleted) but never moves the balance. Explain the tag when one is on
+  // the shown page.
+  const retiredNote = (data.movements || []).some((m) => m.Retired)
+    ? el("p", t("retiredMovementNote"), {
+        class: "muted history-retired-note",
+      })
+    : null;
 
   const children = [
     backBtn,
@@ -5756,8 +5836,10 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     startingRow,
     dateRow,
     totalRow,
+    ...(retiredNote ? [retiredNote] : []),
+    ...buildPagers("pagination-top"),
     table,
-    ...pagers,
+    ...buildPagers(),
   ];
 
   // Soft-deleted movements are kept in the database and only shown when the
@@ -5769,7 +5851,11 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
         data.deleted,
         [
           { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
-          { key: "Type", label: t("type"), format: (v) => movementTypeLabel(v) },
+          {
+            key: "Type",
+            label: t("type"),
+            render: (v, m) => movementTypeCell(v, m),
+          },
           { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
           {
             key: "Reason",
@@ -5791,7 +5877,7 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
             onClick: (m) => restoreBrokerMovement(broker, m, page, date),
           },
         ],
-        () => "row-deleted"
+        (m) => (m.Retired ? "row-deleted row-broker-retired" : "row-deleted")
       )
     );
   }
@@ -5803,7 +5889,17 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
 // movement's amount to the broker's balance and clears the Deleted flag, putting
 // the row back exactly where it was.
 async function restoreBrokerMovement(broker, movement, page, date) {
-  if (!confirm(t("restoreMovementConfirm"))) return;
+  if (
+    !confirm(
+      t(
+        movement && movement.Retired
+          ? "restoreRetiredMovementConfirm"
+          : "restoreMovementConfirm"
+      )
+    )
+  ) {
+    return;
+  }
   try {
     await api(`/brokers/${broker.id}/history/${movement.id}/restore`, {
       method: "POST",
@@ -5817,8 +5913,10 @@ async function restoreBrokerMovement(broker, movement, page, date) {
 
 // Admin-only modal to correct a single broker balance movement. The amount is
 // shown signed (positive = increase, negative = decrease); changing it shifts
-// the broker balance by the difference. Type, blank number, reason and author
-// are stored as entered.
+// the broker balance by the difference - except for a retired row
+// (reduce/adjust), which never counts towards the balance. Type, blank number,
+// reason and author are stored as entered; changing a row in or out of a
+// retired type moves the balance by the contribution it gains or loses.
 function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = false) {
   // A hand-over keeps its own type: it is a payment the owner took directly, so
   // it never carried a branch. Turning it into a branch top-up (or the other
@@ -5884,9 +5982,9 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
 // BEFORE its first insurance was created, plus the date that balance belongs
 // to. Saving it (PUT /brokers/:id/starting-balance) recalculates the broker's
 // balance on the server from all of its insurances (an annulled one at its
-// annulment tax) and all of its manual payments (top-ups, hand-overs, expenses
-// and corrections), then re-opens the history so the corrected figures - and
-// the recalculated running balances - are shown straight away.
+// annulment tax only when the broker paid it) and its payments (top-ups and
+// hand-overs), then re-opens the history so the corrected figures - and the
+// recalculated running balances - are shown straight away.
 function brokerStartingBalanceForm(
   broker,
   starting,
@@ -5948,24 +6046,45 @@ function brokerAdjust(broker, kind) {
     increase: t("brokerBalanceIncreased"),
     handover: t("brokerHandoverRecorded"),
   };
+  // Admins may record a top-up on an earlier day: money the broker handed over
+  // before anyone could enter it still belongs to that day's reports and to the
+  // branch's Cash from Brokers. The date picker opens on today and cannot name
+  // a day that has not happened yet; a worker always records "now".
+  const canBackdate = kind === "increase" && userRole === "1";
+  const spec = [
+    { key: "amount", label: t("amount"), type: "number", value: "" },
+    {
+      key: "currency",
+      label: t("currency"),
+      type: "select",
+      options: [
+        { label: "EUR", value: "EUR" },
+        { label: "TRY", value: "TRY" },
+      ],
+      value: "EUR",
+    },
+    { key: "reason", label: t("reason"), value: "" },
+  ];
+  if (canBackdate) {
+    spec.push({
+      key: "date",
+      label: t("increaseDate"),
+      type: "date",
+      value: localDateString(),
+      max: localDateString(),
+    });
+  }
   const form = buildForm(
-    [
-      { key: "amount", label: t("amount"), type: "number", value: "" },
-      {
-        key: "currency",
-        label: t("currency"),
-        type: "select",
-        options: [
-          { label: "EUR", value: "EUR" },
-          { label: "TRY", value: "TRY" },
-        ],
-        value: "EUR",
-      },
-      { key: "reason", label: t("reason"), value: "" },
-    ],
+    spec,
     async (payload) => {
       // The resulting broker movement is stamped with the worker's local time.
-      payload.CreatedAt = localDateTimeNow();
+      // A backdated increase keeps the picked day and the time of day it is
+      // entered at, so the row still sorts last within that day. `date` is what
+      // tells the server the day was chosen, so it can insist on an admin.
+      payload.CreatedAt = brokerMovementCreatedAt(
+        canBackdate ? payload.date : ""
+      );
+      payload.TzOffset = -new Date().getTimezoneOffset();
       // Money handed over by the broker is kept apart from current cash as the
       // branch's Cash from Brokers, so an increase must name the branch that
       // took the money (the logged-in user's branch). A hand-over went straight
@@ -5983,7 +6102,14 @@ function brokerAdjust(broker, kind) {
     },
     titles[kind] || kind
   );
-  openModal(`${titles[kind] || kind} ${broker.Name}`, form);
+  if (!canBackdate) {
+    openModal(`${titles[kind] || kind} ${broker.Name}`, form);
+    return;
+  }
+  const body = el("div");
+  body.appendChild(el("p", t("increaseDateHint"), { class: "muted" }));
+  body.appendChild(form);
+  openModal(`${titles[kind] || kind} ${broker.Name}`, body);
 }
 
 function brokerCreateForm() {
@@ -8397,7 +8523,9 @@ function diagDetailsNode(report) {
   wrap.appendChild(
     el(
       "p",
-      `${t("diag.captured")}: ${report.CapturedAtText || report.CapturedAt || ""}` +
+      `${t("diag.captured")}: ${formatDateTime(
+        report.CapturedAtText || report.CapturedAt
+      )}` +
         (report.DurationMs !== null && report.DurationMs !== undefined
           ? ` · ${report.DurationMs} ms`
           : "") +
@@ -8716,7 +8844,11 @@ async function adminDiagnostics() {
         renderTable(
           failures.slice(-30).reverse(),
           [
-            { key: "at", label: t("diag.captured") },
+            {
+              key: "at",
+              label: t("diag.captured"),
+              format: (v) => formatDateTime(v),
+            },
             { key: "method", label: "Method" },
             { key: "path", label: "Path" },
             { key: "status", label: t("diag.status") },

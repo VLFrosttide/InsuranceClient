@@ -16,7 +16,7 @@
 //                string                            -> text cell
 //                { value: number, style: "money" } -> number shown as 0.00
 //                { value: number, style: "date" }  -> Excel date serial shown
-//                                                     as dd.mm.yyyy hh:mm
+//                                                     as dd-mm-yyyy hh:mm
 //   xlsxDateSerial(date) -> number | null
 //     Excel serial (days since 1899-12-30) of a Date's LOCAL wall-clock time.
 
@@ -264,11 +264,11 @@ function buildXlsxFile({ sheetName, columns, rows } = {}) {
     `</workbook>`;
 
   // cellXfs indexes must match XLSX_STYLE: 1 = bold header, 2 = "0.00",
-  // 3 = "dd.mm.yyyy hh:mm".
+  // 3 = "dd-mm-yyyy hh:mm".
   const stylesXml =
     XLSX_XML_HEAD +
     `<styleSheet xmlns="${XLSX_NS_MAIN}">` +
-    `<numFmts count="1"><numFmt numFmtId="164" formatCode="dd.mm.yyyy hh:mm"/></numFmts>` +
+    `<numFmts count="1"><numFmt numFmtId="164" formatCode="dd-mm-yyyy hh:mm"/></numFmts>` +
     `<fonts count="2">` +
     `<font><sz val="11"/><name val="Calibri"/><family val="2"/></font>` +
     `<font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font>` +
