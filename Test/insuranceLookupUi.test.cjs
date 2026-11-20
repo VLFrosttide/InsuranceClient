@@ -190,6 +190,133 @@ check("the new labels exist in both languages", () => {
   }
 });
 
+check("the balance history shows the starting balance and lets an admin set it", () => {
+  const start = src.indexOf("function renderBrokerHistory(");
+  const end = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    start
+  );
+  ok(start >= 0 && end > start, "renderBrokerHistory block not found");
+  const block = src.slice(start, end);
+  ok(
+    block.includes('t("startingBalance")') &&
+      block.includes('t("startingBalanceNotSet")'),
+    "the label and its value are rendered"
+  );
+  ok(
+    block.includes("brokerStartingBalanceForm(broker, starting"),
+    "clicking the value opens the editor"
+  );
+  ok(
+    block.includes('t("startingBalanceDate")') &&
+      block.includes("starting.date"),
+    "the starting balance date is shown"
+  );
+  // Only admins may change it; workers and broker clients just read it.
+  ok(
+    block.includes('if (userRole === "1")') &&
+      block.indexOf('if (userRole === "1")') <
+        block.indexOf("brokerStartingBalanceForm(broker, starting"),
+    "the value is a link button for admins only"
+  );
+  ok(
+    src.includes('api(`/brokers/${broker.id}/starting-balance`') &&
+      src.includes('method: "PUT"'),
+    "saving goes to PUT /brokers/:id/starting-balance"
+  );
+  for (const key of [
+    "startingBalance",
+    "startingBalanceNotSet",
+    "startingBalanceDate",
+    "startingBalanceHint",
+    "startingBalanceSaved",
+  ]) {
+    eq(
+      (common.match(new RegExp(`\\b${key}:`, "g")) || []).length,
+      2,
+      `${key} in EN and BG`
+    );
+  }
+  // Next to the total of the shown movements stands the balance at the end of
+  // the shown day, so the day's money and where the broker stood can be read
+  // together.
+  ok(
+    block.includes('t("total")') &&
+      block.includes('t("balanceAtDayEnd")') &&
+      block.includes("money(balanceAtEnd)"),
+    "the end-of-day balance sits next to the total"
+  );
+  for (const key of ["balanceAtDayEnd", "balanceAtDayEndHint"]) {
+    eq(
+      (common.match(new RegExp(`\\b${key}:`, "g")) || []).length,
+      2,
+      `${key} in EN and BG`
+    );
+  }
+});
+
+check("the brokers table has no Reduce action any more", () => {
+  // A balance is raised only by money the broker paid (Increase / Hand over)
+  // and falls as policies are created; the old rows stay as history, so their
+  // label must survive in both languages.
+  ok(!src.includes('brokerAdjust(broker, "reduce")'), "no reduce button");
+  ok(
+    !src.includes("broker-adjust-reduce") && !css.includes("broker-adjust-reduce"),
+    "no reduce button style either"
+  );
+  ok(
+    src.includes('brokerAdjust(broker, "increase")') &&
+      src.includes('brokerAdjust(broker, "handover")'),
+    "top-ups and hand-overs stay"
+  );
+  eq(
+    (common.match(/movement\.reduce/g) || []).length,
+    2,
+    "the reduce label is kept for historical rows (EN and BG)"
+  );
+});
+
+check("a broker's balance cannot be typed in the edit form", () => {
+  const start = src.indexOf("async function brokerEditForm(");
+  const end = src.indexOf("// Compact", start);
+  ok(start >= 0 && end > start, "brokerEditForm block not found");
+  const block = src.slice(start, end);
+  // The balance is calculated from the starting balance, the policies and the
+  // payments, so the form no longer offers it (that field wrote an "adjust"
+  // row). Creating a broker with a balance is still possible.
+  ok(!block.includes('key: "CashBalance"'), "no balance field in the editor");
+  ok(
+    block.includes('key: "Name"') && block.includes('key: "emails"'),
+    "name and emails are still editable"
+  );
+  ok(
+    src.includes('key: "CashBalance",\n        label: t("startingBalance")'),
+    "a new broker is created with a starting balance"
+  );
+});
+
+check("a picked day steps the pager instead of disabling it", () => {
+  ok(src.includes("function dayPagerControls(date, onDate)"), "day pager");
+  // The date-scoped history is a single page, so the pager walks the calendar
+  // day by day; the plain pagination stays for the whole history and for a day
+  // that needs more than one page.
+  ok(
+    src.includes("dayPagerControls(date, (d) =>") &&
+      src.includes("if (data.totalPages > 1)") &&
+      src.includes("pagerControls(data.totalPages, page, (p) =>"),
+    "the pager switches to day stepping when a date is picked"
+  );
+  ok(
+    src.includes("onDate(previousLocalDate(date))") &&
+      src.includes("onDate(nextLocalDate(date))"),
+    "Previous / Next change the date"
+  );
+  ok(
+    src.includes("next.disabled = date >= localDateString();"),
+    "the walk stops at today"
+  );
+});
+
 check("the table shows the policy's duration next to the numbers", () => {
   ok(
     src.includes('key: "Duration",\n            label: t("add.duration"),'),

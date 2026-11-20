@@ -957,6 +957,12 @@ td.num-neg {
   justify-content: flex-end;
   margin-bottom: 8px;
 }
+/* Starting balance of a broker on its balance history page: the balance before
+   the first insurance was created. Its value is a link button an admin clicks
+   to set or correct it (see brokerStartingBalanceForm). */
+p.history-starting-balance {
+  margin: 0 0 12px;
+}
 /* Total of the shown insurances (annulled ones at their tax), right-aligned
    under the table. */
 .insurance-total-row {

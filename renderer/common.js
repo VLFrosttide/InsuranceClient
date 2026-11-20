@@ -286,6 +286,16 @@ const I18N = {
     brokerHistory: "Balance history",
     brokerHistoryBalanceHint:
       "The broker's balance at the end of the shown range. Pick a date to see the balance on that day; the history goes all the way back to the first movement.",
+    startingBalance: "Starting balance",
+    startingBalanceNotSet: "Not set",
+    startingBalanceDate: "Starting balance date",
+    startingBalanceHint:
+      "The broker's balance before the first insurance was created. Saving it recalculates the broker's balance from all of its insurances (an annulled one at its annulment tax) and all of its payments (top-ups and hand-overs).",
+    startingBalanceSaved:
+      "Starting balance saved — the broker balance has been recalculated",
+    balanceAtDayEnd: "Balance at the end of the day",
+    balanceAtDayEndHint:
+      "The broker's balance when the shown day ended: the starting balance plus every payment, minus every insurance up to that moment.",
     balanceAfter: "Balance after",
     netChange: "Change",
     total: "Total",
@@ -1135,6 +1145,16 @@ const I18N = {
     brokerHistory: "История на баланса",
     brokerHistoryBalanceHint:
       "Балансът на брокера в края на показания период. Изберете дата, за да видите баланса за този ден; историята стига до първото движение.",
+    startingBalance: "Начален баланс",
+    startingBalanceNotSet: "Не е зададен",
+    startingBalanceDate: "Дата на началния баланс",
+    startingBalanceHint:
+      "Балансът на брокера преди създаването на първата му застраховка. При запазване балансът се преизчислява от всички негови застраховки (анулираните – по тяхната такса за анулиране) и всички негови плащания (увеличения и предадени суми).",
+    startingBalanceSaved:
+      "Началният баланс е запазен — балансът на брокера е преизчислен",
+    balanceAtDayEnd: "Баланс в края на деня",
+    balanceAtDayEndHint:
+      "Балансът на брокера в края на показания ден: началният баланс плюс всички плащания, минус всички застраховки до този момент.",
     balanceAfter: "Баланс след",
     netChange: "Промяна",
     total: "Общо",

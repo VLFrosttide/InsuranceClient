@@ -5349,7 +5349,7 @@ async function brokersView() {
       (b) => [
         {
           label: t("increase"),
-          class: "broker-adjust broker-adjust-increase",
+          class: "broker-adjust",
           onClick: (broker) => brokerAdjust(broker, "increase"),
         },
         // A broker may pay the owner directly: that is a payment on their
@@ -5360,15 +5360,13 @@ async function brokersView() {
           class: "broker-adjust secondary",
           onClick: (broker) => brokerAdjust(broker, "handover"),
         },
-        // A worker may top a broker up, but reducing a broker's balance stays an
-        // admin correction.
+        // There is no "Reduce" action: a balance may only grow through money the
+        // broker actually paid (a top-up or a hand-over). It falls by itself as
+        // policies are created, and it is recalculated from the starting balance
+        // and the policies, so a hand-typed reduction is not possible any more.
+        // The historical "reduce" rows are kept and still show in the history.
         ...(isAdmin
           ? [
-              {
-                label: t("reduce"),
-                class: "broker-adjust broker-adjust-reduce secondary",
-                onClick: (broker) => brokerAdjust(broker, "reduce"),
-              },
               brokerCutOffAction(b),
               {
                 label: t("edit"),
@@ -5503,6 +5501,34 @@ function pagerControls(totalPages, page, onPage) {
   return wrap;
 }
 
+// Day navigation for a single-day history. Once a date is picked the history is
+// exactly one page, so the pager's Previous / Next must NOT sit disabled: they
+// step one calendar day at a time (the picked day is shown between them). There
+// is no history after today, so the walk stops there.
+function dayPagerControls(date, onDate) {
+  const wrap = el("div", null, { class: "row pagination" });
+  const prev = el("button", t("previous"), {
+    class: "secondary small",
+    type: "button",
+    title: fmt(t("previousDay"), { date: previousLocalDate(date) }),
+  });
+  prev.addEventListener("click", () => onDate(previousLocalDate(date)));
+  const next = el("button", t("next"), {
+    class: "secondary small",
+    type: "button",
+    title: fmt(t("nextDay"), { date: nextLocalDate(date) }),
+  });
+  next.disabled = date >= localDateString();
+  next.addEventListener("click", () => {
+    if (next.disabled) return;
+    onDate(nextLocalDate(date));
+  });
+  wrap.appendChild(prev);
+  wrap.appendChild(el("span", date, { class: "muted" }));
+  wrap.appendChild(next);
+  return wrap;
+}
+
 // The broker balance history "page": every balance movement of the broker,
 // newest first, with a back button to the list. It goes all the way back to the
 // broker's first movement, and a calendar picker scopes it to a single day.
@@ -5556,6 +5582,37 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     { class: "muted", title: t("brokerHistoryBalanceHint") }
   );
 
+  // The balance the broker had BEFORE its first insurance was created. An admin
+  // clicks the value to set or correct it (brokerStartingBalanceForm); saving it
+  // makes the server recalculate the broker's balance from the insurances and
+  // the manual payments. A broker without one says so instead of pretending it
+  // started at zero.
+  const starting = data.startingBalance || null;
+  const startingRow = el("p", null, {
+    class: "muted history-starting-balance",
+  });
+  startingRow.appendChild(el("span", `${t("startingBalance")}: `));
+  if (userRole === "1") {
+    const startingBtn = el(
+      "button",
+      starting ? money(starting.amount) : t("startingBalanceNotSet"),
+      { class: "link-button", type: "button", title: t("startingBalanceHint") }
+    );
+    startingBtn.addEventListener("click", () =>
+      brokerStartingBalanceForm(broker, starting, date, includeDeleted)
+    );
+    startingRow.appendChild(startingBtn);
+  } else {
+    startingRow.appendChild(
+      el("span", starting ? money(starting.amount) : t("startingBalanceNotSet"))
+    );
+  }
+  if (starting && starting.date) {
+    startingRow.appendChild(
+      el("span", ` · ${t("startingBalanceDate")}: ${starting.date}`)
+    );
+  }
+
   // Calendar picker scopes the history to a single day; clearing it falls back
   // to the whole history.
   const dateInput = input("date", date || "");
@@ -5589,10 +5646,18 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
 
   // Total (net) sum of the movements across the whole scoped range, right-aligned
   // above the table. The server returns this as netChange over the entire window,
-  // so it stays correct regardless of which page is shown.
+  // so it stays correct regardless of which page is shown. Next to it stands the
+  // broker's balance when the shown day ended: the total says what moved, the
+  // balance says where the broker stood once that day was over.
   const totalRow = el("div", null, { class: "row history-total-row" });
   totalRow.appendChild(
     el("span", `${t("total")}: ${signedMoney(data.netChange)}`, { class: "muted" })
+  );
+  totalRow.appendChild(
+    el("span", `${t("balanceAtDayEnd")}: ${money(balanceAtEnd)}`, {
+      class: "muted",
+      title: t("balanceAtDayEndHint"),
+    })
   );
 
   // Admins can correct or remove a single movement; workers and broker
@@ -5659,11 +5724,41 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
       })
   );
 
-  const pager = pagerControls(data.totalPages, page, (p) =>
-    brokerHistoryView(broker, p, date, includeDeleted)
-  );
+  // With a date picked the history is a single day, so its Previous / Next walk
+  // the calendar instead of sitting disabled (see dayPagerControls). A day with
+  // more movements than one page keeps the ordinary pager underneath.
+  const pagers = [];
+  if (date) {
+    pagers.push(
+      dayPagerControls(date, (d) =>
+        brokerHistoryView(broker, 1, d, includeDeleted)
+      )
+    );
+    if (data.totalPages > 1) {
+      pagers.push(
+        pagerControls(data.totalPages, page, (p) =>
+          brokerHistoryView(broker, p, date, includeDeleted)
+        )
+      );
+    }
+  } else {
+    pagers.push(
+      pagerControls(data.totalPages, page, (p) =>
+        brokerHistoryView(broker, p, date, includeDeleted)
+      )
+    );
+  }
 
-  const children = [backBtn, heading, summary, dateRow, totalRow, table, pager];
+  const children = [
+    backBtn,
+    heading,
+    summary,
+    startingRow,
+    dateRow,
+    totalRow,
+    table,
+    ...pagers,
+  ];
 
   // Soft-deleted movements are kept in the database and only shown when the
   // admin asks for them (Include deleted). Each one can be brought straight back.
@@ -5785,15 +5880,72 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
   openModal(`${t("editMovement")} — ${broker.Name}`, form);
 }
 
+// Admin-only modal that sets the broker's starting balance: the balance it had
+// BEFORE its first insurance was created, plus the date that balance belongs
+// to. Saving it (PUT /brokers/:id/starting-balance) recalculates the broker's
+// balance on the server from all of its insurances (an annulled one at its
+// annulment tax) and all of its manual payments (top-ups, hand-overs, expenses
+// and corrections), then re-opens the history so the corrected figures - and
+// the recalculated running balances - are shown straight away.
+function brokerStartingBalanceForm(
+  broker,
+  starting,
+  date,
+  includeDeleted = false
+) {
+  const form = buildForm(
+    [
+      {
+        key: "amount",
+        label: t("startingBalance"),
+        type: "number",
+        step: "0.01",
+        value: starting ? starting.amount : 0,
+      },
+      {
+        key: "date",
+        label: t("startingBalanceDate"),
+        type: "date",
+        // A new starting balance belongs to today until the admin says
+        // otherwise; an existing one keeps the day it was recorded for.
+        value: starting && starting.date ? starting.date : localDateString(),
+      },
+    ],
+    async (payload) => {
+      await api(`/brokers/${broker.id}/starting-balance`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: payload.amount,
+          date: payload.date || localDateString(),
+        }),
+      });
+      toast(t("startingBalanceSaved"), "success");
+      closeModal();
+      // The recalculated balance reorders nothing on this page, but a page past
+      // the first would show a stale slice: start again at page 1.
+      brokerHistoryView(broker, 1, date, includeDeleted);
+    },
+    t("save")
+  );
+
+  const body = el("div");
+  body.appendChild(el("p", t("startingBalanceHint"), { class: "muted" }));
+  body.appendChild(form);
+  openModal(`${t("startingBalance")} — ${broker.Name}`, body);
+}
+
+// Money the broker paid: a top-up ("increase", the branch takes it as Cash from
+// Brokers) or a hand-over to the owner ("handover", no branch). There is no
+// "reduce" any more - a balance may not be lowered by hand; it falls as policies
+// are created and is recalculated from the starting balance and the policies.
 function brokerAdjust(broker, kind) {
   const titles = {
     increase: t("increase"),
-    reduce: t("reduce"),
     handover: t("handOver"),
   };
   const confirmations = {
     increase: t("brokerBalanceIncreased"),
-    reduce: t("brokerBalanceReduced"),
     handover: t("brokerHandoverRecorded"),
   };
   const form = buildForm(
@@ -5816,9 +5968,9 @@ function brokerAdjust(broker, kind) {
       payload.CreatedAt = localDateTimeNow();
       // Money handed over by the broker is kept apart from current cash as the
       // branch's Cash from Brokers, so an increase must name the branch that
-      // took the money (the logged-in user's branch). A reduction moves no
-      // cash, and a hand-over went straight to the owner - neither gets a
-      // branch, which is what keeps a hand-over out of Cash from Brokers.
+      // took the money (the logged-in user's branch). A hand-over went straight
+      // to the owner, so it gets no branch - which is exactly what keeps it out
+      // of Cash from Brokers.
       if (kind === "increase") payload.branch = getBranch();
       await api(`/brokers/${broker.id}/${kind}`, {
         method: "POST",
@@ -5839,7 +5991,15 @@ function brokerCreateForm() {
     [
       { key: "Name", label: t("name"), value: "" },
       { key: "Code", label: t("brokerId"), value: "" },
-      { key: "CashBalance", label: t("balance"), type: "number", value: 0 },
+      // A broker starts with the balance it is created with: the server stores
+      // it as the broker's starting balance (dated today), which is the base of
+      // every later recalculation.
+      {
+        key: "CashBalance",
+        label: t("startingBalance"),
+        type: "number",
+        value: 0,
+      },
       // Inactive blancs are not entered: they are calculated from the batches.
       {
         key: "batches",
@@ -5915,12 +6075,10 @@ async function brokerEditForm(broker) {
     [
       { key: "Name", label: t("name"), value: broker.Name },
       { key: "Code", label: t("brokerId"), value: broker.Code || "" },
-      {
-        key: "CashBalance",
-        label: t("balance"),
-        type: "number",
-        value: broker.CashBalance,
-      },
+      // The balance is NOT edited here: it is calculated from the broker's
+      // starting balance, its policies and its payments, so a typed figure
+      // would only last until the next recalculation (and used to leave an
+      // "adjust" row behind). It is set on the balance history page instead.
       // Blanc ranges are managed per batch (the "Blanc batches" button), and
       // inactive blancs are calculated from them, so neither is edited here.
       {
@@ -5931,9 +6089,6 @@ async function brokerEditForm(broker) {
       },
     ],
     async (payload) => {
-      // A balance change records an "adjust" broker movement; stamp it with the
-      // worker's local time.
-      payload.CreatedAt = localDateTimeNow();
       await api(`/brokers/${broker.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

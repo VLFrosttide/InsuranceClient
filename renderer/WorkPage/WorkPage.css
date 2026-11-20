@@ -641,16 +641,14 @@ tr.broker-name-filtered-out {
   gap: 6px;
 }
 
-/* Increase / Reduce are the broker actions used all day and sit side by side.
+/* Increase / Hand over are the broker actions used all day and sit side by side.
    They get a larger hit area and extra space between them, so a hurried click
-   cannot land on the neighbouring button. */
+   cannot land on the neighbouring button. (There is no "Reduce" any more: a
+   broker's balance is raised only by money it actually paid.) */
 .actions button.broker-adjust {
   padding: 8px 18px;
   font-size: 13px;
   min-width: 96px;
-}
-.actions button.broker-adjust-increase {
-  margin-right: 6px;
 }
 
 /* A heading whose tooltip explains the colours used below it (Brokers): the

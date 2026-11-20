@@ -21,6 +21,9 @@ function resetDb() {
     // Live policies, used by the history endpoint to price each movement and to
     // tell whether its policy was annulled.
     policies: [],
+    // Stored starting balances, one per broker id (the balance before the
+    // broker's first insurance).
+    startingBalances: {},
     nextMovement: 1,
   };
 }
@@ -125,6 +128,53 @@ async function query(sql, params = []) {
   if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_balance_movements")) {
     return [{}];
   }
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_starting_balances")) {
+    return [{}];
+  }
+  if (
+    s.startsWith(
+      "SELECT Amount, EffectiveDate, UpdatedBy, UpdatedAt FROM broker_starting_balances WHERE BrokerId = ?"
+    )
+  ) {
+    const row = db.startingBalances[String(Number(p[0]))];
+    return [row ? [row] : []];
+  }
+  if (s.startsWith("INSERT INTO broker_starting_balances")) {
+    const [brokerId, amount, effectiveDate, updatedBy] = p;
+    db.startingBalances[String(Number(brokerId))] = {
+      Amount: Number(amount),
+      EffectiveDate: effectiveDate,
+      UpdatedBy: updatedBy,
+      UpdatedAt: "2026-11-20 10:00:00",
+    };
+    return [{ affectedRows: 1 }];
+  }
+  // The recalculation reads the source data: every live insurance of the broker
+  // (an annulled one at its tax) ...
+  if (s.startsWith("SELECT COALESCE(SUM(") && s.includes("AS Charged")) {
+    const rows = db.policies.filter(
+      (x) => Number(x.BrokerId) === Number(p[0]) && x.Deleted !== 1
+    );
+    const charged = rows.reduce((sum, x) => {
+      const price = Number(x.Price) || 0;
+      if (!x.Annulled) return sum + price;
+      const fee =
+        x.AnnulFee === null || x.AnnulFee === undefined ? null : Number(x.AnnulFee);
+      return sum + (fee === null ? price : fee);
+    }, 0);
+    return [[{ Charged: charged }]];
+  }
+  // ... plus the payments only (top-ups and hand-overs; a reduce or an adjust
+  // row is not money the broker paid).
+  if (s.startsWith("SELECT COALESCE(SUM(Amount), 0) AS Paid")) {
+    const rows = db.movements.filter(
+      (m) =>
+        m.BrokerId === Number(p[0]) &&
+        m.Deleted !== 1 &&
+        ["increase", "handover"].includes(String(m.Type || "").trim())
+    );
+    return [[{ Paid: rows.reduce((sum, m) => sum + Number(m.Amount), 0) }]];
+  }
   if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
     return [db.brokers.filter((b) => b.id === Number(p[0]))];
   }
@@ -216,6 +266,11 @@ async function query(sql, params = []) {
     const mov = db.movements.find((x) => x.id === movementId);
     if (mov) cols.forEach((col, i) => (mov[col] = p[i]));
     return [{ affectedRows: mov ? 1 : 0 }];
+  }
+  if (s.startsWith("UPDATE brokers SET CashBalance = ? WHERE id = ?")) {
+    const broker = db.brokers.find((b) => b.id === Number(p[1]));
+    if (broker) broker.CashBalance = Math.round(Number(p[0]) * 100) / 100;
+    return [{ affectedRows: broker ? 1 : 0 }];
   }
   if (s.startsWith("UPDATE brokers SET CashBalance")) {
     const broker = db.brokers.find((b) => b.id === Number(p[1]));
@@ -340,6 +395,7 @@ function ok(value, msg) {
 }
 
 const WINDOW = { since: "2026-10-01", until: "2026-11-01" };
+const STARTING_BALANCE = "/brokers/:id/starting-balance";
 resetDb();
 
 (async () => {
@@ -358,6 +414,24 @@ resetDb();
         src.includes('=== "price_change"') &&
         src.includes('"broker change"'),
       "price edits and the refund are folded, and moved-away policies are dropped"
+    );
+  });
+
+  await check("a broker balance can no longer be reduced by hand", async () => {
+    const src = fs.readFileSync(BROKERS_JS, "utf8");
+    // The route is gone; only the explanation stays. Old "reduce" rows are
+    // history: they are never deleted and the recalculation ignores them.
+    ok(
+      !src.includes('"/brokers/:id/reduce"'),
+      "the reduce route is not registered"
+    );
+    ok(
+      src.includes("There is deliberately NO POST /brokers/:id/reduce"),
+      "the removal is documented"
+    );
+    ok(
+      src.includes("AND Type IN ('increase', 'handover')"),
+      "only increases and hand-overs count as payments"
     );
   });
 
@@ -1087,6 +1161,158 @@ resetDb();
     eq(r.status, 200, "status");
     eq(r.body.includeDeleted, false, "flag off for non-admin");
     eq(r.body.deleted.length, 0, "no deleted list for non-admin");
+  });
+
+  // --- starting balance (the balance before the first insurance) -------------
+
+  await check("history GET: a broker without a starting balance reports null", async () => {
+    resetDb();
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.startingBalance, null, "nothing stored yet");
+  });
+
+  await check("starting balance: saving it recalculates the broker balance", async () => {
+    resetDb();
+    // Live insurances: one active at 30, one annulled charged its 9 tax.
+    addPolicy("100001", { Price: 30, BrokerId: 1 });
+    addPolicy("100002", {
+      Price: 9,
+      OriginalPrice: 40,
+      AnnulFee: 9,
+      Annulled: true,
+      AnnulReason: "worker",
+      BrokerId: 1,
+    });
+    // Manual money: a top-up of 100 and a hand-over of 40.
+    addMovement(1, 100, "2026-10-10 12:00:00", { Type: "increase" });
+    addMovement(1, 40, "2026-10-11 12:00:00", { Type: "handover" });
+    // A reduction and an admin correction are NOT payments: they must not move
+    // the recalculated balance (both types are retired).
+    addMovement(1, -25, "2026-10-12 12:00:00", { Type: "reduce" });
+    addMovement(1, 15, "2026-10-13 12:00:00", { Type: "adjust" });
+    // Policy-derived rows are ignored: the insurances above are the truth.
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, -40, "2026-10-06 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100002",
+    });
+    addMovement(1, 40, "2026-10-07 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100002",
+    });
+    // Another broker's policy never counts here.
+    addPolicy("200001", { Price: 500, BrokerId: 2 });
+
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 50, date: "2026-10-01" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.message, "Starting balance saved", "message");
+    eq(r.body.startingBalance.amount, 50, "stored amount");
+    eq(r.body.startingBalance.date, "2026-10-01", "stored date");
+    eq(r.body.insuranceCharges, 39, "active price + annulled tax");
+    eq(r.body.payments, 140, "only the top-up and the hand-over count");
+    eq(r.body.broker.CashBalance, 151, "50 + 140 - 39");
+    eq(db.brokers[0].CashBalance, 151, "the balance is stored");
+  });
+
+  await check("starting balance: the stored value is shown in the history", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 25, BrokerId: 1 });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 10, date: "2026-09-30" },
+    });
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.startingBalance.amount, 10, "amount");
+    eq(r.body.startingBalance.date, "2026-09-30", "date");
+    eq(r.body.startingBalance.updatedBy, "admin1", "author");
+    eq(r.body.broker.CashBalance, -15, "10 - 25");
+  });
+
+  await check("starting balance: saving again replaces it", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 25, BrokerId: 1 });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 10, date: "2026-09-30" },
+    });
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 100, date: "2026-10-02" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.startingBalance.amount, 100, "new amount");
+    eq(r.body.startingBalance.date, "2026-10-02", "new date");
+    eq(r.body.broker.CashBalance, 75, "100 - 25");
+    eq(Object.keys(db.startingBalances).length, 1, "one row per broker");
+  });
+
+  await check("starting balance: a deleted insurance is not charged", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 25, BrokerId: 1 });
+    addPolicy("100002", { Price: 40, BrokerId: 1, Deleted: true });
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 0, date: "2026-10-01" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.insuranceCharges, 25, "only the live policy counts");
+    eq(r.body.broker.CashBalance, -25, "0 - 25");
+  });
+
+  await check("starting balance: a missing amount is rejected", async () => {
+    resetDb();
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: {},
+    });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "Amount must be a number", "error");
+  });
+
+  await check("starting balance: a malformed date is rejected", async () => {
+    resetDb();
+    for (const date of ["20-10-2026", "2026-02-31"]) {
+      const r = await call("put", STARTING_BALANCE, {
+        params: { id: "1" },
+        body: { amount: 10, date },
+      });
+      eq(r.status, 400, `status for ${date}`);
+      eq(r.body.error, "Date must be YYYY-MM-DD", `error for ${date}`);
+    }
+    eq(db.startingBalances[1], undefined, "nothing was stored");
+  });
+
+  await check("starting balance: an invalid broker id is rejected", async () => {
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "abc" },
+      body: { amount: 10 },
+    });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "Invalid broker id", "error");
+  });
+
+  await check("starting balance: an unknown broker answers 404", async () => {
+    resetDb();
+    const r = await call("put", STARTING_BALANCE, {
+      params: { id: "999" },
+      body: { amount: 10 },
+    });
+    eq(r.status, 404, "status");
+    eq(r.body.error, "Broker not found", "error");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

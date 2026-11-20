@@ -35,6 +35,8 @@ function resetDb() {
     batches: [],
     insurance: [],
     app_settings: {},
+    // Starting balances written when a broker is created (creation balance).
+    startingBalances: {},
     nextBroker: 3,
     nextBatch: 1,
     // Addresses the fake websocket layer was asked to evict.
@@ -65,6 +67,18 @@ async function query(sql, params = []) {
 
   if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_blanc_batches")) {
     return [{}];
+  }
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_starting_balances")) {
+    return [{}];
+  }
+  if (s.startsWith("INSERT INTO broker_starting_balances")) {
+    const [brokerId, amount, effectiveDate, updatedBy] = p;
+    db.startingBalances[String(Number(brokerId))] = {
+      Amount: Number(amount),
+      EffectiveDate: effectiveDate,
+      UpdatedBy: updatedBy,
+    };
+    return [{ affectedRows: 1 }];
   }
   if (s.startsWith("SELECT id FROM brokers WHERE id = ?")) {
     return [brokerById(p[0]).map((b) => ({ id: b.id }))];
@@ -180,7 +194,15 @@ async function query(sql, params = []) {
   }
   if (s.startsWith("INSERT INTO brokers")) {
     const id = db.nextBroker++;
-    db.brokers.push({ id, Name: p[0], CashBalance: p[1] });
+    // (Name, Code, CashBalance, PolicyRangeStart, PolicyRangeEnd,
+    //  InactivePolicies, ParentBrokerId)
+    db.brokers.push({
+      id,
+      Name: p[0],
+      Code: p[1],
+      CashBalance: Number(p[2]) || 0,
+      ParentBrokerId: p[6] ?? null,
+    });
     return [{ insertId: id }];
   }
   if (s.startsWith("INSERT INTO broker_emails")) {
@@ -659,6 +681,29 @@ const brokerOf = async (id) =>
     });
     eq(clash.status, 409, "overlap rejected");
     ok(!db.brokers.some((b) => b.Name === "Zeta"), "broker not created");
+  });
+
+  await check("a broker's creation balance is its starting balance", async () => {
+    const created = await call("post", "/brokers", {
+      body: { Name: "Eta", Code: "E1", CashBalance: 125 },
+    });
+    eq(created.status, 201, "status");
+    eq(created.body.broker.CashBalance, 125, "balance kept");
+    const id = String(created.body.broker.id);
+    eq(db.startingBalances[id].Amount, 125, "stored as the starting balance");
+    ok(
+      /^\d{4}-\d{2}-\d{2}$/.test(db.startingBalances[id].EffectiveDate),
+      "dated today"
+    );
+    eq(db.startingBalances[id].UpdatedBy, "admin1", "author");
+
+    // A broker created without a balance starts from an explicit 0.
+    const zero = await call("post", "/brokers", { body: { Name: "Theta" } });
+    eq(
+      db.startingBalances[String(zero.body.broker.id)].Amount,
+      0,
+      "an explicit zero starting balance"
+    );
   });
 
   await check("PATCH /brokers/:id can no longer set the counter", async () => {
