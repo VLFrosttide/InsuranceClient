@@ -21,6 +21,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 const ROOT = path.join(__dirname, "..");
 const WORKPAGE_JS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.js");
@@ -261,6 +262,54 @@ check("the balance history shows the starting balance and lets an admin set it",
       `${key} in EN and BG`
     );
   }
+});
+
+check("the history total sums the amounts on the shown page", () => {
+  // The helper is pure, so it is cut out of the real WorkPage.js and run in a vm
+  // (the file itself touches the DOM the moment it is loaded).
+  const start = src.indexOf("function sumDisplayedBrokerAmounts(");
+  const end = src.indexOf("// Pagination controls", start);
+  ok(start >= 0 && end > start, "sumDisplayedBrokerAmounts block not found");
+  const ctx = { console };
+  vm.createContext(ctx);
+  vm.runInContext(
+    src.slice(start, end),
+    ctx,
+    { filename: "WorkPage.js#sumDisplayedBrokerAmounts" }
+  );
+  const sum = ctx.sumDisplayedBrokerAmounts;
+  ok(typeof sum === "function", "the page-total helper is defined");
+
+  eq(
+    sum([{ Amount: 100 }, { Amount: -30.5 }, { Amount: "20" }]),
+    89.5,
+    "every amount on the page is summed"
+  );
+  eq(
+    sum([{ Amount: 100 }, { Amount: -5, Retired: true }]),
+    100,
+    "retired rows stay out of the total (retiredMovementNote)"
+  );
+  eq(sum([]), 0, "an empty page totals 0");
+  eq(sum(undefined), 0, "a missing page totals 0");
+
+  // The total row is fed from the displayed page, not from the server's
+  // netChange (which covers the whole scoped range, even with no date picked).
+  const viewStart = src.indexOf("function renderBrokerHistory(");
+  const viewEnd = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    viewStart
+  );
+  ok(viewStart >= 0 && viewEnd > viewStart, "renderBrokerHistory block not found");
+  const block = src.slice(viewStart, viewEnd);
+  ok(
+    block.includes("sumDisplayedBrokerAmounts(data.movements)"),
+    "the total is read off the shown movements"
+  );
+  ok(
+    block.includes('`${t("total")}: ${signedMoney(pageTotal)}`'),
+    "the total row shows the page sum"
+  );
 });
 
 check("retired broker movements are tagged and stand out", () => {

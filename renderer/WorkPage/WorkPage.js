@@ -5519,6 +5519,22 @@ function signedMoney(value) {
   return `${n >= 0 ? "+" : "-"}${abs}`;
 }
 
+// Total of the Amount column of the broker movements shown on THIS page, so the
+// figure always matches the rows under it: it stays meaningful without a date
+// (the whole history is paged, 40 rows at a time) and changes with the page.
+// Retired reduce/adjust rows are listed but never move the balance (see
+// retiredMovementNote), so they stay out of the total.
+function sumDisplayedBrokerAmounts(movements) {
+  let cents = 0;
+  for (const m of Array.isArray(movements) ? movements : []) {
+    if (!m || m.Retired) continue;
+    const amount = Number(m.Amount);
+    if (!Number.isFinite(amount)) continue;
+    cents += Math.round(amount * 100);
+  }
+  return cents / 100;
+}
+
 // Pagination controls (Prev / "Page x of y" / Next).
 function pagerControls(totalPages, page, onPage) {
   const wrap = el("div", null, { class: "row pagination" });
@@ -5695,14 +5711,16 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     dateRow.appendChild(field(t("includeDeleted"), includeDeletedInput));
   }
 
-  // Total (net) sum of the movements across the whole scoped range, right-aligned
-  // above the table. The server returns this as netChange over the entire window,
-  // so it stays correct regardless of which page is shown. Next to it stands the
-  // broker's balance when the shown day ended: the total says what moved, the
-  // balance says where the broker stood once that day was over.
+  // Total of the Amount column of the movements on THIS page, right-aligned
+  // above the table. It is read off the rows the table shows (not the server's
+  // netChange, which covers the whole scoped range), so it is the same figure
+  // whether or not a date is picked and it changes with the page. Next to it
+  // stands the broker's balance when the shown day ended: the total says what
+  // moved on the page, the balance says where the broker stood once it was over.
+  const pageTotal = sumDisplayedBrokerAmounts(data.movements);
   const totalRow = el("div", null, { class: "row history-total-row" });
   totalRow.appendChild(
-    el("span", `${t("total")}: ${signedMoney(data.netChange)}`, { class: "muted" })
+    el("span", `${t("total")}: ${signedMoney(pageTotal)}`, { class: "muted" })
   );
   totalRow.appendChild(
     el("span", `${t("balanceAtDayEnd")}: ${money(balanceAtEnd)}`, {
