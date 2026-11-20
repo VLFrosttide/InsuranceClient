@@ -202,6 +202,18 @@ tr td.cell-broker-negative {
   color: #ffb6c1;
 }
 
+/* A blanc batch the server added by itself: a policy was created anyway with a
+   blanc outside every handed-out range, so the blanc joined the broker's
+   batches as a one-number batch. Both the range in the brokers table and the
+   whole row in the batch list are pink, so the exception stands out. */
+.batch-auto {
+  color: #ffb6c1;
+}
+tr.batch-auto-row td {
+  background: rgba(255, 182, 193, 0.16);
+  color: #ffb6c1;
+}
+
 th.sortable {
   cursor: pointer;
   user-select: none;

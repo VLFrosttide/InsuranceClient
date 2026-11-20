@@ -27,7 +27,10 @@ const routes = [];
 const queries = [];
 const brokerCharges = [];
 const movements = [];
+const autoBatches = [];
 let blancInBrokerBatchesResult = true;
+// Set to a broker when the blanc is already inside ANOTHER broker's batches.
+let otherBrokerWithBlanc = null;
 
 const recorder = (method) => (routePath, ...handlers) => {
   routes.push({ method, path: routePath, handlers });
@@ -97,6 +100,13 @@ const STUBS = {
   "./Brokers.js": {
     resolveBrokerByEmail: async () => null,
     blancInBrokerBatches: async () => blancInBrokerBatchesResult,
+    findOtherBrokerWithBlanc: async () => otherBrokerWithBlanc,
+    // Called from the create transaction when the request carries the force
+    // flag; the real helper only writes when the blanc is really outside.
+    addAutoBlancBatch: async (conn, brokerId, blancNumber, author) => {
+      autoBatches.push({ brokerId, blancNumber, author });
+      return true;
+    },
     decreaseBrokerForInsurance: async (conn, brokerId, price, meta) => {
       brokerCharges.push({ brokerId, price, meta });
     },
@@ -187,10 +197,12 @@ function ok(cond, msg) {
 //   Author, CreationDate, PolicyNumber, BlancNumber, CarNumber, Price,
 //   CurrencyType, Duration, Broker, Branch, Otomobil, PaymentType,
 //   StartDate, BrokerId, NonTurk, CardFee
-async function create(body) {
+async function create(body, opts) {
   queries.length = 0;
   brokerCharges.length = 0;
   movements.length = 0;
+  autoBatches.length = 0;
+  otherBrokerWithBlanc = (opts && opts.otherBrokerWithBlanc) || null;
   const res = {
     statusCode: 200,
     body: undefined,
@@ -296,6 +308,7 @@ async function create(body) {
       "This blanc number is not in any of the broker's blanc batches",
       "error message"
     );
+    eq(autoBatches.length, 0, "a rejected create adds no blanc to the batches");
 
     const forced = await create({
       BrokerId: 5,
@@ -303,6 +316,36 @@ async function create(body) {
     });
     eq(forced.status, 201, "forced status");
     ok(forced.insert, "forced insert issued");
+    eq(
+      autoBatches,
+      [{ brokerId: 5, blancNumber: "123456", author: "admin1" }],
+      "the forced blanc joins the broker's batches"
+    );
+
+    blancInBrokerBatchesResult = true;
+  });
+
+  await check("a blanc that belongs to another broker is refused, even when forced", async () => {
+    blancInBrokerBatchesResult = false;
+    const refused = await create(
+      { BrokerId: 5, ForceOutsideBlancBatch: true },
+      { otherBrokerWithBlanc: { id: 9, name: "Друг Брокер" } }
+    );
+
+    eq(refused.status, 422, "status");
+    eq(
+      refused.body && refused.body.code,
+      "BLANC_BELONGS_TO_ANOTHER_BROKER",
+      "error code"
+    );
+    ok(
+      String(refused.body && refused.body.error).includes("Друг Брокер"),
+      "the error names the broker: " + (refused.body && refused.body.error)
+    );
+    eq(refused.body.brokerId, 9, "the other broker's id");
+    eq(refused.body.brokerName, "Друг Брокер", "the other broker's name");
+    eq(refused.insert, undefined, "nothing is saved");
+    eq(autoBatches.length, 0, "no batch is added");
 
     blancInBrokerBatchesResult = true;
   });

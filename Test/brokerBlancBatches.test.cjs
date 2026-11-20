@@ -118,8 +118,37 @@ async function query(sql, params = []) {
       .map((b) => ({ id: b.BrokerId }));
     return [rows];
   }
+  // findOtherBrokerWithBlanc: another broker holding that number?
+  if (
+    s.startsWith(
+      "SELECT bb.BrokerId AS id, br.Name AS name FROM broker_blanc_batches bb"
+    )
+  ) {
+    const [brokerId, numeric] = p;
+    const rows = db.batches
+      .filter(
+        (b) =>
+          b.BrokerId !== Number(brokerId) &&
+          b.RangeStart <= numeric &&
+          b.RangeEnd >= numeric
+      )
+      .map((b) => ({ id: b.BrokerId, name: (brokerById(b.BrokerId)[0] || {}).Name }));
+    return [rows];
+  }
   if (s.startsWith("SELECT id FROM broker_blanc_batches WHERE id = ? AND BrokerId = ?")) {
     return [db.batches.filter((b) => b.id === p[0] && b.BrokerId === p[1])];
+  }
+  // blancInBrokerBatches: is the number inside one of THAT broker's batches?
+  if (
+    s.startsWith(
+      "SELECT id FROM broker_blanc_batches WHERE BrokerId = ? AND RangeStart <= ? AND RangeEnd >= ?"
+    )
+  ) {
+    return [
+      db.batches.filter(
+        (b) => b.BrokerId === Number(p[0]) && b.RangeStart <= p[2] && b.RangeEnd >= p[1]
+      ),
+    ];
   }
   if (s.startsWith("INSERT INTO broker_blanc_batches")) {
     const id = db.nextBatch++;
@@ -129,14 +158,19 @@ async function query(sql, params = []) {
       RangeStart: p[1],
       RangeEnd: p[2],
       CreatedBy: p[3],
+      // A handed-out batch leaves the column out (default 0); the auto-added
+      // one names it in the column list and writes 1.
+      AutoAdded: /AutoAdded/.test(s) ? 1 : 0,
       CreatedAt: "2026-10-10 12:00:00",
     });
     return [{ insertId: id }];
   }
-  if (s.startsWith("UPDATE broker_blanc_batches SET RangeStart = ?, RangeEnd = ? WHERE id = ?")) {
+  if (s.startsWith("UPDATE broker_blanc_batches SET RangeStart = ?, RangeEnd = ?, AutoAdded = 0 WHERE id = ?")) {
     const b = db.batches.find((x) => x.id === p[2]);
     b.RangeStart = p[0];
     b.RangeEnd = p[1];
+    // An admin's edit adopts the batch: it is no longer auto-added.
+    b.AutoAdded = 0;
     return [{ affectedRows: 1 }];
   }
   if (s.startsWith("DELETE FROM broker_blanc_batches WHERE id = ? AND BrokerId = ?")) {
@@ -536,6 +570,70 @@ const brokerOf = async (id) =>
       "totals"
     );
     eq(r.body.batches[0].Used, 1, "per-batch used");
+  });
+
+  await check("a forced blanc joins the broker's batches and is flagged", async () => {
+    await addBatch(1, 100, 199);
+    eq(await M.addAutoBlancBatch(fakeDb, 1, "250", "worker1"), true, "added");
+
+    const stored = db.batches.find((b) => b.RangeStart === 250);
+    ok(stored, "one-number batch stored");
+    eq(
+      [stored.RangeEnd, stored.AutoAdded, stored.CreatedBy],
+      [250, 1, "worker1"],
+      "single blanc, flagged, author kept"
+    );
+
+    const r = await call("get", "/brokers/:id/batches", { params: { id: "1" } });
+    const auto = r.body.batches.find((b) => b.RangeStart === 250);
+    const handedOut = r.body.batches.find((b) => b.RangeStart === 100);
+    eq(auto.AutoAdded, true, "flagged in the batch list");
+    eq(auto.Total, 1, "one blanc");
+    eq(handedOut.AutoAdded, false, "a handed-out batch stays normal");
+    eq(r.body.BlancTotal, 101, "the forced blanc is part of the broker's blancs");
+
+    const broker = await brokerOf(1);
+    eq(broker.batches.find((b) => b.RangeStart === 250).AutoAdded, true, "in the list");
+  });
+
+  await check("a blanc inside the batches (or not a number) is not added twice", async () => {
+    await addBatch(1, 100, 199);
+    eq(await M.addAutoBlancBatch(fakeDb, 1, " 150 ", "worker1"), false, "inside");
+    eq(await M.addAutoBlancBatch(fakeDb, 1, "ABC12", "worker1"), false, "no number");
+    eq(await M.addAutoBlancBatch(fakeDb, 1, "12.5", "worker1"), false, "decimal");
+    eq(await M.addAutoBlancBatch(fakeDb, 0, "300", "worker1"), false, "no broker");
+    eq(db.batches.length, 1, "nothing added");
+  });
+
+  await check("a blanc held by another broker is reported and never duplicated", async () => {
+    await addBatch(1, 100, 199); // Alpha holds 100-199
+    eq(
+      await M.findOtherBrokerWithBlanc(fakeDb, 2, "150"),
+      { id: 1, name: "Alpha" },
+      "names the broker that holds it"
+    );
+    eq(await M.findOtherBrokerWithBlanc(fakeDb, 1, "150"), null, "its own broker");
+    eq(await M.findOtherBrokerWithBlanc(fakeDb, 2, "900"), null, "nobody holds it");
+    eq(await M.findOtherBrokerWithBlanc(fakeDb, 2, "abc"), null, "not a number");
+
+    eq(await M.addAutoBlancBatch(fakeDb, 2, "150", "worker1"), false, "not added");
+    eq(db.batches.length, 1, "nothing duplicated");
+  });
+
+  await check("editing a batch's range clears its auto-added flag", async () => {
+    await addBatch(1, 100, 199);
+    eq(await M.addAutoBlancBatch(fakeDb, 1, "250", "worker1"), true, "auto batch added");
+    const auto = db.batches.find((b) => b.RangeStart === 250);
+    eq(auto.AutoAdded, 1, "pink before the edit");
+
+    const r = await call("patch", "/brokers/:id/batches/:batchId", {
+      params: { id: "1", batchId: String(auto.id) },
+      body: { RangeStart: 250, RangeEnd: 259 },
+    });
+    eq(r.status, 200, "edited status");
+    const edited = r.body.broker.batches.find((b) => b.RangeStart === 250);
+    eq(edited.AutoAdded, false, "no longer pink");
+    eq(edited.Total, 10, "the edited range is used");
   });
 
   await check("creating a broker accepts batches, or none", async () => {

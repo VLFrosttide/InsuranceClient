@@ -139,9 +139,12 @@ const I18N = {
     "reconcile.dropHint2": "or click to choose a file",
     "reconcile.noFile": "No file selected",
     "reconcile.run": "Reconcile",
-    "reconcile.dbDate": "Check database insurances created on",
+    "reconcile.dbDate": "Check database insurances created from",
+    "reconcile.dbDateTo": "to",
     "reconcile.dbDateHint":
-      "Used to find insurances that exist in the database but are missing from the file. Clear it to skip that check.",
+      "Used to find insurances that exist in the database but are missing from the file. An empty date leaves that end of the range open; clear both to skip that check.",
+    "reconcile.brokerHint":
+      "Only the insurances of the broker typed here are checked; leave it empty to check every broker.",
     "reconcile.endNote":
       "Valid-until is compared with Starting date + Duration (days).",
     "reconcile.invalidFile": "Please choose an Excel file (.xlsx, .xlsm, etc.)",
@@ -161,6 +164,26 @@ const I18N = {
     "reconcile.col.from": "Starting date",
     "reconcile.col.to": "Valid until",
     "reconcile.col.car": "Car number",
+    "reconcile.col.duration": "Duration",
+    "reconcile.col.price": "Price",
+    "reconcile.hintTitle": "Columns the daily report must have",
+    "reconcile.hintIntro":
+      "Only the first worksheet is read. The header row may sit anywhere in the first 50 rows, and header names are matched ignoring case, spaces and punctuation. Duration and Price are optional: a report without those columns is still reconciled, the field is just not compared.",
+    "reconcile.hintRequired":
+      "Only the fields ticked under Compare are required: unticking one lets a report without that column reconcile the rest. Duration and Price stay optional even when ticked.",
+    "reconcile.hintField": "Field",
+    "reconcile.hintHeaders": "Accepted header names",
+    "reconcile.hintComparedWith": "Compared with",
+    "reconcile.hintLayouts":
+      "Two layouts are accepted - full: НОМЕР НА ПОЛИЦА, НОМЕР НА СТИКЕР, ВАЛИДЕН ОТ, ВАЛИДЕН ДО, ДКН; shift log: № ПОЛИЦА, № БЛАНКА, ДАТА, СРОК, ДКН.",
+    "reconcile.hintTerms":
+      "Valid until is either the date in ВАЛИДЕН ДО or is calculated from СРОК: 15D = 15 days, 1M = 30, 3M = 90, 1Y = 365. The same СРОК column is compared with the policy's duration and the ЦЕНА column with its price. Price is compared as a number only - the currency type is never compared.",
+    "reconcile.hintDates":
+      "Dates may be real Excel dates or text as 05.10.2026, 05/10/2026 or 2026-10-05. A \"BG/02/FI\" prefix in front of the policy number is ignored.",
+    "reconcile.compareFields": "Compare:",
+    "reconcile.compareToggleHint":
+      "Switch a field off to stop its differences from counting as mismatches. The choice is remembered on this computer.",
+    "reconcile.notCompared": "Not compared",
 
     "nav.brokers": "Brokers",
     "nav.myInsurances": "My insurances",
@@ -279,6 +302,8 @@ const I18N = {
 
     author: "Author",
     date: "Date",
+    previousDay: "Previous day ({date})",
+    nextDay: "Next day ({date})",
     load: "Load",
     clear: "Clear",
     searchCriteriaRequired:
@@ -323,7 +348,7 @@ const I18N = {
     handOverCash: "Hand over cash",
     handoverStats: "Hand over statistics",
     handoverStatsHint:
-      "Money handed to a person and not yet back in a drawer or the company bank. The figures cover every branch and every broker; the list below names the branch of each hand-over.",
+      "Money handed to a person and not yet back in a drawer or the company bank. The figures cover every branch and every broker; the list under the day picker names the branch of each hand-over of that day.",
     handoverGroupHandedOver: "Handed over",
     handoverGroupReturns: "Returns and undos",
     handoverGroupOutstanding: "Still handed over",
@@ -349,6 +374,8 @@ const I18N = {
     handoverBalanceOutstandingHint:
       "Live broker hand-overs. They are undone from the broker's balance history.",
     handedOverCashSection: "Handed over cash",
+    handedOverCashDayHint:
+      "Only the hand-overs recorded on the picked day are listed. Pick another day to see (or undo) an older one.",
     handoverReturn: "Returned hand over",
     handoverReturnedAmount: "Returned",
     handoverRemaining: "Remaining",
@@ -451,6 +478,8 @@ const I18N = {
     batchAdded: "Blanc batch added",
     batchUpdated: "Blanc batch updated",
     batchDeleted: "Blanc batch deleted",
+    autoBatchHint:
+      "Added automatically: this blanc was outside the broker's batches",
     kept: "Kept",
     cardPayments: "Card payments",
     paymentType: "Payment method",
@@ -592,7 +621,7 @@ const I18N = {
     "add.clearConfirm": "Clear the form? All entered data and attached files will be lost.",
     "add.saved": "Insurance saved",
     "add.blancOutsideBatchesConfirm":
-      "This blank number is not in any of the broker's blank batches. Create the insurance anyway?",
+      "This blank number is not in any of the broker's blank batches. Create the insurance anyway? The blank will be added to the broker's batches and shown in pink.",
     "add.dropArea": "Drop files here",
     "add.dropAreaHint": "or click to choose files",
     "add.attachedFiles": "Attached files",
@@ -754,6 +783,8 @@ const I18N = {
     "err.blancExists": "An insurance with this blank number already exists",
     "err.blancOutsideBrokerBatches":
       "This blank number is not in any of the broker's blank batches",
+    "err.blancBelongsToAnotherBroker":
+      "This blank number is in another broker's blank batches ({broker}). Change the blank number to save the insurance.",
     "err.insuranceNotFound": "Insurance not found",
     "err.cannotModifyDeleted": "A deleted insurance cannot be modified",
     "err.cannotAnnulDeleted": "A deleted insurance cannot be annulled",
@@ -958,9 +989,12 @@ const I18N = {
     "reconcile.dropHint2": "или щракнете, за да изберете файл",
     "reconcile.noFile": "Няма избран файл",
     "reconcile.run": "Сверка",
-    "reconcile.dbDate": "Провери застраховки в базата, създадени на",
+    "reconcile.dbDate": "Провери застраховки в базата, създадени от",
+    "reconcile.dbDateTo": "до",
     "reconcile.dbDateHint":
-      "Използва се за откриване на застраховки, които са в базата, но липсват във файла. Изчистете, за да пропуснете проверката.",
+      "Използва се за откриване на застраховки, които са в базата, но липсват във файла. Празна дата оставя тази страна на диапазона отворена; изчистете и двете, за да пропуснете проверката.",
+    "reconcile.brokerHint":
+      "Проверяват се само застраховките на въведения брокер; оставете полето празно, за да се проверяват всички.",
     "reconcile.endNote": "Валиден до се сравнява с Начална дата + Срок (дни).",
     "reconcile.invalidFile": "Моля, изберете Excel файл (.xlsx, .xlsm и др.)",
     "reconcile.columnsNotFound": "Не са намерени необходимите колони във файла",
@@ -979,6 +1013,26 @@ const I18N = {
     "reconcile.col.from": "Начална дата",
     "reconcile.col.to": "Валиден до",
     "reconcile.col.car": "Номер на автомобил",
+    "reconcile.col.duration": "Срок",
+    "reconcile.col.price": "Цена",
+    "reconcile.hintTitle": "Колони, които дневният отчет трябва да съдържа",
+    "reconcile.hintIntro":
+      "Чете се само първият лист. Редът със заглавията може да е навсякъде в първите 50 реда, а заглавията се сравняват без значение от главни и малки букви, интервали и пунктуация. Срок и Цена са незадължителни: отчет без тези колони пак се сверява, полето просто не се сравнява.",
+    "reconcile.hintRequired":
+      "Задължителни са само отметнатите полета в „Сравнявай“: изключено поле позволява отчет без неговата колона да се сверява с останалите. Срок и Цена остават незадължителни дори когато са отметнати.",
+    "reconcile.hintField": "Поле",
+    "reconcile.hintHeaders": "Приети заглавия",
+    "reconcile.hintComparedWith": "Сравнява се с",
+    "reconcile.hintLayouts":
+      "Приемат се два вида - пълен: НОМЕР НА ПОЛИЦА, НОМЕР НА СТИКЕР, ВАЛИДЕН ОТ, ВАЛИДЕН ДО, ДКН; дневник на смяна: № ПОЛИЦА, № БЛАНКА, ДАТА, СРОК, ДКН.",
+    "reconcile.hintTerms":
+      "Валиден до се взема от ВАЛИДЕН ДО или се изчислява от СРОК: 15D = 15 дни, 1M = 30, 3M = 90, 1Y = 365. Същата колона СРОК се сравнява със срока на застраховката, а колоната ЦЕНА - с нейната цена. Цената се сравнява само като число - валутата никога не се сравнява.",
+    "reconcile.hintDates":
+      "Датите може да са истински Excel дати или текст 05.10.2026, 05/10/2026 или 2026-10-05. Префиксът „BG/02/FI“ пред номера на полицата се пренебрегва.",
+    "reconcile.compareFields": "Сравнявай:",
+    "reconcile.compareToggleHint":
+      "Изключете поле, за да не се броят разликите в него като несъответствия. Изборът се запомня на този компютър.",
+    "reconcile.notCompared": "Не се сравнява",
 
     "nav.brokers": "Брокери",
     "nav.myInsurances": "Моите застраховки",
@@ -1097,6 +1151,8 @@ const I18N = {
 
     author: "Автор",
     date: "Дата",
+    previousDay: "Предишен ден ({date})",
+    nextDay: "Следващ ден ({date})",
     load: "Зареди",
     clear: "Изчисти",
     searchCriteriaRequired:
@@ -1141,7 +1197,7 @@ const I18N = {
     handOverCash: "Предаване на пари",
     handoverStats: "Статистика на предаванията",
     handoverStatsHint:
-      "Пари, предадени на човек и още невърнати в каса или във фирмената банкова сметка. Стойностите обхващат всички клонове и всички брокери; списъкът по-долу показва клона на всяко предаване.",
+      "Пари, предадени на човек и още невърнати в каса или във фирмената банкова сметка. Стойностите обхващат всички клонове и всички брокери; списъкът под избора на дата показва клона на всяко предаване от този ден.",
     handoverGroupHandedOver: "Предадено",
     handoverGroupReturns: "Връщания и отмени",
     handoverGroupOutstanding: "Все още предадено",
@@ -1167,6 +1223,8 @@ const I18N = {
     handoverBalanceOutstandingHint:
       "Активни брокерски предавания. Отменят се от историята на брокерския баланс.",
     handedOverCashSection: "Предадени пари в брой",
+    handedOverCashDayHint:
+      "Показани са само предаванията, записани на избрания ден. Изберете друг ден, за да видите (или отмените) по-старо предаване.",
     handoverReturn: "Връщане на предаване",
     handoverReturnedAmount: "Върнато",
     handoverRemaining: "Остава",
@@ -1284,6 +1342,8 @@ const I18N = {
     batchAdded: "Партидата бланки е добавена",
     batchUpdated: "Партидата бланки е обновена",
     batchDeleted: "Партидата бланки е изтрита",
+    autoBatchHint:
+      "Добавена автоматично: бланката е била извън партидите на брокера",
     kept: "Задържана",
     cardPayments: "Плащания с карта",
     paymentType: "Начин на плащане",
@@ -1411,7 +1471,7 @@ const I18N = {
     "add.clearConfirm": "Да се изчисти ли формата? Всички въведени данни и прикачени файлове ще бъдат загубени.",
     "add.saved": "Застраховката е запазена",
     "add.blancOutsideBatchesConfirm":
-      "Този номер на бланка не е в никоя от партидите на брокера. Да се създаде ли застраховката въпреки това?",
+      "Този номер на бланка не е в никоя от партидите на брокера. Да се създаде ли застраховката въпреки това? Бланката ще бъде добавена към партидите на брокера и ще бъде означена в розово.",
     "add.dropArea": "Пуснете файлове тук",
     "add.dropAreaHint": "или щракнете, за да изберете файлове",
     "add.attachedFiles": "Прикачени файлове",
@@ -1575,6 +1635,8 @@ const I18N = {
     "err.blancExists": "Вече съществува застраховка с този номер на бланка",
     "err.blancOutsideBrokerBatches":
       "Този номер на бланка не е в никоя от партидите на брокера",
+    "err.blancBelongsToAnotherBroker":
+      "Този номер на бланка е в партидите на друг брокер ({broker}). Сменете номера на бланката, за да се запише застраховката.",
     "err.insuranceNotFound": "Застраховката не е намерена",
     "err.cannotModifyDeleted": "Изтрита застраховка не може да се редактира",
     "err.cannotAnnulDeleted": "Изтрита застраховка не може да се анулира",
@@ -1867,6 +1929,19 @@ function translateError(message) {
   }
   if (text.startsWith("Invalid vehicle type:")) {
     return `${t("err.invalidVehicleType")} ${text.slice(text.indexOf(":") + 1).trim()}`;
+  }
+  // A blanc that is already in another broker's batches names that broker as
+  // "... (Broker Name)" at the end of the server message.
+  if (
+    text.startsWith(
+      "This blanc number belongs to another broker's blanc batches"
+    )
+  ) {
+    const open = text.indexOf("(");
+    const close = text.lastIndexOf(")");
+    const broker =
+      open !== -1 && close > open ? text.slice(open + 1, close).trim() : "";
+    return fmt(t("err.blancBelongsToAnotherBroker"), { broker });
   }
   // The as-of shift reset names the currency in these messages.
   const asOfPrefixes = [

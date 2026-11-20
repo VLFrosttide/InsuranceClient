@@ -11,7 +11,10 @@
 //   - an explicitly requested day is remembered, while "today" is not stored,
 //     so a tab left open past midnight still opens on the real today;
 //   - the day picker reloads the view for the picked day (which is what stores
-//     it);
+//     it), and has a one-day step button on each side so the history can be
+//     walked without opening the calendar;
+//   - every ledger row list - the handed-over cash included - is rendered below
+//     the picker and shows the picked day;
 //   - the end-of-shift reminder ignores the remembered day, because it is about
 //     the shift running now.
 //
@@ -101,6 +104,79 @@ check("the day picker reloads the view for the picked day", () => {
     block.includes("currentCashView(branch, picked)"),
     "the view reloads for the picked day, which stores it"
   );
+});
+
+check("the day can be stepped one day back and forward", () => {
+  const block = between(
+    'const dateInput = input("date", date);',
+    "const topNodes = [heading];"
+  );
+  ok(
+    block.includes('const previousDayBtn = el("button"'),
+    "a button on the left of the picker"
+  );
+  ok(
+    block.includes('const nextDayBtn = el("button"'),
+    "a button on the right of the picker"
+  );
+  ok(
+    block.includes("stepToDay(previousLocalDate(dateInput.value || date))"),
+    "the left button steps one day back from the shown day"
+  );
+  ok(
+    block.includes("stepToDay(nextLocalDate(dateInput.value || date))"),
+    "the right button steps one day forward from the shown day"
+  );
+  ok(
+    block.includes("dateNav.appendChild(previousDayBtn)") &&
+      block.includes("dateNav.appendChild(dateInput)") &&
+      block.includes("dateNav.appendChild(nextDayBtn)"),
+    "both buttons sit against the picker inside the same field"
+  );
+  eq(
+    (block.match(/dateNav\.appendChild/g) || []).length,
+    3,
+    "the picker is flanked by exactly one button on each side"
+  );
+});
+
+check("the handed-over cash list follows the picked day", () => {
+  ok(
+    // Whitespace-insensitive: the file is stored with CRLF line endings.
+    src.replace(/\s+/g, " ").includes(
+      "const outstandingHandovers = handoversOnDay( data.handoverStats.handovers, date )"
+    ),
+    "the section is filtered by the shown day"
+  );
+  const helper = between(
+    "function handoversOnDay(",
+    "\n// Make a Current cash balance card"
+  );
+  ok(
+    helper.includes('.slice(0, 10) === date'),
+    "CreatedAt is compared by its calendar day only"
+  );
+});
+
+check("every ledger row list is below the day picker", () => {
+  const view = src.indexOf("async function currentCashView(");
+  ok(view >= 0, "the Current cash view exists");
+  const start = src.indexOf("Content.replaceChildren(", view);
+  ok(start >= 0, "the view renders its content");
+  const block = src.slice(start, src.indexOf("\n}", start));
+  const picker = block.indexOf("dateRow,");
+  ok(picker >= 0, "the picker is rendered");
+  for (const section of [
+    "handoverSection",
+    "transactionsSection",
+    "expensesSection",
+    "brokerCashSection",
+    "cardInsurancesSection",
+    "resetsSection",
+  ]) {
+    const at = block.indexOf(section);
+    ok(at > picker, `${section} comes after the picker`);
+  }
 });
 
 check("a tab change calls the view without a day", () => {

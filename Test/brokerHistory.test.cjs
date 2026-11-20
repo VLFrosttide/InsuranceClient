@@ -18,6 +18,9 @@ function resetDb() {
       { id: 2, Name: "Beta", CashBalance: 0 },
     ],
     movements: [],
+    // Live policies, used by the history endpoint to price each movement and to
+    // tell whether its policy was annulled.
+    policies: [],
     nextMovement: 1,
   };
 }
@@ -38,6 +41,41 @@ function addMovement(brokerId, amount, createdAt, extra = {}) {
     DeletedAt: extra.DeletedAt === undefined ? null : extra.DeletedAt,
     DeletedBy: extra.DeletedBy === undefined ? null : extra.DeletedBy,
   });
+}
+
+function addPolicy(blancNumber, extra = {}) {
+  db.policies.push({
+    BlancNumber: blancNumber,
+    Price: extra.Price === undefined ? null : extra.Price,
+    OriginalPrice: extra.OriginalPrice === undefined ? null : extra.OriginalPrice,
+    Annulled: extra.Annulled ? 1 : 0,
+    AnnulReason: extra.AnnulReason === undefined ? null : extra.AnnulReason,
+    AnnulFee: extra.AnnulFee === undefined ? null : extra.AnnulFee,
+    BrokerId: extra.BrokerId === undefined ? null : extra.BrokerId,
+    Deleted: extra.Deleted ? 1 : 0,
+  });
+}
+
+// The LEFT JOIN insurance fields the real query selects for one movement.
+function policyFields(blancNumber) {
+  const key = String(blancNumber ?? "").trim();
+  const policy = key
+    ? db.policies.find(
+        (p) => String(p.BlancNumber) === key && p.Deleted !== 1
+      )
+    : null;
+  if (!policy) {
+    return {
+      PolicyAnnulled: null,
+      PolicyAnnulReason: null,
+      PolicyBrokerId: null,
+    };
+  }
+  return {
+    PolicyAnnulled: policy.Annulled,
+    PolicyAnnulReason: policy.AnnulReason,
+    PolicyBrokerId: policy.BrokerId,
+  };
 }
 
 // Local "YYYY-MM-DD HH:MM:SS", matching the server's DATETIME format.
@@ -127,26 +165,20 @@ async function query(sql, params = []) {
       { total: rows.length, net: rows.reduce((sum, m) => sum + Number(m.Amount), 0) },
     ]];
   }
-  if (s.startsWith("SELECT t.id, t.Type, t.Amount")) {
-    const balance = Number(p[0]);
+  if (s.startsWith("SELECT m.id, m.Type, m.Amount, m.Reason, m.Author")) {
+    // The history endpoint reads the whole live ledger (it merges annulled
+    // policies before filtering/paginating), so no date window or LIMIT here.
     const rows = db.movements
-      .filter(
-        (m) => m.BrokerId === Number(p[1]) && m.CreatedAt >= p[2] && m.CreatedAt < p[3] && m.Deleted !== 1
-      )
+      .filter((m) => m.BrokerId === Number(p[0]) && m.Deleted !== 1)
       .sort((a, b) =>
         a.CreatedAt === b.CreatedAt
           ? b.id - a.id
           : a.CreatedAt < b.CreatedAt
             ? 1
             : -1
-      );
-    let running = balance;
-    const out = rows.map((m) => {
-      const r = { ...m, BalanceAfter: running };
-      running -= Number(m.Amount);
-      return r;
-    });
-    return [out.slice(Number(p[5]), Number(p[5]) + Number(p[4]))];
+      )
+      .map((m) => ({ ...m, ...policyFields(m.BlancNumber) }));
+    return [rows];
   }
   // --- admin edit / delete of a single movement (PATCH / DELETE history) -----
   if (s.startsWith("SELECT id, BrokerId, Amount, Type, Reason, Author, BlancNumber")) {
@@ -311,6 +343,24 @@ const WINDOW = { since: "2026-10-01", until: "2026-11-01" };
 resetDb();
 
 (async () => {
+  await check("the history query joins the live policy and merges its annulment", async () => {
+    const src = fs.readFileSync(BROKERS_JS, "utf8");
+    ok(
+      src.includes("LEFT JOIN insurance i") &&
+        src.includes("i.Annulled AS PolicyAnnulled") &&
+        src.includes("i.AnnulReason AS PolicyAnnulReason") &&
+        src.includes("i.BrokerId AS PolicyBrokerId"),
+      "the movements query joins the policy state and owner"
+    );
+    ok(
+      src.includes("hiddenMovements") &&
+        src.includes('=== "annulment"') &&
+        src.includes('=== "price_change"') &&
+        src.includes('"broker change"'),
+      "price edits and the refund are folded, and moved-away policies are dropped"
+    );
+  });
+
   await check("invalid broker id is rejected", async () => {
     const r = await call("get", "/brokers/:id/history", { params: { id: "abc" } });
     eq(r.status, 400, "status");
@@ -375,6 +425,364 @@ resetDb();
     eq(r.body.netChange, 70, "net change");
     eq(r.body.balanceAtStart, 0, "balance at window start");
     eq(r.body.balanceAtEnd, 70, "balance at the window end");
+  });
+
+  await check("an annulled policy's sale shows its tax and its refund row disappears", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 35 });
+    addPolicy("100002", {
+      Price: 9,
+      OriginalPrice: 35,
+      Annulled: 1,
+      AnnulReason: "broker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -35, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    addMovement(1, -35, "2026-10-06 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100002",
+    });
+    addMovement(1, 26, "2026-10-07 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100002",
+    });
+    addMovement(1, -20, "2026-10-08 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100003",
+    });
+    addMovement(1, 50, "2026-10-09 10:00:00", { Type: "increase" });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 4, "the refund row is not a separate movement");
+    ok(
+      !r.body.movements.some((m) => m.Type === "annulment"),
+      "the refund row disappeared"
+    );
+
+    const byBlanc = (blanc) =>
+      r.body.movements.filter((m) => m.BlancNumber === blanc);
+
+    const active = byBlanc("100001")[0];
+    eq(active.Amount, -35, "an active policy keeps its sale price");
+    eq(active.PolicyAnnulled, false, "an active policy is not annulled");
+
+    const annulled = byBlanc("100002");
+    eq(annulled.length, 1, "sale and refund are one row");
+    eq(annulled[0].Amount, -9, "that row shows the annulment tax");
+    eq(annulled[0].PolicyAnnulled, true, "the annulled flag is carried");
+    eq(annulled[0].PolicyAnnulReason, "broker", "who paid the tax is carried");
+
+    const orphan = byBlanc("100003")[0];
+    eq(orphan.Amount, -20, "a movement with no live policy is untouched");
+    eq(orphan.PolicyAnnulled, false, "and is not annulled");
+
+    const manual = r.body.movements.find((m) => m.Type === "increase");
+    eq(manual.Amount, 50, "a manual increase is untouched");
+    eq(manual.PolicyAnnulled, false, "a manual increase is not annulled");
+
+    // Merging preserves the money: -35 - 35 + 26 - 20 + 50 = -14.
+    eq(r.body.netChange, -14, "net change is unchanged by the merge");
+    eq(r.body.balanceAtEnd, 70, "the end balance is unchanged");
+    eq(r.body.balanceAtStart, 84, "the start balance matches the displayed rows");
+    eq(annulled[0].BalanceAfter, 40, "the running balance uses the tax row");
+  });
+
+  await check("a price edit silently changes the sale row", async () => {
+    resetDb();
+    addPolicy("100010", { Price: 35, Annulled: 0 });
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100010",
+    });
+    addMovement(1, -5, "2026-10-06 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100010",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "the price edit is not a separate row");
+    eq(r.body.movements[0].Type, "policy", "the original sale row stays");
+    eq(r.body.movements[0].Amount, -35, "it now shows the new price");
+    eq(r.body.movements[0].PolicyAnnulled, false, "the policy is not annulled");
+    eq(r.body.netChange, -35, "the money is unchanged");
+  });
+
+  await check("a price decrease is folded into the sale too", async () => {
+    resetDb();
+    addPolicy("100011", { Price: 30, Annulled: 0 });
+    addMovement(1, -35, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100011",
+    });
+    addMovement(1, 5, "2026-10-06 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100011",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "one sale row");
+    eq(r.body.movements[0].Amount, -30, "the sale row shows the lower price");
+  });
+
+  await check("a price edit followed by an annulment leaves one tax row", async () => {
+    resetDb();
+    addPolicy("100012", {
+      Price: 9,
+      OriginalPrice: 35,
+      Annulled: 1,
+      AnnulReason: "broker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100012",
+    });
+    addMovement(1, -5, "2026-10-06 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100012",
+    });
+    addMovement(1, 26, "2026-10-07 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100012",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "one row for the insurance");
+    eq(r.body.movements[0].Type, "policy", "the sale row stays");
+    eq(r.body.movements[0].Amount, -9, "it shows the tax after the price edit");
+    eq(r.body.movements[0].PolicyAnnulled, true, "it is tinted as annulled");
+    eq(r.body.netChange, -9, "the tax is the only remaining charge");
+  });
+
+  await check("a policy moved to another broker disappears from the old broker", async () => {
+    resetDb();
+    // The policy now belongs to broker 2; broker 1 only holds the historical
+    // sale and the cancellation written by the move.
+    addPolicy("100013", { Price: 35, Annulled: 0, BrokerId: 2 });
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100013",
+      Reason: "100013",
+    });
+    addMovement(1, -5, "2026-10-06 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100013",
+      Reason: "Price change 100013",
+    });
+    addMovement(1, 35, "2026-10-07 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100013",
+      Reason: "Broker change 100013",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 0, "the moved policy leaves no row behind");
+    eq(r.body.movements, [], "neither the sale nor the cancellation is shown");
+    eq(r.body.netChange, 0, "the pair nets to nothing");
+    eq(r.body.balanceAtEnd, 70, "the end balance is unchanged");
+    eq(r.body.balanceAtStart, 70, "and the whole window is unaffected");
+  });
+
+  await check("a policy moved back to the broker keeps its new charge", async () => {
+    resetDb();
+    addPolicy("100014", { Price: 35, Annulled: 0, BrokerId: 1 });
+    addMovement(1, -30, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100014",
+      Reason: "100014",
+    });
+    addMovement(1, 30, "2026-10-06 10:00:00", {
+      Type: "price_change",
+      BlancNumber: "100014",
+      Reason: "Broker change 100014",
+    });
+    addMovement(1, -35, "2026-10-07 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100014",
+      Reason: "100014",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 2, "the old sale and the new charge are both here");
+    eq(r.body.movements[0].Amount, -35, "the policy is charged at the broker again");
+    eq(r.body.movements[1].Amount, 0, "the old side of the move nets to nothing");
+    eq(r.body.netChange, -35, "the current charge survives");
+  });
+
+  await check("a worker-paid tax merges to a zero-cost sale row", async () => {
+    resetDb();
+    addPolicy("100004", {
+      Price: 35,
+      Annulled: 1,
+      AnnulReason: "worker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -35, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100004",
+    });
+    addMovement(1, 35, "2026-10-06 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100004",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "one merged row");
+    eq(r.body.movements[0].Type, "policy", "the sale row stays");
+    eq(r.body.movements[0].Amount, 0, "the broker paid no tax");
+    eq(r.body.movements[0].PolicyAnnulled, true, "it is still annulled");
+    eq(r.body.movements[0].PolicyAnnulReason, "worker", "the worker paid it");
+    eq(r.body.netChange, 0, "no net charge");
+  });
+
+  await check("a restored policy keeps its historical sale and refund rows", async () => {
+    resetDb();
+    addPolicy("100005", { Price: 35, Annulled: 0 });
+    addMovement(1, -35, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100005",
+    });
+    addMovement(1, 35, "2026-10-06 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100005",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 2, "both raw rows are still listed");
+    eq(r.body.movements[0].Type, "annulment", "the refund row is kept");
+    eq(r.body.movements[1].Amount, -35, "the sale is not changed");
+    eq(r.body.movements[1].PolicyAnnulled, false, "the policy is active again");
+  });
+
+  await check("a deleted refund row is not merged", async () => {
+    resetDb();
+    addPolicy("100006", {
+      Price: 9,
+      OriginalPrice: 35,
+      Annulled: 1,
+      AnnulReason: "broker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -35, "2026-10-05 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100006",
+    });
+    addMovement(1, 26, "2026-10-06 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100006",
+      Deleted: true,
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "only the live sale row");
+    eq(r.body.movements[0].Amount, -35, "the deleted refund does not change it");
+    eq(r.body.movements[0].PolicyAnnulled, true, "the policy is still annulled");
+  });
+
+  await check("a window holding only the refund still shows the tax balance", async () => {
+    resetDb();
+    db.brokers[0].CashBalance = -9;
+    addPolicy("100007", {
+      Price: 9,
+      OriginalPrice: 35,
+      Annulled: 1,
+      AnnulReason: "broker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -35, "2026-09-01 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100007",
+    });
+    addMovement(1, 26, "2026-10-10 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100007",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 0, "the hidden refund leaves no row in this window");
+    eq(r.body.netChange, 0, "an annulment is not a new money movement");
+    eq(r.body.balanceAtEnd, -9, "the effective balance already includes the tax");
+    eq(r.body.balanceAtStart, -9, "and did before the annulment too");
+  });
+
+  await check("merged rows are counted for pagination", async () => {
+    resetDb();
+    for (let i = 0; i < 30; i++) {
+      const blanc = String(200000 + i);
+      addPolicy(blanc, {
+        Price: 2,
+        OriginalPrice: 10,
+        Annulled: 1,
+        AnnulReason: "broker",
+        AnnulFee: 2,
+      });
+      addMovement(1, -10, dt(new Date(2026, 9, 1, 0, i, 0)), {
+        Type: "policy",
+        BlancNumber: blanc,
+      });
+      addMovement(1, 8, dt(new Date(2026, 9, 2, 0, i, 0)), {
+        Type: "annulment",
+        BlancNumber: blanc,
+      });
+    }
+    for (let i = 0; i < 15; i++) {
+      addMovement(1, 1, dt(new Date(2026, 9, 3, 0, i, 0)), {
+        Type: "increase",
+      });
+    }
+
+    const page1 = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(page1.body.total, 45, "30 merged policies + 15 manual rows");
+    eq(page1.body.totalPages, 2, "merged rows fit two pages");
+    eq(page1.body.movements.length, 40, "page 1 is full");
+    ok(
+      !page1.body.movements.some((m) => m.Type === "annulment"),
+      "no refund rows are counted"
+    );
+
+    const page2 = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { ...WINDOW, page: "2" },
+    });
+    eq(page2.body.movements.length, 5, "page 2 has the rest");
   });
 
   await check("movements outside the requested window are ignored", async () => {

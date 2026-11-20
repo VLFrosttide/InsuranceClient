@@ -105,8 +105,8 @@ check("Author / Broker have autocomplete", () => {
   ok(src.includes("function attachAutocomplete("), "visible dropdown helper");
   eq(
     (src.match(/attachAutocomplete\(/g) || []).length,
-    3,
-    "one definition + two fields"
+    4,
+    "one definition + the lookup's two fields + the reconcile Broker field"
   );
   ok(src.includes('inputNode.addEventListener("focus", open)'));
   ok(src.includes("loadInsuranceFilterSuggestions"));
@@ -128,6 +128,29 @@ check("the broker balance history shows the author", () => {
   const block = src.slice(start, end);
   const hits = block.match(/key: "Author"/g) || [];
   eq(hits.length, 2, "live movements and deleted movements both show it");
+});
+
+check("the broker balance history tints annulled policies", () => {
+  const start = src.indexOf("function renderBrokerHistory(");
+  const end = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    start
+  );
+  ok(start >= 0 && end > start, "renderBrokerHistory block not found");
+  const block = src.slice(start, end);
+  // The server merges the sale and refund of an annulled policy into one row
+  // whose Amount is the tax, so the page keeps its normal Amount column and
+  // only adds the shared annulled row tint.
+  ok(!block.includes('key: "PolicyPrice"'), "no separate price column is added");
+  ok(
+    block.includes("annulledRowClass({"),
+    "annulled movements reuse the insurance tabs' row tint"
+  );
+  ok(
+    block.includes("Annulled: m.PolicyAnnulled") &&
+      block.includes("AnnulReason: m.PolicyAnnulReason"),
+    "the tint knows the policy and who paid the tax"
+  );
 });
 
 check("the lookup shows live search feedback", () => {

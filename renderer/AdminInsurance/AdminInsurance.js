@@ -444,7 +444,9 @@ InsuranceForm.addEventListener("submit", async function (e) {
       goBack();
       return;
     } catch (err) {
-      const message = err && err.message ? err.message : t("serverError");
+      const message =
+        translateError(err && err.message ? err.message : "") ||
+        t("serverError");
 
       if (
         !forceOutsideBlancBatch &&

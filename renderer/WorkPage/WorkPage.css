@@ -403,6 +403,26 @@ tr.row-numeric-reason td {
   min-width: 180px;
 }
 
+/* Current cash day picker: a one-day step button on each side, so the history
+   can be walked without opening the calendar. The field keeps the picker's
+   width and the buttons sit flush against it. */
+.date-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.date-nav input[type="date"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.date-nav button.date-step {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+
 /* Insurance lookup: live feedback while a search runs and after it finishes.
    The spinner makes even a very fast request visible; the status text says what
    came back (matches / no matches / unchanged), and the result container fades
@@ -1210,6 +1230,85 @@ input[type="file"].hidden {
 .drop-zone.has-file {
   border-style: solid;
 }
+/* A successful upload animates the drag-and-drop field itself: its border and
+   background flash green and the box lifts slightly, confirming the file
+   landed before the name changes. The view adds .drop-accepted (setFile) and
+   removes it once the animation has played, so the next upload replays it. */
+.drop-zone.drop-accepted {
+  animation: drop-zone-accepted 620ms ease-out both;
+}
+@keyframes drop-zone-accepted {
+  0% {
+    border-color: var(--panel-border);
+    background: var(--panel);
+    transform: none;
+  }
+  35% {
+    border-color: var(--success);
+    background: rgba(63, 185, 80, 0.12);
+    transform: translateY(-2px) scale(1.01);
+  }
+  100% {
+    border-color: var(--panel-border);
+    background: var(--panel);
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drop-zone.drop-accepted {
+    animation: none;
+  }
+}
+/* "Thinking" indicator shown while the daily report is parsed and compared:
+   three dots bounce in turn next to the loading text, so a large spreadsheet
+   never looks like a frozen screen. The view swaps it for the results. */
+.recon-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 0;
+}
+.recon-loading-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 12px;
+}
+.recon-loading-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.45;
+  animation: recon-loading-bounce 900ms ease-in-out infinite;
+}
+.recon-loading-dots span:nth-child(2) {
+  animation-delay: 150ms;
+}
+.recon-loading-dots span:nth-child(3) {
+  animation-delay: 300ms;
+}
+.recon-loading-text {
+  color: var(--muted);
+}
+@keyframes recon-loading-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recon-loading-dots span {
+    animation: none;
+    opacity: 1;
+  }
+}
 .recon-results h3 {
   margin-top: 22px;
 }
@@ -1249,6 +1348,155 @@ input[type="file"].hidden {
 }
 .recon-results .recon-good-text {
   color: rgba(120, 200, 120, 0.95);
+}
+/* "Not compared: …" under the summary cards: the reminder that a green verdict
+   was reached without checking every field. */
+.recon-results .recon-ignored {
+  margin: 10px 0 0 0;
+}
+/* The "columns the report must have" help block. Collapsed by default, so the
+   daily workflow stays as short as it was for people who know the layout. */
+.recon-hint {
+  margin-bottom: 16px;
+}
+.recon-hint-table {
+  width: 100%;
+  margin: 6px 0 10px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.recon-hint-table th,
+.recon-hint-table td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--panel-border);
+  text-align: left;
+  vertical-align: top;
+}
+.recon-hint-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.recon-hint-table td:first-child {
+  white-space: nowrap;
+  font-weight: 600;
+}
+/* Compare-field toggles: one pill per compared column, saved in localStorage.
+   They are real buttons (aria-pressed), so the whole pill is the hit area and
+   they can be tabbed to and flipped from the keyboard like any other button.
+   Off = outlined and muted; on = accent tint, accent border and a filled tick
+   that scales in. The state change is a colour/scale transition, and a click
+   replays .is-clicked's pop so the press is felt even when nothing else on the
+   tab changes. */
+.recon-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 2px 0 10px;
+}
+.recon-toggles-label {
+  margin-right: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.recon-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 11px 3px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease,
+    box-shadow 140ms ease, transform 90ms ease;
+}
+.recon-toggle:hover {
+  border-color: var(--accent);
+  background: rgba(79, 140, 255, 0.08);
+  color: var(--text);
+}
+/* Press feedback, before the state even changes. */
+.recon-toggle:active {
+  transform: scale(0.95);
+}
+.recon-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.recon-toggle.is-on {
+  border-color: var(--accent);
+  background: rgba(79, 140, 255, 0.16);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.1);
+  color: var(--text);
+}
+.recon-toggle.is-on:hover {
+  background: rgba(79, 140, 255, 0.24);
+}
+/* The tick circle: hollow while off (kept in the layout so the pill does not
+   change width when it is switched), filled accent with a white check while
+   on. Overshooting cubic-bezier gives the small "pop" as it appears. */
+.recon-toggle-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  background: transparent;
+  color: transparent;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 140ms ease, transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.recon-toggle.is-on .recon-toggle-tick {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  opacity: 1;
+  transform: scale(1);
+}
+.recon-toggle.is-clicked {
+  animation: recon-toggle-pop 260ms ease-out;
+}
+@keyframes recon-toggle-pop {
+  0% {
+    transform: scale(0.93);
+  }
+  55% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recon-toggle,
+  .recon-toggle-tick {
+    transition: none;
+  }
+  .recon-toggle:active {
+    transform: none;
+  }
+  .recon-toggle.is-clicked {
+    animation: none;
+  }
+}
+/* Cells of a field switched off in the compare toggles: shown for
+   reference, never tinted as a difference. */
+.recon-results td.cell-ignored {
+  opacity: 0.5;
 }
 
 /* Admin broker toggle (accept negative-balance requests). Pushed to the right

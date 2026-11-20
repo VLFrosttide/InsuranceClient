@@ -3870,6 +3870,18 @@ function sumCashBalances(first, second) {
   return total;
 }
 
+// The cash hand-overs recorded on one day. The hand-over statistics are
+// company-wide and always live (see getHandoverStats on the server), so the list
+// under them would otherwise ignore the day picker. CreatedAt is the local
+// wall-clock DATETIME ("YYYY-MM-DD HH:MM:SS") the entry was stored with, so its
+// first ten characters are the day the money was handed over.
+function handoversOnDay(handovers, date) {
+  return (handovers || []).filter(
+    (handover) =>
+      String((handover && handover.CreatedAt) || "").slice(0, 10) === date
+  );
+}
+
 // Make a Current cash balance card a shortcut to its table. Cards with a zero
 // balance stay inert: there is nothing to look at in the ledger. The card is
 // also keyboard reachable, since it now behaves like a button.
@@ -4601,15 +4613,17 @@ async function currentCashView(overrideBranch, overrideDate) {
     undefined,
     { sort: cashTableSort.transactions }
   );
-  // Handed-over cash that has not come back yet (admin only). It lists every
-  // outstanding hand-over - any branch, any day - because the day picker below
-  // would hide yesterday's ones and they still need an Undo. The statistics
-  // card above shows the company-wide totals; this is the list behind them.
+  // Handed-over cash that has not come back yet (admin only). Like every other
+  // ledger on this screen it follows the day picker: only the hand-overs
+  // recorded on the picked day are listed, so an older one is reached by picking
+  // its day. The statistics card above stays company-wide - "still handed over"
+  // is a live total, not a figure of one day.
   let handoverSection = null;
   if (isAdmin && data.handoverStats) {
-    const outstandingHandovers = (data.handoverStats.handovers || []).filter(
-      (h) => Number(h.Remaining) > 0
-    );
+    const outstandingHandovers = handoversOnDay(
+      data.handoverStats.handovers,
+      date
+    ).filter((h) => Number(h.Remaining) > 0);
     const handoversTable = sortableTable(
       outstandingHandovers,
       [
@@ -4657,7 +4671,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     handoverSection = collapsibleSection(
       t("handedOverCashSection"),
       outstandingHandovers.length,
-      [handoversTable]
+      [el("p", t("handedOverCashDayHint"), { class: "muted" }), handoversTable]
     );
   }
   // Expenses: the money that LEFT this branch's drawer as a spend on the picked
@@ -4822,8 +4836,46 @@ async function currentCashView(overrideBranch, overrideDate) {
       toast(err.message, "error")
     );
   });
+
+  // One-day steps on both sides of the picker, so walking the history does not
+  // need the calendar popup. A step reloads exactly like a picked day, which
+  // also remembers it for the next visit. The date is read from the field, so a
+  // step follows a date that was typed but not committed yet.
+  const stepToDay = (picked) =>
+    currentCashView(branch, picked).catch((err) => toast(err.message, "error"));
+  const previousDayBtn = el("button", "‹", {
+    type: "button",
+    class: "secondary date-step",
+    title: fmt(t("previousDay"), {
+      date: previousLocalDate(dateInput.value || date),
+    }),
+  });
+  previousDayBtn.setAttribute("aria-label", previousDayBtn.title);
+  previousDayBtn.addEventListener("click", () =>
+    stepToDay(previousLocalDate(dateInput.value || date))
+  );
+  const nextDayBtn = el("button", "›", {
+    type: "button",
+    class: "secondary date-step",
+    title: fmt(t("nextDay"), {
+      date: nextLocalDate(dateInput.value || date),
+    }),
+  });
+  nextDayBtn.setAttribute("aria-label", nextDayBtn.title);
+  nextDayBtn.addEventListener("click", () =>
+    stepToDay(nextLocalDate(dateInput.value || date))
+  );
+
+  const dateNav = el("div", null, { class: "date-nav" });
+  dateNav.appendChild(previousDayBtn);
+  dateNav.appendChild(dateInput);
+  dateNav.appendChild(nextDayBtn);
+  // field() points its label at the control; the wrapper itself is not
+  // focusable, so the label follows the input inside it (like passwordField).
+  dateNav.focusTarget = dateInput;
+
   const dateRow = el("div", null, { class: "row filter-row" });
-  dateRow.appendChild(field(t("date"), dateInput));
+  dateRow.appendChild(field(t("date"), dateNav));
 
   const topNodes = [heading];
   if (branchSelector.children.length > 0) topNodes.push(branchSelector);
@@ -4939,8 +4991,10 @@ async function currentCashView(overrideBranch, overrideDate) {
     cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
-    ...(handoverSection ? [handoverSection] : []),
+    // Every ledger row list comes after the day picker, so the picker governs
+    // all of them (the handed-over cash included).
     dateRow,
+    ...(handoverSection ? [handoverSection] : []),
     transactionsSection,
     expensesSection,
     brokerCashSection,
@@ -5279,7 +5333,9 @@ async function brokersView() {
         {
           key: "batches",
           label: t("blancBatches"),
-          format: (v) => formatBlancBatches(v),
+          // Batches the server added by itself (a blanc forced in outside the
+          // handed-out ranges) are pink, so they stand out from the rest.
+          render: (_v, b) => blancBatchesLabel(b.batches),
         },
         {
           // Calculated by the server from ALL of the broker's batch ranges.
@@ -5450,6 +5506,11 @@ function pagerControls(totalPages, page, onPage) {
 // The broker balance history "page": every balance movement of the broker,
 // newest first, with a back button to the list. It goes all the way back to the
 // broker's first movement, and a calendar picker scopes it to a single day.
+// A policy's price edits and (once annulled) its refund are folded into the
+// original sale row by the server, so that row simply shows the policy's current
+// price - its annulment tax once annulled - and is tinted like its row in
+// "Insurances by date". A policy that was moved to another broker disappears
+// from this broker's history entirely.
 async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = false) {
   Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   try {
@@ -5586,7 +5647,16 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
         cellClass: (m) => (Number(m.BalanceAfter) < 0 ? "num-neg" : ""),
       },
     ],
-    historyActions
+    historyActions,
+    // A policy's price edits and (once annulled) its refund are folded into its
+    // sale row, so the Amount already shows the current price or tax. Tint an
+    // annulled policy exactly like its row in the insurance tabs, so who paid
+    // the tax is readable at a glance.
+    (m) =>
+      annulledRowClass({
+        Annulled: m.PolicyAnnulled,
+        AnnulReason: m.PolicyAnnulReason,
+      })
   );
 
   const pager = pagerControls(data.totalPages, page, (p) =>
@@ -5878,10 +5948,31 @@ async function brokerEditForm(broker) {
   openModal(`${t("edit")} ${broker.Name}`, form);
 }
 
-// Compact "start–end, start–end" text for the brokers table.
-function formatBlancBatches(batches) {
-  if (!Array.isArray(batches) || batches.length === 0) return "-";
-  return batches.map((b) => `${b.RangeStart}–${b.RangeEnd}`).join(", ");
+// Compact "start–end, start–end" label for the brokers table. A batch that the
+// server added by itself (a policy was force-created with a blanc outside every
+// handed-out range) is painted pink, so it stands out from the batches an admin
+// actually gave the broker.
+function blancBatchesLabel(batches) {
+  const holder = el("span");
+  const list = Array.isArray(batches) ? batches : [];
+  if (list.length === 0) {
+    holder.textContent = "-";
+    return holder;
+  }
+  list.forEach((b, index) => {
+    if (index > 0) holder.appendChild(el("span", ", "));
+    const range = `${b.RangeStart}–${b.RangeEnd}`;
+    holder.appendChild(
+      el(
+        "span",
+        range,
+        b.AutoAdded
+          ? { class: "batch-auto", title: t("autoBatchHint") }
+          : null
+      )
+    );
+  });
+  return holder;
 }
 
 // Modal listing a broker's blanc batches with the per-batch and total
@@ -5957,7 +6048,10 @@ async function brokerBatchesView(broker) {
               },
             },
           ]
-        : null
+        : null,
+      // A batch the server added by itself (a forced blanc outside the
+      // handed-out ranges) is tinted pink, so it stands out in the list.
+      (b) => (b.AutoAdded ? "batch-auto-row" : "")
     );
 
     const children = [summary, table];
@@ -7284,11 +7378,15 @@ function downloadInsurancesXlsx(rows, date, canSeePrice) {
 // Reconcile daily report (admin)
 //
 // Reads an Excel (.xlsx/.xlsm/...) daily report and compares each row with the insurance table:
-//   [НОМЕР НА ПОЛИЦА] or [№ ПОЛИЦА] -> PolicyNumber
-//   [НОМЕР НА СТИКЕР] or [№ БЛАНКА] -> BlancNumber
-//   [ВАЛИДЕН ОТ] or [ДАТА]          -> StartDate
-//   [ВАЛИДЕН ДО] or [СРОК]          -> StartDate + Duration (days)
-//   [ДКН]                          -> CarNumber
+//   [НОМЕР НА ПОЛИЦА] / [№ ПОЛИЦА] / [Policy number] -> PolicyNumber
+//   [НОМЕР НА СТИКЕР] / [№ БЛАНКА] / [Blanc Number]  -> BlancNumber
+//   [ВАЛИДЕН ОТ] / [ДАТА]                           -> StartDate
+//   [ВАЛИДЕН ДО] / [СРОК]                           -> StartDate + Duration (days)
+//   [ДКН] / [Car number] / [Plate number]           -> CarNumber
+//   [СРОК] / [SROK] / [Duration]                    -> Duration (15D = 15 days, 3M = 3 months)
+//   [ЦЕНА] / [Price] / [ТАРИФА] / [Tarifa]          -> Price (amount only - the currency type is not compared)
+// (English is accepted for the policy / sticker / car / duration / price
+// columns; see the full list in RECON_COLUMNS, reconcile-core.js.)
 //
 // Two report layouts are supported, since daily reports in the field use a
 // shorter header set than the one originally designed here:
@@ -7297,14 +7395,40 @@ function downloadInsurancesXlsx(rows, date, canSeePrice) {
 //     plus a "СРОК" (term) column holding a shorthand like "15D"/"1M"/"3M",
 //     from which the valid-until date is derived.
 //
+// Duration and price are compared when the report has their column; a file
+// without them still reconciles the rest (the missing field is reported as not
+// compared instead of flagging every row).
+//
+// The columns the file must contain follow the compare buttons: only a field
+// whose button is ticked is required, so unticking a field lets a report that
+// does not print its column reconcile the remaining ones (reconRequiredColumns
+// in reconcile-core.js).
+//
+// The report is checked against one day or a range of days (two date inputs)
+// and, when a broker name is typed, only against that broker's insurances; an
+// empty broker checks every insurer.
+//
 // The pure helpers used here (RECON_COLUMNS, RECON_TERM_COLUMN,
 // reconFindColumns, reconParseFileRows, reconCompareRow, reconDbValues, and the
 // recon* normalisation/date helpers) live in reconcile-core.js, loaded before
 // this file so they can be unit-tested in Node without the DOM.
+//
+// `options`:
+//   creationFrom / creationTo - the day (or range of days) the report covers.
+//     Insurances created in it that no file row matched are listed as missing
+//     from the file. Clearing both dates switches that check off.
+//   broker - only the policies of this broker are checked. The name is matched
+//     like the lookup's Broker field: partially and insensitive to the
+//     Cyrillic/Latin script of the stored name (brokerNameMatches). Empty
+//     means every broker.
+//   compareFields - which columns are compared (see RECON_COMPARE_FIELDS).
+//     Only the ticked fields are required in the file; an unticked one may be
+//     missing from the report entirely.
 // ---------------------------------------------------------------------------
 
-async function reconcileReport(rows, dbDate) {
-  const cols = reconFindColumns(rows);
+async function reconcileReport(rows, options) {
+  const { creationFrom, creationTo, broker, compareFields } = options || {};
+  const cols = reconFindColumns(rows, compareFields);
   if (cols.missing.length) {
     throw new Error(
       `${t("reconcile.columnsNotFound")}: ${cols.missing
@@ -7313,9 +7437,28 @@ async function reconcileReport(rows, dbDate) {
     );
   }
   const fileRows = reconParseFileRows(rows, cols.headerRow, cols.index);
+  // The columns this file actually has. The optional ones (duration, price)
+  // are not compared when the report does not print them.
+  const fileFields = reconFileFields(cols.index);
+
+  // Which fields the user wants checked. Everything is compared unless some
+  // fields were switched off in the toggle row (the choice is stored in
+  // localStorage).
+  const compared = reconParseCompareFields(compareFields);
 
   const data = await api("/admin/insurances");
-  const insurances = data.insurances || [];
+  let insurances = data.insurances || [];
+
+  // A typed broker narrows the whole reconciliation - both the rows the file
+  // is matched against and the "missing from file" list - to that broker's
+  // policies. The server stores the broker's name on each policy, including
+  // the walk-in (branch) ones, so the same name match as the lookup is enough.
+  const brokerQuery = String(broker ?? "").trim();
+  if (brokerQuery) {
+    insurances = insurances.filter((ins) =>
+      brokerNameMatches(ins.Broker, brokerQuery)
+    );
+  }
 
   const byPolicy = new Map();
   const byBlank = new Map();
@@ -7347,7 +7490,7 @@ async function reconcileReport(rows, dbDate) {
 
     let best = null;
     for (const ins of candidates) {
-      const cmp = reconCompareRow(fileRow, ins);
+      const cmp = reconCompareRow(fileRow, ins, compared, fileFields);
       if (!best || cmp.count < best.cmp.count) best = { ins, cmp };
     }
     matchedInsurances.add(best.ins);
@@ -7355,13 +7498,14 @@ async function reconcileReport(rows, dbDate) {
     else mismatches.push({ rowNo: fileRow.rowNo, ...best.cmp.fields });
   }
 
-  const missingFromFile = dbDate
-    ? insurances.filter(
-        (ins) =>
-          !matchedInsurances.has(ins) &&
-          reconDbDate(ins.CreationDate) === dbDate
-      )
-    : [];
+  // Insurances that should have appeared in the report but did not: created in
+  // the chosen day/range and never matched by a file row. An empty range
+  // matches nothing, so the list stays empty and the check is skipped.
+  const range = reconDateRange(creationFrom, creationTo);
+  const missingFromFile = insurances.filter(
+    (ins) =>
+      !matchedInsurances.has(ins) && reconDateInRange(ins.CreationDate, range)
+  );
 
   return {
     fileRowCount: fileRows.length,
@@ -7369,7 +7513,16 @@ async function reconcileReport(rows, dbDate) {
     missingFromDb,
     missingFromFile,
     mismatches,
-    dbDate,
+    // The range and broker actually used (a reversed pair is reported in the
+    // order it was applied), so the tab can put them back into its fields.
+    creationFrom: range.from,
+    creationTo: range.to,
+    broker: brokerQuery,
+    // Kept with the result so the screen can say what was not checked (and
+    // dim those columns) even when the report is restored from the cache.
+    compareFields: compared,
+    // Same, for the columns the file did not have at all.
+    fileFields,
   };
 }
 
@@ -7445,6 +7598,25 @@ function reconRenderResults(result) {
   );
   wrap.appendChild(stats);
 
+  // A green "everything matches" must not hide the fact that some fields were
+  // switched off (or are not in the file), so the ignored ones are named right
+  // under the summary.
+  const ignoredLabels = RECON_COLUMNS.filter(
+    (c) =>
+      !reconIsCompareFieldChecked(
+        result.compareFields,
+        result.fileFields,
+        c.key
+      )
+  ).map((c) => t(c.label));
+  if (ignoredLabels.length > 0) {
+    wrap.appendChild(
+      el("p", `${t("reconcile.notCompared")}: ${ignoredLabels.join(", ")}`, {
+        class: "muted recon-ignored",
+      })
+    );
+  }
+
   const buildSection = (section, title, items, columns, rowClass) => {
     section.appendChild(el("h3", `${title} (${items.length})`));
     section.appendChild(renderTable(items, columns, null, rowClass));
@@ -7458,6 +7630,8 @@ function reconRenderResults(result) {
     from: r.fromKey ? reconShowDate(r.fromKey) : r.fromRaw,
     to: r.toKey ? reconShowDate(r.toKey) : r.toRaw,
     car: r.car,
+    duration: r.durationRaw || reconShowDuration(r.durationDays),
+    price: reconShowPrice(r.priceRaw),
   }));
   buildSection(
     missingDbSection,
@@ -7479,6 +7653,8 @@ function reconRenderResults(result) {
       from: reconShowDate(db.fromKey),
       to: reconShowDate(db.toKey),
       car: db.car,
+      duration: reconShowDuration(db.durationDays),
+      price: reconShowPrice(db.price),
     };
   });
   buildSection(
@@ -7490,17 +7666,34 @@ function reconRenderResults(result) {
   );
 
   // --- Partial data mismatches (mismatching cells in dark red) ------------
-  const mismatchCol = (col) => ({
-    key: col.key,
-    label: t(col.label),
-    format: (v) =>
-      v.mismatch
-        ? `${t("reconcile.fileValue")}: ${v.file || "—"}\n${t(
-            "reconcile.dbValue"
-          )}: ${v.db || "—"}`
-        : v.file,
-    cellClass: (item) => (item[col.key].mismatch ? "cell-mismatch" : ""),
-  });
+  // A field switched off in the compare toggles - or whose column the file does
+  // not have - is shown for reference but never highlighted and never annotated
+  // as a difference, even when the report on screen was computed while the
+  // field was still compared.
+  const mismatchCol = (col) => {
+    const off = !reconIsCompareFieldChecked(
+      result.compareFields,
+      result.fileFields,
+      col.key
+    );
+    return {
+      key: col.key,
+      label: t(col.label),
+      format: (v) => {
+        const cell = v || {};
+        return cell.mismatch && !off
+          ? `${t("reconcile.fileValue")}: ${cell.file || "—"}\n${t(
+              "reconcile.dbValue"
+            )}: ${cell.db || "—"}`
+          : cell.file;
+      },
+      cellClass: (item) => {
+        const cell = item[col.key] || {};
+        if (off || cell.ignored) return "cell-ignored";
+        return cell.mismatch ? "cell-mismatch" : "";
+      },
+    };
+  };
   buildSection(
     mismatchSection,
     t("reconcile.mismatches"),
@@ -7536,8 +7729,154 @@ function reconRenderResults(result) {
 // file invalidates it until Run is pressed again.
 let reconcileCache = null;
 
+// The compare-field choice lives in localStorage, so it is asked once: the next
+// time the dashboard opens (a restart, a logout/login on the same machine) the
+// same fields are already ticked. An unreadable value means "compare
+// everything" - see reconParseCompareFields.
+function loadReconcileCompareFields() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(RECON_COMPARE_STORAGE_KEY);
+  } catch (err) {
+    console.warn("Failed to read the reconcile compare fields:", err);
+  }
+  return reconParseCompareFields(raw);
+}
+
+function saveReconcileCompareFields(fields) {
+  try {
+    localStorage.setItem(RECON_COMPARE_STORAGE_KEY, JSON.stringify(fields));
+  } catch (err) {
+    console.warn("Failed to store the reconcile compare fields:", err);
+  }
+}
+
+// "Columns the daily report must have": a collapsed help block on the tab, so
+// the rules are readable in the client instead of living in a code comment.
+// The rows come from reconHintRows(), i.e. from the same constants the parser
+// uses, and the prose comes from the translations.
+function reconColumnHint() {
+  const details = el("details", null, {
+    class: "collapsible-section recon-hint",
+  });
+  details.appendChild(el("summary", t("reconcile.hintTitle")));
+
+  const body = el("div", null, { class: "collapsible-body" });
+  body.appendChild(el("p", t("reconcile.hintIntro"), { class: "muted" }));
+  body.appendChild(el("p", t("reconcile.hintRequired"), { class: "muted" }));
+
+  const table = el("table", null, { class: "recon-hint-table" });
+  const thead = el("thead");
+  const headRow = el("tr");
+  headRow.appendChild(el("th", t("reconcile.hintField")));
+  headRow.appendChild(el("th", t("reconcile.hintHeaders")));
+  headRow.appendChild(el("th", t("reconcile.hintComparedWith")));
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = el("tbody");
+  for (const row of reconHintRows()) {
+    const tr = el("tr");
+    tr.appendChild(el("td", t(row.label)));
+    tr.appendChild(el("td", row.headers.join(", ")));
+    tr.appendChild(el("td", row.source, { class: "muted" }));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  body.appendChild(el("p", t("reconcile.hintLayouts"), { class: "muted" }));
+  body.appendChild(el("p", t("reconcile.hintTerms"), { class: "muted" }));
+  body.appendChild(el("p", t("reconcile.hintDates"), { class: "muted" }));
+  details.appendChild(body);
+  return details;
+}
+
+// A small "thinking" indicator shown instead of the results while the report
+// is parsed and compared: a big spreadsheet takes a moment, and a frozen
+// screen would look like a failed run. Three dots bounce in turn next to the
+// loading text, which is announced through the live region.
+function reconLoadingIndicator() {
+  const wrap = el("div", null, { class: "recon-loading", role: "status" });
+  wrap.setAttribute("aria-live", "polite");
+  const dots = el("span", null, { class: "recon-loading-dots" });
+  dots.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 3; i++) dots.appendChild(el("span"));
+  wrap.appendChild(dots);
+  wrap.appendChild(el("span", t("loading"), { class: "recon-loading-text" }));
+  return wrap;
+}
+
+// One toggle button per compared field. Switching a field off only stops its
+// differences from counting - the rows are still matched by policy / blank
+// number exactly as before.
+//
+// These are real <button> elements, not checkboxes: the whole pill is the hit
+// area and the on/off state is carried by aria-pressed (so screen readers and
+// the keyboard get a toggle button) plus the .is-on class the stylesheet
+// animates. Clicking one pops the pill briefly and cross-fades the tick, so the
+// click is acknowledged even when the recomputed report looks the same.
+function reconCompareToggles(compareFields, onChange) {
+  const wrap = el("div", null, { class: "recon-toggles" });
+  wrap.appendChild(
+    el("span", t("reconcile.compareFields"), { class: "recon-toggles-label" })
+  );
+  // The current choice is tracked here too, so flipping one button after another
+  // builds on the previous flip instead of on the set the row started with.
+  let current = reconParseCompareFields(compareFields);
+  const buttons = new Map();
+
+  // Paints the on/off state without animating, so restoring a stored choice
+  // (syncFields) cannot look like a click.
+  const paint = (btn, on) => {
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.classList.toggle("is-on", on);
+  };
+
+  // Restarts the pop keyframe (WorkPage.css) on every click. Removing the class
+  // and reading offsetWidth forces a reflow; without it a second click during
+  // the 260ms animation would not replay it.
+  const pulse = (btn) => {
+    btn.classList.remove("is-clicked");
+    void btn.offsetWidth;
+    btn.classList.add("is-clicked");
+  };
+
+  for (const col of RECON_COLUMNS) {
+    const btn = el("button", null, { class: "recon-toggle", type: "button" });
+    btn.setAttribute("data-field", col.key);
+    btn.title = t("reconcile.compareToggleHint");
+    // Decorative only: the text next to it already names the field and
+    // aria-pressed already says whether it is on.
+    const tick = el("span", "\u2713", { class: "recon-toggle-tick" });
+    tick.setAttribute("aria-hidden", "true");
+    btn.appendChild(tick);
+    btn.appendChild(el("span", t(col.label), { class: "recon-toggle-text" }));
+    paint(btn, current.includes(col.key));
+    btn.addEventListener("click", () => {
+      // Clicking flips the state: the button is its own indicator, so the new
+      // value cannot be read off a stale box.
+      const on = !current.includes(col.key);
+      current = reconToggleCompareField(current, col.key, on);
+      paint(btn, on);
+      pulse(btn);
+      onChange(current);
+    });
+    buttons.set(col.key, btn);
+    wrap.appendChild(btn);
+  }
+  // Lets the view put the buttons back in step with the stored choice.
+  wrap.syncFields = (fields) => {
+    current = reconParseCompareFields(fields);
+    for (const [key, btn] of buttons) paint(btn, current.includes(key));
+  };
+  return wrap;
+}
+
 async function reconcileView() {
   let selectedFile = reconcileCache ? reconcileCache.file : null;
+  // Remembered across sessions (see loadReconcileCompareFields).
+  let compareFields = loadReconcileCompareFields();
 
   const fileInput = el("input", null, { type: "file" });
   fileInput.accept =
@@ -7557,6 +7896,23 @@ async function reconcileView() {
   dropZone.appendChild(fileName);
   if (reconcileCache) dropZone.classList.add("has-file");
 
+  // A successful pick flashes the drag-and-drop field itself, so the upload is
+  // noticed even before the new file name is read. Only a valid file triggers
+  // it (essentially the drop zone's own confirmation). The class is removed
+  // once the animation has played so the next upload replays it.
+  let dropNoticeTimer = 0;
+  function noticeDropZone() {
+    dropZone.classList.remove("drop-accepted");
+    // Reading offsetWidth restarts the animation when the class was just
+    // removed, the same trick markEmailRevived uses.
+    void dropZone.offsetWidth;
+    dropZone.classList.add("drop-accepted");
+    clearTimeout(dropNoticeTimer);
+    dropNoticeTimer = setTimeout(() => {
+      dropZone.classList.remove("drop-accepted");
+    }, 800);
+  }
+
   const setFile = (file) => {
     if (!file) return;
     if (!/\.(xlsx|xlsm|xltx|xltm)$/i.test(file.name)) {
@@ -7572,6 +7928,7 @@ async function reconcileView() {
     selectedFile = file;
     fileName.textContent = file.name;
     dropZone.classList.add("has-file");
+    noticeDropZone();
   };
 
   dropZone.addEventListener("click", () => fileInput.click());
@@ -7602,17 +7959,48 @@ async function reconcileView() {
   const todayString = `${today.getFullYear()}-${reconPad(
     today.getMonth() + 1
   )}-${reconPad(today.getDate())}`;
-  // Restore the date the cached report was run for, so it and the field agree.
-  const dateInput = input(
+  // Restore the date range and broker the cached report was run for, so the
+  // fields and the report on screen always agree. Both dates default to today
+  // (a one-day report); widening the range is just changing the first date.
+  const fromInput = input(
     "date",
-    reconcileCache ? reconcileCache.dbDate : todayString
+    reconcileCache ? reconcileCache.creationFrom : todayString
   );
-  const dateField = field(t("reconcile.dbDate"), dateInput);
+  const toInput = input(
+    "date",
+    reconcileCache ? reconcileCache.creationTo : todayString
+  );
+  const brokerInput = input(
+    "text",
+    reconcileCache ? reconcileCache.broker : ""
+  );
 
   const runBtn = el("button", t("reconcile.run"), { type: "button" });
   const controls = el("div", null, { class: "row filter-row" });
-  controls.appendChild(dateField);
+  controls.appendChild(field(t("reconcile.dbDate"), fromInput));
+  controls.appendChild(field(t("reconcile.dbDateTo"), toInput));
+  controls.appendChild(field(t("broker"), brokerInput));
   controls.appendChild(runBtn);
+
+  // The Broker field suggests the same names as the lookup's Broker field (see
+  // adminInsurancesByDate), including the ones that only survive on old
+  // policies, and matches them the same way. Attached after the input sits in
+  // its .field wrapper, which the dropdown is positioned against.
+  const brokerAutocomplete = attachAutocomplete(
+    brokerInput,
+    () =>
+      currentInsuranceSuggestions().brokers.map((b) => ({
+        value: b.Name,
+        hint: b.Code ? `${t("brokerIdFilter")} ${b.Code}` : "",
+      })),
+    (item, query) =>
+      brokerRowMatchesNameFilter(item.value, query) ||
+      !query ||
+      String(item.hint || "")
+        .toLowerCase()
+        .includes(query.toLowerCase())
+  );
+  loadInsuranceFilterSuggestions().then(() => brokerAutocomplete.refresh());
 
   const result = el("div");
   // Coming back to the tab shows the previous report immediately, without
@@ -7625,16 +8013,24 @@ async function reconcileView() {
   // reconcile against the database and render the comparison.
   const runReconcile = async (file, btn) => {
     btn.disabled = true;
-    result.replaceChildren(el("p", t("loading"), { class: "muted" }));
+    btn.setAttribute("aria-busy", "true");
+    result.replaceChildren(reconLoadingIndicator());
     try {
       const sheetRows = await readXlsxFirstSheet(await file.arrayBuffer());
-      const report = await reconcileReport(sheetRows, dateInput.value);
+      const report = await reconcileReport(sheetRows, {
+        creationFrom: fromInput.value,
+        creationTo: toInput.value,
+        broker: brokerInput.value.trim(),
+        compareFields,
+      });
       // Keep the successful result (and the File that produced it) so a tab
       // switch can restore it without reading the spreadsheet again.
       reconcileCache = {
         file,
         fileName: file.name,
-        dbDate: dateInput.value,
+        creationFrom: fromInput.value,
+        creationTo: toInput.value,
+        broker: brokerInput.value.trim(),
         report,
       };
       result.replaceChildren(reconRenderResults(report));
@@ -7643,10 +8039,12 @@ async function reconcileView() {
       toast(err.message, "error");
     } finally {
       btn.disabled = false;
+      btn.removeAttribute("aria-busy");
     }
   };
 
   runBtn.addEventListener("click", async () => {
+    brokerAutocomplete.close();
     if (!selectedFile) {
       toast(t("reconcile.noFile"), "error");
       return;
@@ -7654,14 +8052,30 @@ async function reconcileView() {
     await runReconcile(selectedFile, runBtn);
   });
 
+  // The compare toggle buttons, restored from localStorage. Flipping one is
+  // saved immediately; if a report is already on screen it is recomputed, so the
+  // figures and the highlights never disagree with the toggles.
+  const compareToggles = reconCompareToggles(compareFields, (next) => {
+    compareFields = next;
+    saveReconcileCompareFields(compareFields);
+    compareToggles.syncFields(compareFields);
+    if (selectedFile && reconcileCache) runReconcile(selectedFile, runBtn);
+  });
+
   Content.replaceChildren(
     el("h2", t("reconcile.title")),
+    reconColumnHint(),
     dropZone,
     fileInput,
     controls,
-    el("p", `${t("reconcile.dbDateHint")} ${t("reconcile.endNote")}`, {
-      class: "muted",
-    }),
+    compareToggles,
+    el(
+      "p",
+      `${t("reconcile.dbDateHint")} ${t("reconcile.brokerHint")} ${t(
+        "reconcile.endNote"
+      )}`,
+      { class: "muted" }
+    ),
     result
   );
 }

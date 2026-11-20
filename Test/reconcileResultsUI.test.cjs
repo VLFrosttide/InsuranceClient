@@ -222,6 +222,10 @@ const report = {
       toRaw: "3M",
       fromKey: "2026-10-05",
       toKey: "2027-01-03",
+      durationRaw: "3M",
+      durationDays: 90,
+      priceRaw: "0",
+      price: 0,
     },
   ],
   missingFromFile: [
@@ -231,6 +235,7 @@ const report = {
       CarNumber: "34HYY133",
       StartDate: "2026-10-05",
       Duration: 90,
+      Price: "45.5",
     },
   ],
   mismatches: [
@@ -241,9 +246,13 @@ const report = {
       from: { file: "05.10.2026", db: "05.10.2026", mismatch: false },
       to: { file: "03.01.2027", db: "04.01.2027", mismatch: true },
       car: { file: "34PDP763", db: "34PDP763", mismatch: false },
+      duration: { file: "3M", db: "3M", mismatch: false },
+      price: { file: "45.5", db: "45.5", mismatch: false },
     },
   ],
-  dbDate: "2026-10-05",
+  creationFrom: "2026-10-05",
+  creationTo: "2026-10-07",
+  broker: "Euroins",
 };
 
 const emptyReport = {
@@ -252,7 +261,9 @@ const emptyReport = {
   missingFromDb: [],
   missingFromFile: [],
   mismatches: [],
-  dbDate: "2026-10-05",
+  creationFrom: "2026-10-05",
+  creationTo: "2026-10-05",
+  broker: "",
 };
 
 console.log("Reconcile daily report — results screen");
@@ -306,7 +317,7 @@ check("the missing-from-database table keeps the file row number", () => {
     (n) => n.textContent
   );
   eq(head[0], "reconcile.row", "the first column is the file row");
-  eq(head.length, 6, "row + 5 compared columns");
+  eq(head.length, 8, "row + 7 compared columns");
   ok(dbSection.textContent.includes("15"), "the source row number is shown");
 });
 
@@ -321,7 +332,18 @@ check("the missing-from-file table has no file row-number column", () => {
     "reconcile.col.from",
     "reconcile.col.to",
     "reconcile.col.car",
+    "reconcile.col.duration",
+    "reconcile.col.price",
   ]);
+});
+
+check("the duration and price columns are shown on both sides", () => {
+  // The file row keeps its "3M" as written; the database insurance shows the
+  // stored duration in the same shorthand and its price.
+  ok(byId(view, "recon-missing-db").textContent.includes("3M"), "file 3M");
+  const fileSection = byId(view, "recon-missing-file");
+  ok(fileSection.textContent.includes("3M"), "database duration as 3M");
+  ok(fileSection.textContent.includes("45.5"), "database price");
 });
 
 check("the mismatch table still lists the differing cells", () => {
@@ -338,6 +360,95 @@ check("the mismatch table still lists the differing cells", () => {
     n.className.split(/\s+/).includes("cell-mismatch")
   );
   eq(cells.length, 1, "only the differing cell is highlighted");
+});
+
+// --- fields switched off in the compare checkboxes ---------------------------
+check("a report that compared every field says nothing about skipping", () => {
+  ok(!view.textContent.includes("reconcile.notCompared"), "no note");
+  ok(
+    !find(view, (n) => n.className.split(/\s+/).includes("cell-ignored")).length,
+    "no dimmed cell"
+  );
+});
+
+// The same row, but the car number was switched off. Its values are still
+// listed (the field is not hidden), just not tinted or counted.
+const withoutCar = {
+  ...report,
+  compareFields: ["policy", "blank", "from", "to"],
+  mismatches: [
+    {
+      rowNo: 17,
+      policy: { file: "26167686", db: "26167686", mismatch: false, ignored: false },
+      blank: { file: "149990", db: "149990", mismatch: false, ignored: false },
+      from: { file: "05.10.2026", db: "05.10.2026", mismatch: false, ignored: false },
+      to: { file: "03.01.2027", db: "04.01.2027", mismatch: true, ignored: false },
+      car: { file: "34PDP763", db: "99XXX000", mismatch: false, ignored: true },
+      duration: { file: "3M", db: "3M", mismatch: false, ignored: true },
+      price: { file: "45.5", db: "45.5", mismatch: false, ignored: true },
+    },
+  ],
+};
+const partialView = reconRenderResults(withoutCar);
+
+check("the switched-off field is named under the summary", () => {
+  ok(
+    partialView.textContent.includes(
+      "reconcile.notCompared: reconcile.col.car"
+    ),
+    "the note names the field"
+  );
+  ok(
+    !partialView.textContent.includes("reconcile.col.policy, "),
+    "checked fields are not listed"
+  );
+});
+
+check("the switched-off field is dimmed, not flagged", () => {
+  const section = byId(partialView, "recon-mismatches");
+  const rows = find(section, (n) => n.tagName === "TR");
+  // Row 0 is the header: rowNo, policy, blank, from, to, car, duration, price.
+  const cells = rows[1].children.filter((n) => n.tagName === "TD");
+  eq(cells.length, 8, "row number + seven fields");
+  eq(cells[5].className, "cell-ignored", "car number is dimmed");
+  eq(cells[4].className, "cell-mismatch", "valid-until is still flagged");
+  eq(cells[5].textContent, "34PDP763", "the value is still shown");
+});
+
+check("a column the file does not have is named as not compared", () => {
+  // A report without a price column: the field is ignored for that report, so
+  // it is named under the summary and its cells are dimmed, not flagged.
+  const noPriceColumn = reconRenderResults({
+    ...report,
+    fileFields: ["policy", "blank", "from", "to", "car", "duration"],
+  });
+  ok(
+    noPriceColumn.textContent.includes(
+      "reconcile.notCompared: reconcile.col.price"
+    ),
+    "price is named as not compared"
+  );
+  const section = byId(noPriceColumn, "recon-mismatches");
+  const rows = find(section, (n) => n.tagName === "TR");
+  const cells = rows[1].children.filter((n) => n.tagName === "TD");
+  eq(cells[7].className, "cell-ignored", "price cell is dimmed");
+  eq(cells[5].className, "", "the columns the file has stay compared");
+});
+
+check("an empty compare set compares nothing at all", () => {
+  const allOff = reconRenderResults({ ...report, compareFields: [] });
+  ok(
+    allOff.textContent.includes(
+      "reconcile.notCompared: reconcile.col.policy, reconcile.col.blank, reconcile.col.from, reconcile.col.to, reconcile.col.car, reconcile.col.duration, reconcile.col.price"
+    ),
+    "every field is named"
+  );
+  eq(
+    find(allOff, (n) => n.className.split(/\s+/).includes("cell-mismatch"))
+      .length,
+    0,
+    "nothing is highlighted"
+  );
 });
 
 // --- the cards ---------------------------------------------------------------

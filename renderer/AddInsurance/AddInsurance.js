@@ -140,6 +140,30 @@ try {
 // page keeps the date rules of the mode it was opened in.
 const OpenedFromEmail = !!PendingEmail;
 
+// ---------------------------------------------------------------------------
+// Certificate mode (Bulins)
+// ---------------------------------------------------------------------------
+// The dashboard opens this same page - the email, its attachments and the reply
+// box - with the inputs hidden: the worker looks at every file, replies to the
+// broker if something is wrong, picks the registration certificate and
+// continues to Bulins. The mode is set by the dashboard in localStorage and
+// removed here, so a normal open is never affected.
+const CERTIFICATE_MODE = (() => {
+  let wanted = false;
+  try {
+    wanted = localStorage.getItem("addInsuranceMode") === "certificate";
+    localStorage.removeItem("addInsuranceMode");
+  } catch (err) {
+    wanted = false;
+  }
+  return wanted && !!PendingEmail;
+})();
+
+// Printing the certificate is the worker's check before Bulins opens. While the
+// printer step is not wired up, clicking the button is the check: set this to
+// true to really print and wait for the printer.
+const PRINT_CERTIFICATE_FOR_REAL = false;
+
 // Today's date as YYYY-MM-DD in local time — the value format expected by
 // <input type="date">. Built from local components (not toISOString) so the
 // day never shifts around midnight.
@@ -2720,13 +2744,206 @@ function setupPresenceSocket() {
   }, PRESENCE_CHECK_MS);
 }
 
-trimOnPaste(document.getElementById("CarNumberInput"));
+// ---------------------------------------------------------------------------
+// Certificate mode: pick the file, print it, open Bulins
+// ---------------------------------------------------------------------------
+// The rest of the page - the email, every attachment with its viewer, the reply
+// box - is untouched. This only replaces the inputs with the choice of
+// certificate and the button that opens Bulins.
+
+function certificateRows() {
+  const rows = [];
+  for (const group of emailAttachmentGroups()) {
+    for (const att of group.attachments || []) {
+      if (!att || att.id == null) continue;
+      rows.push({
+        att,
+        messageId: group.messageId,
+        entry: emailAttachmentEntries.get(att.id) || null,
+      });
+    }
+  }
+  return rows;
+}
+
+// The bytes of one attachment; the page fetches them lazily, so this waits for
+// the reply and asks again if the request was lost.
+async function certificateBytes(row, timeoutMs = 120000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const entry = row.entry || emailAttachmentEntries.get(row.att.id);
+    if (entry && entry.base64) {
+      return {
+        filename: row.att.filename || "",
+        mimeType: row.att.mimeType || "",
+        base64: entry.base64,
+      };
+    }
+    if (entry && !entry.inFlight && !entry.requested && !entry.gaveUp) {
+      // Ask once; the page's own retry timer takes over if the reply is lost.
+      if (emailSocket && emailSocket.isReady()) requestAttachment(entry);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return null;
+}
+
+function setupCertificateMode() {
+  if (!CERTIFICATE_MODE) return;
+  const layout = document.getElementById("AddInsuranceLayout");
+  const form = document.getElementById("InsuranceForm");
+  if (!layout || !form) return;
+
+  form.style.display = "none";
+
+  const panel = el("section", null, { id: "CertificatePanel" });
+  panel.appendChild(el("h2", t("pickCert.title")));
+  panel.appendChild(el("p", t("pickCert.hint"), { class: "muted" }));
+  panel.appendChild(el("p", t("pickCert.zoomHint"), { class: "muted" }));
+
+  const list = el("div", null, { class: "cert-panel-list" });
+  const actions = el("div", null, { class: "cert-panel-actions" });
+  const status = el("p", "", { class: "cert-panel-status muted" });
+  const continueBtn = el("button", t("pickCert.printOpen"), { type: "button" });
+  continueBtn.disabled = true;
+  actions.appendChild(continueBtn);
+
+  const rows = certificateRows();
+  let selected = null;
+
+  for (const row of rows) {
+    const line = el("div", null, { class: "cert-panel-row" });
+    const choice = el("label", null, { class: "cert-panel-choice" });
+    const radio = el("input", null, { type: "radio", name: "certificate" });
+    const name = el("span", row.att.filename || t("email.attachment"), {
+      class: "cert-panel-name",
+    });
+    const state = el("span", t("pickCert.loading"), {
+      class: "cert-panel-state muted",
+    });
+    row.state = state;
+    choice.append(radio, name, state);
+
+    const open = el("button", t("pickCert.open"), {
+      type: "button",
+      class: "secondary small",
+    });
+    open.addEventListener("click", async () => {
+      const bytes = await certificateBytes(row);
+      if (!bytes) {
+        status.textContent = t("pickCert.unavailable");
+        return;
+      }
+      if (String(bytes.mimeType).startsWith("image/")) {
+        // The page's own viewer: zoom, rotate and print, like any photo.
+        openImageViewer(
+          `data:${bytes.mimeType};base64,${bytes.base64}`,
+          bytes.filename
+        );
+      } else {
+        window.bridge.OpenAttachmentExternal(bytes);
+      }
+    });
+
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      selected = row;
+      continueBtn.disabled = false;
+      status.textContent = "";
+    });
+
+    line.append(choice, open);
+    list.appendChild(line);
+  }
+
+  if (rows.length === 0) {
+    list.appendChild(el("p", t("email.noAttachments"), { class: "muted" }));
+  }
+
+  // The bytes arrive one by one: show which files are ready to be read.
+  const refresh = () => {
+    for (const row of rows) {
+      const entry = row.entry || emailAttachmentEntries.get(row.att.id);
+      const ready = !!(entry && entry.base64);
+      row.state.textContent = ready ? t("pickCert.ready") : t("pickCert.loading");
+      row.state.classList.toggle("muted", !ready);
+    }
+  };
+  refresh();
+  const refreshTimer = setInterval(refresh, 700);
+  setTimeout(() => clearInterval(refreshTimer), 180000);
+
+  continueBtn.addEventListener("click", async () => {
+    if (!selected) return;
+    continueBtn.disabled = true;
+    status.textContent = t("pickCert.checking");
+
+    const bytes = await certificateBytes(selected);
+    if (!bytes) {
+      status.textContent = t("pickCert.unavailable");
+      continueBtn.disabled = false;
+      return;
+    }
+
+    if (PRINT_CERTIFICATE_FOR_REAL) {
+      status.textContent = t("pickCert.printing");
+      let printed = null;
+      try {
+        printed = await window.bridge.PrintAttachment(bytes);
+      } catch (err) {
+        printed = { ok: false, error: String((err && err.message) || err) };
+      }
+      if (!printed || !printed.ok) {
+        status.textContent =
+          printed && printed.cancelled
+            ? t("pickCert.notPrinted")
+            : t("pickCert.printFailed");
+        continueBtn.disabled = false;
+        return;
+      }
+    }
+
+    status.textContent = t("pickCert.opening");
+    let started = null;
+    try {
+      started = await window.bridge.BulinsStart({
+        email: {
+          messageId: PendingEmail.messageId || null,
+          subject: PendingEmail.subject || "",
+          from: PendingEmail.from || "",
+          date: PendingEmail.date || "",
+          body: PendingEmail.body || "",
+        },
+        certificate: bytes,
+      });
+    } catch (err) {
+      started = { ok: false, error: String((err && err.message) || err) };
+    }
+    if (!started || !started.ok) {
+      status.textContent = (started && started.error) || t("serverError");
+      continueBtn.disabled = false;
+      return;
+    }
+
+    // Bulins is open over the dashboard and this page is done. The claim now
+    // belongs to the Bulins view, which releases it when the form is closed.
+    leavingEmail = true;
+    redirecting = true;
+    clearPendingEmail();
+    window.bridge.LoadNewPage("renderer/WorkPage/WorkPage.html");
+  });
+
+  panel.append(list, actions, status);
+  layout.insertBefore(panel, form);
+}
+
 trimOnPaste(document.getElementById("PolicyNumberInput"));
 trimOnPaste(document.getElementById("BlancNumberInput"));
 autofillEmailNumbers();
 
 configureWalkInMode();
 renderEmailSide();
+setupCertificateMode();
 setupEmailSocket();
 setupPresenceSocket();
 startDesktopPdfWatch();

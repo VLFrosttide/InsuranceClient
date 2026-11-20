@@ -9,7 +9,24 @@
 //   - Shift-log layout (e.g. "FINANSOV OTCHET" files):
 //       № ПОЛИЦА / № БЛАНКА / ДАТА / СРОК / ДКН,
 //     where the valid-until date is derived from ДАТА + a "СРОК" term code
-//     such as "15D", "1M" or "3M".
+//     such as "15D", "1M" or "3M". That same column is compared with the
+//     policy's Duration (in days).
+//
+// The policy, sticker, car, duration and price columns also accept English
+// headers ("Policy number", "Blanc Number", "Car number", "Duration", "Price",
+// "Tarifa", … - the full list is RECON_COLUMNS), because some exports use the
+// database field names instead of the Bulgarian ones. Header matching ignores
+// case, spaces and punctuation (reconHeaderKey).
+//
+// Duration and price are optional: a report that does not print those columns
+// still reconciles everything else, and the missing field is reported as not
+// compared instead of flagging every row.
+//
+// Which columns a file must have follows the compare buttons (the ticked
+// fields): a field that is switched off is no longer required, so a report
+// without that column still reconciles the fields that are ticked
+// (reconRequiredColumns, reconFindColumns). Ticked optional fields stay
+// optional, so the layouts above keep working.
 //
 // The policy number in a report is printed with the office/series code
 // "BG/02/FI" in front; that prefix is cut off before the numbers are compared
@@ -78,17 +95,190 @@ function reconHeaderKey(value) {
   return reconNormText(String(value ?? "").replace(/[^\p{L}\p{N}]/gu, ""));
 }
 
+// Alternate "valid until" source and the duration aliases: a term/duration
+// column (e.g. "СРОК" with values like "15D", "1M", "3M") is used when the file
+// has no explicit "ВАЛИДЕН ДО", and is also the column the duration compare
+// reads. Declared before RECON_COLUMNS because the duration column reuses it.
+const RECON_TERM_COLUMN = {
+  key: "term",
+  headers: ["СРОК", "SROK", "DURATION", "ТЕРМИН", "ПЕРИОД"],
+};
+
 const RECON_COLUMNS = [
-  { key: "policy", header: "НОМЕР НА ПОЛИЦА", label: "reconcile.col.policy", headers: ["НОМЕР НА ПОЛИЦА", "№ ПОЛИЦА", "ПОЛИЦА"] },
-  { key: "blank", header: "НОМЕР НА СТИКЕР", label: "reconcile.col.blank", headers: ["НОМЕР НА СТИКЕР", "№ БЛАНКА", "БЛАНКА", "НОМЕР НА БЛАНКА"] },
-  { key: "from", header: "ВАЛИДЕН ОТ", label: "reconcile.col.from", headers: ["ВАЛИДЕН ОТ", "ДАТА"] },
-  { key: "to", header: "ВАЛИДЕН ДО", label: "reconcile.col.to", headers: ["ВАЛИДЕН ДО"], optional: true },
-  { key: "car", header: "ДКН", label: "reconcile.col.car", headers: ["ДКН"] },
+  {
+    key: "policy",
+    header: "НОМЕР НА ПОЛИЦА",
+    label: "reconcile.col.policy",
+    source: "PolicyNumber",
+    // Bulgarian and English spellings, both seen in the reports. Matching goes
+    // through reconHeaderKey(), which drops case, spaces and punctuation, so
+    // "Policy number", "PolicyNumber" and "POLICY-NUMBER" all land on the same
+    // entry; the extra spellings are listed because they are exactly what the
+    // files print (and the help table shows the list as documentation).
+    headers: [
+      "НОМЕР НА ПОЛИЦА",
+      "№ ПОЛИЦА",
+      "ПОЛИЦА",
+      "Policy number",
+      "PolicyNumber",
+      "Policy",
+    ],
+  },
+  {
+    key: "blank",
+    header: "НОМЕР НА СТИКЕР",
+    label: "reconcile.col.blank",
+    source: "BlancNumber",
+    headers: [
+      "НОМЕР НА СТИКЕР",
+      "№ БЛАНКА",
+      "БЛАНКА",
+      "НОМЕР НА БЛАНКА",
+      "Blanc",
+      "Blanc Number",
+      "BlancNumber",
+      "Blank",
+      "BlankNumber",
+      "Number Blanc",
+      "NumberBlanc",
+    ],
+  },
+  {
+    key: "from",
+    header: "ВАЛИДЕН ОТ",
+    label: "reconcile.col.from",
+    source: "StartDate",
+    headers: ["ВАЛИДЕН ОТ", "ДАТА"],
+  },
+  {
+    key: "to",
+    header: "ВАЛИДЕН ДО",
+    label: "reconcile.col.to",
+    optional: true,
+    source: "StartDate + Duration",
+    headers: ["ВАЛИДЕН ДО"],
+  },
+  {
+    key: "car",
+    header: "ДКН",
+    label: "reconcile.col.car",
+    source: "CarNumber",
+    headers: [
+      "ДКН",
+      "Car number",
+      "Number Car",
+      "Car Plate",
+      "Plate number",
+      "Number Plate",
+    ],
+  },
+  {
+    key: "duration",
+    header: "СРОК",
+    label: "reconcile.col.duration",
+    source: "Duration",
+    // Optional: not every report prints the term. When the column is missing
+    // the field is simply not compared for that report (reconFileFields), so an
+    // older file does not fail or flag every row. The values are the same term
+    // shorthands that derive "valid until": "15D" = 15 days, "3M" = 3 months.
+    optional: true,
+    headers: RECON_TERM_COLUMN.headers.slice(),
+  },
+  {
+    key: "price",
+    header: "ЦЕНА",
+    label: "reconcile.col.price",
+    source: "Price",
+    // Optional as well: the daily report layouts in the field differ, and a
+    // file without a price column still reconciles everything else. Only the
+    // amount is compared - the currency type (the sheet's ЕВРО/ЛЕВА/… columns
+    // or a "лв"/"EUR" suffix) never is.
+    optional: true,
+    headers: ["ЦЕНА", "PRICE", "ТАРИФА", "TARIFA", "TARIFF"],
+  },
 ];
 
-// Alternate "valid until" source: a term/duration column (e.g. "СРОК" with
-// values like "15D", "1M", "3M") used when the file has no explicit "ВАЛИДЕН ДО".
-const RECON_TERM_COLUMN = { key: "term", headers: ["СРОК", "ТЕРМИН", "ПЕРИОД"] };
+// The row fields whose differences can be switched off in the comparison, in
+// the order they are listed in the UI. Every one of them is compared by
+// default; the chosen set is remembered in localStorage under
+// RECON_COMPARE_STORAGE_KEY (see reconcileView in WorkPage.js), so a worker who
+// never wants the car number checked switches it off once and for all.
+const RECON_COMPARE_FIELDS = RECON_COLUMNS.map((c) => c.key);
+const RECON_COMPARE_STORAGE_KEY = "reconcileCompareFields";
+
+// The help text of the Reconcile tab: one entry per column the file must have,
+// built from the very constants the parser uses so the documentation cannot
+// drift away from the code that reads the spreadsheet.
+function reconHintRows() {
+  return RECON_COLUMNS.map((col) => ({
+    key: col.key,
+    label: col.label,
+    source: col.source || "",
+    // "Valid until" is satisfied either by an explicit end date or by a term
+    // column ("СРОК" and friends): both spellings are listed as accepted.
+    headers:
+      col.key === "to"
+        ? [...col.headers, ...RECON_TERM_COLUMN.headers]
+        : col.headers.slice(),
+  }));
+}
+
+function reconCompareFieldsDefault() {
+  return RECON_COMPARE_FIELDS.slice();
+}
+
+// Read the stored choice. Accepts the JSON array written by the UI, an already
+// parsed array, or a plain comma-separated list. Unknown keys are dropped and
+// the result always comes back in the canonical order. A value that names no
+// known field at all is treated as unreadable and falls back to "compare every
+// field", so a corrupted or outdated value can never silently switch a check
+// off; only a deliberately empty list means "compare nothing".
+function reconParseCompareFields(raw) {
+  if (raw === null || raw === undefined) return reconCompareFieldsDefault();
+  let list = null;
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else {
+    const text = String(raw).trim();
+    if (!text) return reconCompareFieldsDefault();
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch (err) {
+      list = text.split(",");
+    }
+  }
+  if (!Array.isArray(list)) return reconCompareFieldsDefault();
+  const wanted = new Set(list.map((v) => String(v).trim().toLowerCase()));
+  const picked = RECON_COMPARE_FIELDS.filter((key) => wanted.has(key));
+  if (list.length > 0 && picked.length === 0) return reconCompareFieldsDefault();
+  return picked;
+}
+
+// Turn one field on or off, returning a new list in the canonical order.
+function reconToggleCompareField(fields, key, on) {
+  if (!RECON_COMPARE_FIELDS.includes(key)) {
+    return reconParseCompareFields(fields);
+  }
+  const next = new Set(reconParseCompareFields(fields));
+  if (on) next.add(key);
+  else next.delete(key);
+  return RECON_COMPARE_FIELDS.filter((k) => next.has(k));
+}
+
+function reconIsCompareFieldEnabled(fields, key) {
+  return reconParseCompareFields(fields).includes(key);
+}
+
+// Whether a field is actually compared in a report: it must be switched on in
+// the compare toggles AND the file must have its column. `fileFields` may be
+// omitted (older cached reports), in which case only the toggles matter.
+function reconIsCompareFieldChecked(compareFields, fileFields, key) {
+  return (
+    reconIsCompareFieldEnabled(compareFields, key) &&
+    reconIsCompareFieldEnabled(fileFields, key)
+  );
+}
 
 function reconPad(n) {
   return String(n).padStart(2, "0");
@@ -145,6 +335,37 @@ function reconTermDays(value) {
   return null;
 }
 
+// Turn a price cell into a number. Only the amount is read: currency words,
+// codes and symbols ("лв", "EUR", "TL", "€", "₺") are dropped, because two
+// prices are compared by their number and never by the currency type. The
+// reports write prices as "1234.56", "1234,56" (decimal comma), "1.234,56" and
+// "1 234,56". Returns null for an empty or unreadable cell, so a blank price
+// never looks like a zero.
+function reconPrice(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  let s = String(value).replace(/[^\d.,-]/g, "");
+  // Currency text leaves stray punctuation behind ("45,50 лв." -> "45,50."),
+  // so a separator at either end cannot be part of the number.
+  s = s.replace(/^[.,]+|[.,]+$/g, "");
+  if (!s || !/\d/.test(s)) return null;
+  const lastDot = s.lastIndexOf(".");
+  const lastComma = s.lastIndexOf(",");
+  if (lastDot >= 0 && lastComma >= 0) {
+    // Both separators present: the last one is the decimal separator and the
+    // other one groups thousands ("1.234,56" and "1,234.56" both mean 1234.56).
+    const decimal = lastDot > lastComma ? "." : ",";
+    const thousands = decimal === "." ? "," : ".";
+    s = s.split(thousands).join("");
+    s = s.replace(decimal, ".");
+  } else if (lastComma >= 0) {
+    // A single comma is the decimal separator, as the Bulgarian files write it.
+    s = s.replace(",", ".");
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Normalise a date coming from the server to a local "YYYY-MM-DD".
 function reconDbDate(value) {
   if (!value) return "";
@@ -160,6 +381,34 @@ function reconDbDate(value) {
   )}`;
 }
 
+// The creation-date range of the report (the two date inputs of the Reconcile
+// tab). The inputs already hold ISO dates, but a reversed pair is swapped
+// instead of being taken literally: "07.10 - 05.10" then still covers both
+// days instead of reporting every insurance as missing. An empty side leaves
+// that end of the range open.
+function reconDateRange(from, to) {
+  const first = reconDbDate(from);
+  const second = reconDbDate(to);
+  if (first && second && first > second) {
+    return { from: second, to: first };
+  }
+  return { from: first, to: second };
+}
+
+// Whether an insurance's creation date falls inside the range (both ends
+// inclusive). A range with neither side filled in matches nothing, which is
+// how clearing both date fields switches the "missing from file" check off.
+function reconDateInRange(value, range) {
+  const day = reconDbDate(value);
+  if (!day) return false;
+  const from = (range && range.from) || "";
+  const to = (range && range.to) || "";
+  if (!from && !to) return false;
+  if (from && day < from) return false;
+  if (to && day > to) return false;
+  return true;
+}
+
 function reconAddDays(ymd, days) {
   const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m || !Number.isFinite(days)) return "";
@@ -172,17 +421,61 @@ function reconShowDate(ymd) {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : "";
 }
 
+// A stored duration (in days) written the way the reports do: 30 -> "1M",
+// 90 -> "3M", anything else in days ("15D", "365D"). Empty/invalid -> "".
+function reconShowDuration(days) {
+  if (days === undefined || days === null || days === "") return "";
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "";
+  if (n === 30) return "1M";
+  if (n === 90) return "3M";
+  return `${n}D`;
+}
+
+// A price for display: the parsed amount with at most two decimals, or the
+// cell's own text when it cannot be read as a number (so nothing is hidden).
+function reconShowPrice(value) {
+  const n = reconPrice(value);
+  return n === null ? reconCellText(value) : String(Math.round(n * 100) / 100);
+}
+
 function reconCellText(value) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
 }
 
+// The columns every report must have, given the fields the user is comparing:
+// the required ones plus "valid until", which may come from the term/duration
+// column instead of its own date column.
+//
+// A field whose compare button is unticked is not required: the file may omit
+// its column, and the report must not reject it for a column that is not being
+// looked at. The optional columns (duration, price) stay optional even when
+// ticked, because not every report layout prints them; their differences are
+// then reported as not compared (reconFileFields). With no argument every field
+// counts as ticked, which keeps the original behaviour.
+function reconRequiredColumns(compareFields) {
+  return RECON_COLUMNS.filter(
+    (c) =>
+      reconIsCompareFieldEnabled(compareFields, c.key) &&
+      (!c.optional || c.key === "to")
+  );
+}
+
 // Locate the header row and map each required column to its index. A column
 // matches any of its accepted header spellings; "valid until" is satisfied by
-// either an explicit "ВАЛИДЕН ДО" column or a term column ("СРОК" etc.).
-function reconFindColumns(rows) {
+// either an explicit "ВАЛИДЕН ДО" column or the term/duration column ("СРОК"
+// etc.), from which the end date is derived.
+//
+// `compareFields` (optional) is the set of fields ticked in the compare
+// buttons. Only its columns are required - unticking a field lets a file
+// without that column reconcile. Omitting it requires every field, as before.
+function reconFindColumns(rows, compareFields) {
+  const required = reconRequiredColumns(compareFields);
+  const requiredKeys = required.map((c) => c.key);
+  const requiredTo = requiredKeys.includes("to");
+  const maxScore = required.length;
   const limit = Math.min(rows.length, 50);
-  const searchColumns = [...RECON_COLUMNS, RECON_TERM_COLUMN];
   let best = null;
   for (let r = 0; r < limit; r++) {
     const cells = rows[r] || [];
@@ -190,31 +483,57 @@ function reconFindColumns(rows) {
     cells.forEach((cell, idx) => {
       const key = reconHeaderKey(cell);
       if (!key) return;
-      for (const col of searchColumns) {
+      for (const col of RECON_COLUMNS) {
         if (found[col.key] !== undefined) continue;
         if (col.headers.some((h) => reconHeaderKey(h) === key)) {
           found[col.key] = idx;
         }
       }
     });
-    const required = RECON_COLUMNS.filter((c) => !c.optional);
-    const requiredFound = required.filter(
+    const requiredFound = requiredKeys.filter(
+      (key) => key !== "to" && found[key] !== undefined
+    ).length;
+    const toSatisfied = found.to !== undefined || found.duration !== undefined;
+    const score = requiredFound + (requiredTo && toSatisfied ? 1 : 0);
+    // Ties go to the row that recognises more columns in total, so the header
+    // row is still found when only optional fields are required (or none).
+    const totalFound = RECON_COLUMNS.filter(
       (c) => found[c.key] !== undefined
     ).length;
-    const toSatisfied = found.to !== undefined || found.term !== undefined;
-    const score = requiredFound + (toSatisfied ? 1 : 0);
-    const maxScore = required.length + 1;
-    if (!best || score > best.score) best = { row: r, found, score };
-    if (score === maxScore) break;
-  }
-  if (!best || best.score === 0) return { missing: RECON_COLUMNS };
-  const missing = RECON_COLUMNS.filter((c) => {
-    if (c.key === "to") {
-      return best.found.to === undefined && best.found.term === undefined;
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && totalFound > best.totalFound)
+    ) {
+      best = { row: r, found, score, totalFound };
     }
-    return !c.optional && best.found[c.key] === undefined;
+    if (score === maxScore && maxScore > 0) break;
+  }
+  // Nothing recognisable anywhere: report the columns the ticked fields need.
+  if (!best || (maxScore > 0 && best.score === 0)) {
+    return { missing: required };
+  }
+  const missing = required.filter((c) => {
+    if (c.key === "to") {
+      return best.found.to === undefined && best.found.duration === undefined;
+    }
+    return best.found[c.key] === undefined;
   });
   return { headerRow: best.row, index: best.found, missing };
+}
+
+// The fields the file actually provides. Optional columns (duration, price) may
+// be missing from a given report, and a column the file does not have cannot be
+// compared: reconcileReport passes this set on so such a field is reported as
+// "not compared" instead of flagging every row (see reconCompareRow).
+function reconFileFields(index) {
+  const found = index || {};
+  return RECON_COLUMNS.filter((col) => {
+    if (found[col.key] !== undefined) return true;
+    // The term column also derives the end date, so "valid until" is present
+    // even when the file has no explicit ВАЛИДЕН ДО column.
+    return col.key === "to" && found.duration !== undefined;
+  }).map((col) => col.key);
 }
 
 function reconParseFileRows(rows, headerRow, index) {
@@ -239,15 +558,12 @@ function reconParseFileRows(rows, headerRow, index) {
     if (empty) continue;
 
     const fromKey = reconFileDate(raw.from);
+    const durationDays = reconTermDays(raw.duration);
     let toRaw = reconCellText(raw.to);
     let toKey = reconFileDate(raw.to);
-    if (!toKey && index.term !== undefined) {
-      const termText = reconCellText(cells[index.term]);
-      const days = reconTermDays(termText);
-      if (days !== null && fromKey) {
-        toKey = reconAddDays(fromKey, days);
-        if (!toRaw) toRaw = termText;
-      }
+    if (!toKey && durationDays !== null && fromKey) {
+      toKey = reconAddDays(fromKey, durationDays);
+      if (!toRaw) toRaw = reconCellText(raw.duration);
     }
 
     out.push({
@@ -259,6 +575,13 @@ function reconParseFileRows(rows, headerRow, index) {
       toRaw,
       fromKey,
       toKey,
+      // Duration and price are kept raw for the display and parsed for the
+      // compare: "3M" stays visible as the file wrote it, but compares as 90
+      // days, and "45,50 лв." compares as 45.5.
+      durationRaw: reconCellText(raw.duration),
+      durationDays,
+      priceRaw: reconCellText(raw.price),
+      price: reconPrice(raw.price),
     });
   }
   return out;
@@ -267,48 +590,100 @@ function reconParseFileRows(rows, headerRow, index) {
 function reconDbValues(ins) {
   const start = reconDbDate(ins.StartDate);
   const duration = Number(ins.Duration);
-  const end =
-    start && ins.Duration !== null && ins.Duration !== undefined
-      ? reconAddDays(start, duration)
-      : "";
+  const hasDuration = ins.Duration !== null && ins.Duration !== undefined;
+  const end = start && hasDuration ? reconAddDays(start, duration) : "";
   return {
     policy: reconCellText(ins.PolicyNumber),
     blank: reconCellText(ins.BlancNumber),
     car: reconCellText(ins.CarNumber),
     fromKey: start,
     toKey: end,
+    durationDays: hasDuration && Number.isFinite(duration) ? duration : null,
+    price: reconPrice(ins.Price),
   };
 }
 
 // Compare one file row with one insurance, returning per-field results.
-function reconCompareRow(fileRow, ins) {
+//
+// `compareFields` (optional) is the set of fields to check (see
+// RECON_COMPARE_FIELDS). A field that is switched off never counts as a
+// mismatch and is flagged `ignored: true`, so the results screen can show its
+// values for reference without highlighting them. Omitting the argument
+// compares every field, which is the default.
+//
+// `fileFields` (optional) is the set of columns the file actually has (see
+// reconFileFields). A field whose column is missing is ignored exactly like one
+// switched off by hand - otherwise a report without a price column would flag
+// every row.
+function reconCompareRow(fileRow, ins, compareFields, fileFields) {
+  const enabled = new Set(reconParseCompareFields(compareFields));
+  const present =
+    fileFields === undefined
+      ? null
+      : new Set(reconParseCompareFields(fileFields));
+  const checked = (key) => enabled.has(key) && (!present || present.has(key));
   const db = reconDbValues(ins);
+  const field = (key, fileValue, dbValue, equal) => ({
+    file: fileValue,
+    db: dbValue,
+    mismatch: checked(key) && !equal,
+    ignored: !checked(key),
+  });
   const fields = {
-    policy: {
-      file: fileRow.policy,
-      db: db.policy,
-      mismatch: reconNormPolicy(fileRow.policy) !== reconNormPolicy(db.policy),
-    },
-    blank: {
-      file: fileRow.blank,
-      db: db.blank,
-      mismatch: reconNormId(fileRow.blank) !== reconNormId(db.blank),
-    },
-    from: {
-      file: fileRow.fromKey ? reconShowDate(fileRow.fromKey) : fileRow.fromRaw,
-      db: reconShowDate(db.fromKey),
-      mismatch: !fileRow.fromKey || fileRow.fromKey !== db.fromKey,
-    },
-    to: {
-      file: fileRow.toKey ? reconShowDate(fileRow.toKey) : fileRow.toRaw,
-      db: reconShowDate(db.toKey),
-      mismatch: !fileRow.toKey || fileRow.toKey !== db.toKey,
-    },
-    car: {
-      file: fileRow.car,
-      db: db.car,
-      mismatch: reconNormCar(fileRow.car) !== reconNormCar(db.car),
-    },
+    policy: field(
+      "policy",
+      fileRow.policy,
+      db.policy,
+      reconNormPolicy(fileRow.policy) === reconNormPolicy(db.policy)
+    ),
+    blank: field(
+      "blank",
+      fileRow.blank,
+      db.blank,
+      reconNormId(fileRow.blank) === reconNormId(db.blank)
+    ),
+    from: field(
+      "from",
+      fileRow.fromKey ? reconShowDate(fileRow.fromKey) : fileRow.fromRaw,
+      reconShowDate(db.fromKey),
+      !!fileRow.fromKey && fileRow.fromKey === db.fromKey
+    ),
+    to: field(
+      "to",
+      fileRow.toKey ? reconShowDate(fileRow.toKey) : fileRow.toRaw,
+      reconShowDate(db.toKey),
+      !!fileRow.toKey && fileRow.toKey === db.toKey
+    ),
+    car: field(
+      "car",
+      fileRow.car,
+      db.car,
+      reconNormCar(fileRow.car) === reconNormCar(db.car)
+    ),
+    // Duration compares in days: the file's term shorthand is parsed first, so
+    // "3M" and a stored 90 agree.
+    duration: field(
+      "duration",
+      fileRow.durationRaw || reconShowDuration(fileRow.durationDays),
+      reconShowDuration(db.durationDays),
+      fileRow.durationDays !== null &&
+        fileRow.durationDays !== undefined &&
+        db.durationDays !== null &&
+        fileRow.durationDays === db.durationDays
+    ),
+    // Prices are compared as amounts: the currency (the sheet's ЕВРО/ЛЕВА/…
+    // columns, a "лв"/"EUR" suffix or the policy's CurrencyType) is never part
+    // of the comparison, only the number is. Rounded to cents, so "45,50" in
+    // the file and "45.5" in the database agree.
+    price: field(
+      "price",
+      reconShowPrice(fileRow.priceRaw),
+      reconShowPrice(db.price),
+      fileRow.price !== null &&
+        fileRow.price !== undefined &&
+        db.price !== null &&
+        Math.abs(fileRow.price - db.price) < 0.005
+    ),
   };
   const count = Object.values(fields).filter((f) => f.mismatch).length;
   return { fields, count };
