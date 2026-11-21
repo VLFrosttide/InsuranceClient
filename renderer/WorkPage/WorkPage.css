@@ -1378,6 +1378,11 @@ input[type="file"].hidden {
   white-space: nowrap;
   font-weight: 600;
 }
+/* The required-columns table is plain reference text, not rows to act on, so
+   it keeps no hover ring (see `tbody tr:hover` in app.css). */
+.recon-hint-table tbody tr:hover {
+  outline: none;
+}
 /* Compare-field toggles: one pill per compared column, saved in localStorage.
    They are real buttons (aria-pressed), so the whole pill is the hit area and
    they can be tabbed to and flipped from the keyboard like any other button.

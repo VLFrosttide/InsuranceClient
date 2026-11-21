@@ -10,6 +10,11 @@
   --danger: #e5534b;
   --success: #3fb950;
   --warning: #d29922;
+  /* Ring drawn around the table row under the pointer (see `tbody tr:hover`
+     below). Only a step brighter than the row separators, so the row can be
+     followed across a wide table without the line calling attention to
+     itself. */
+  --row-hover-ring: rgba(232, 236, 243, 0.18);
   /* Height of the auto-update banner at the top of the window. While the banner
      is visible the page is pushed down by exactly this much. */
   --update-banner-h: 48px;
@@ -283,6 +288,17 @@ th {
 }
 tr:last-child td {
   border-bottom: none;
+}
+
+/* Ring the whole row under the pointer, so the eye can follow it across a wide
+   table to its numbers and actions without losing the line. Deliberately faint:
+   one hairline just brighter than the separators between rows. Drawn with an
+   outline rather than a border so nothing reflows while it appears, and only on
+   body rows - a header row is not something you hover to read. An outline also
+   leaves the per-row tints and the leading box-shadow stripes untouched. */
+tbody tr:hover {
+  outline: 1px solid var(--row-hover-ring);
+  outline-offset: -1px;
 }
 
 /* Annulled policies are tinted by who was at fault, so worker / broker / no
