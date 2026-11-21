@@ -5634,6 +5634,20 @@ function dayPagerControls(date, onDate) {
   return wrap;
 }
 
+// True while #Content shows THIS broker's balance history. Re-reading it must
+// keep the rows on screen until the fresh figures arrive: clearing the page for
+// the loading line first blanked the window and threw the scroll position away,
+// which read like a page refresh on every delete, edit and socket push.
+function brokerHistoryOnScreen(broker) {
+  const host = Content.querySelector('[data-brokers-view="history"]');
+  return !!host && Number(host.dataset.brokerId) === Number(broker.id);
+}
+
+// Every re-read takes a ticket; only the newest one may paint. The server pushes
+// the balance change for a deleted movement while the delete's own re-read is
+// still in flight, so an older answer must not repaint over the newer page.
+let brokerHistoryRequestId = 0;
+
 // The broker balance history "page": every balance movement of the broker,
 // newest first, with a back button to the list. It goes all the way back to the
 // broker's first movement, and a calendar picker scopes it to a single day.
@@ -5644,7 +5658,11 @@ function dayPagerControls(date, onDate) {
 // from this broker's history entirely. Retired reduce/adjust rows stay listed
 // with a tag, never move the balance and can be soft-deleted from their row.
 async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = false) {
-  Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
+  const onScreen = brokerHistoryOnScreen(broker);
+  const requestId = ++brokerHistoryRequestId;
+  if (!onScreen) {
+    Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
+  }
   try {
     const pageSize = 40;
     const params = new URLSearchParams({
@@ -5660,9 +5678,17 @@ async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = f
     }
     if (includeDeleted) params.set("includeDeleted", "1");
     const data = await api(`/brokers/${broker.id}/history?${params.toString()}`);
+    if (requestId !== brokerHistoryRequestId) return;
     renderBrokerHistory(broker, data, page, date, includeDeleted);
   } catch (err) {
+    if (requestId !== brokerHistoryRequestId) return;
     const message = translateError(err && err.message ? err.message : "");
+    // A failed re-read keeps the page the user is already looking at intact;
+    // only a page that had nothing on it yet gives way to the error line.
+    if (onScreen) {
+      toast(`${t("errorPrefix")}: ${message}`, "error");
+      return;
+    }
     Content.replaceChildren(
       el("p", `${t("errorPrefix")}: ${message}`, { class: "muted" })
     );

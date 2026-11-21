@@ -353,6 +353,47 @@ check("the history pager sits above and below the table", () => {
   );
 });
 
+check("re-reading the history keeps the page instead of blanking it", () => {
+  const start = src.indexOf("async function brokerHistoryView(");
+  const end = src.indexOf("function renderBrokerHistory(", start);
+  ok(start >= 0 && end > start, "brokerHistoryView block not found");
+  const block = src.slice(start, end);
+  ok(
+    block.includes("brokerHistoryOnScreen(broker)"),
+    "the view checks whether its own history is already on screen"
+  );
+  ok(
+    block.indexOf("if (!onScreen)") <
+      block.indexOf('Content.replaceChildren(el("p", t("loading")'),
+    "the loading line only replaces a view that is not already up"
+  );
+  ok(
+    block.includes("if (requestId !== brokerHistoryRequestId) return;"),
+    "a slow response is dropped instead of repainting over a newer page"
+  );
+  ok(
+    block.includes("if (onScreen) {") &&
+      block.includes('toast(`${t("errorPrefix")}: ${message}`, "error")'),
+    "a failed re-read keeps the rows and reports the error in a toast"
+  );
+
+  // The helper is real code, not just a marker: it must match the broker the
+  // marker belongs to (the socket handler keys on the same attributes).
+  const helperStart = src.indexOf("function brokerHistoryOnScreen(");
+  const helperEnd = src.indexOf("\n}\n", helperStart);
+  ok(helperStart >= 0 && helperEnd > helperStart, "the helper is defined");
+  const host = { dataset: { brokersView: "history", brokerId: "7" } };
+  const fakeContent = { querySelector: () => host };
+  const helper = new Function(
+    "Content",
+    src.slice(helperStart, helperEnd + 3) + "\nreturn brokerHistoryOnScreen;"
+  )(fakeContent);
+  ok(helper({ id: 7 }), "the same broker's history is on screen");
+  ok(!helper({ id: 8 }), "another broker's history is not this page");
+  fakeContent.querySelector = () => null;
+  ok(!helper({ id: 7 }), "a different view (the brokers list) is not this page");
+});
+
 check("retired movement strings exist in EN and BG", () => {
   for (const key of [
     "retiredTag",
