@@ -207,13 +207,15 @@ const BROKER_STUBS = {
     recordBrokerPayment: async (conn, brokerId, amount, type, meta = {}) => {
       const [r] = await conn.query(
         `INSERT INTO broker_balance_movements
-           (BrokerId, Amount, Type, Reason, Author, BlancNumber, CreatedAt, Branch, Currency)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (BrokerId, Amount, Type, Reason, Recipient, Author, BlancNumber,
+            CreatedAt, Branch, Currency)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           brokerId,
           amount,
           type,
           meta.reason || "",
+          meta.recipient || null,
           meta.author || "",
           null,
           meta.createdAt || null,
@@ -359,7 +361,11 @@ const reportFake = {
       for (const m of rows) byBroker[m.BrokerId] = (byBroker[m.BrokerId] || 0) + Number(m.Amount);
       return [Object.entries(byBroker).map(([brokerId, amount]) => ({ brokerId: Number(brokerId), amount }))];
     }
-    if (s.startsWith("SELECT BrokerId AS brokerId,") && s.includes("FROM insurance")) {
+    if (
+      (s.startsWith("SELECT BrokerId AS brokerId,") ||
+        s.startsWith("SELECT i.BrokerId AS brokerId,")) &&
+      s.includes("FROM insurance")
+    ) {
       const rows = reportInsurances.filter(
         (r) => Number(r.Deleted) !== 1 && r.CreationDate >= p[0] && r.CreationDate < p[1]
       );
@@ -423,6 +429,7 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
         amount: 50,
         currency: "TRY",
         reason: "Owner collected",
+        Recipient: "  Owner  ",
         CreatedAt: "2026-11-16 12:30:00",
       },
     });
@@ -430,7 +437,11 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     eq(db.brokers[0].CashBalance, 120, "70 + 50");
     eq(db.movements.length, 1, "one movement");
     const m = db.movements[0];
-    eq([m.Type, m.Amount, m.Reason, m.Author], ["handover", 50, "Owner collected", "worker1"], "stored movement");
+    eq(
+      [m.Type, m.Amount, m.Reason, m.Recipient, m.Author],
+      ["handover", 50, "Owner collected", "Owner", "worker1"],
+      "stored movement"
+    );
     eq(m.CreatedAt, "2026-11-16 12:30:00", "client's own time");
     eq([m.Branch, m.Currency], [null, "TRY"], "no branch, but the currency is kept");
   });
@@ -439,16 +450,16 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     resetDb();
     await callBroker("post", HANDOVER, {
       params: { id: "1" },
-      body: { amount: 50, reason: "Owner collected" },
+      body: { amount: 50, reason: "Owner collected", Recipient: "Owner" },
     });
     eq(db.sql.filter((s) => /cash_transactions/i.test(s)), [], "no cash_transactions statement");
   });
 
   await check("a hand-over is rejected without a positive amount or a reason", async () => {
     for (const body of [
-      { amount: 0, reason: "Owner" },
-      { amount: -5, reason: "Owner" },
-      { amount: "abc", reason: "Owner" },
+      { amount: 0, reason: "Owner", Recipient: "Owner" },
+      { amount: -5, reason: "Owner", Recipient: "Owner" },
+      { amount: "abc", reason: "Owner", Recipient: "Owner" },
     ]) {
       resetDb();
       const res = await callBroker("post", HANDOVER, { params: { id: "1" }, body });
@@ -459,16 +470,38 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     resetDb();
     const noReason = await callBroker("post", HANDOVER, {
       params: { id: "1" },
-      body: { amount: 10 },
+      body: { amount: 10, Recipient: "Owner" },
     });
     eq([noReason.status, noReason.body.error], [400, "reason is required"], "reason is required");
+  });
+
+  await check("a hand-over needs the person who received the money", async () => {
+    for (const recipient of [undefined, null, "", "   "]) {
+      resetDb();
+      const body = { amount: 10, reason: "Owner collected" };
+      if (recipient !== undefined) body.Recipient = recipient;
+      const res = await callBroker("post", HANDOVER, { params: { id: "1" }, body });
+      eq(res.status, 400, `rejected ${JSON.stringify(recipient)}`);
+      eq(
+        res.body,
+        { error: "recipient is required" },
+        "a clear reason"
+      );
+      eq(db.movements.length, 0, "nothing recorded");
+      eq(db.brokers[0].CashBalance, 70, "balance untouched");
+    }
   });
 
   await check("a hand-over with a malformed date is rejected", async () => {
     resetDb();
     const res = await callBroker("post", HANDOVER, {
       params: { id: "1" },
-      body: { amount: 10, reason: "Owner", CreatedAt: "16.11.2026" },
+      body: {
+        amount: 10,
+        reason: "Owner",
+        Recipient: "Owner",
+        CreatedAt: "16.11.2026",
+      },
     });
     eq(res.status, 400, "rejected");
     eq(db.movements.length, 0, "nothing recorded");
@@ -478,7 +511,7 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     resetDb();
     const res = await callBroker("post", HANDOVER, {
       params: { id: "99" },
-      body: { amount: 10, reason: "Owner" },
+      body: { amount: 10, reason: "Owner", Recipient: "Owner" },
     });
     eq(res.status, 404, "not found");
     eq(db.movements.length, 0, "nothing recorded");
@@ -507,7 +540,7 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     resetDb();
     await callBroker("post", HANDOVER, {
       params: { id: "1" },
-      body: { amount: 50, reason: "Owner collected" },
+      body: { amount: 50, reason: "Owner collected", Recipient: "Owner" },
     });
     const id = String(db.movements[0].id);
     const res = await callBroker("patch", PATCH_MOVEMENT, {
@@ -551,7 +584,7 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     resetDb();
     await callBroker("post", HANDOVER, {
       params: { id: "1" },
-      body: { amount: 50, reason: "Owner collected" },
+      body: { amount: 50, reason: "Owner collected", Recipient: "Owner" },
     });
     const id = String(db.movements[0].id);
     const res = await callBroker("patch", PATCH_MOVEMENT, {
@@ -561,6 +594,124 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
     eq(res.status, 200, "accepted");
     eq(db.movements[0].Amount, 60, "the movement is corrected");
     eq(db.brokers[0].CashBalance, 130, "70 + 60");
+  });
+
+  await check("an admin can date a hand-over on an earlier day", async () => {
+    resetDb();
+    const res = await callBroker("post", HANDOVER, {
+      params: { id: "1" },
+      user: { username: "admin1", role: 1 },
+      body: {
+        amount: 30,
+        currency: "EUR",
+        reason: "Owner collected last week",
+        Recipient: "Owner",
+        date: "2026-10-01",
+        CreatedAt: "2026-11-20 12:30:00",
+        TzOffset: 0,
+      },
+    });
+    eq(res.status, 200, "accepted");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-01 12:30:00",
+      "the picked day keeps the time of day"
+    );
+  });
+
+  await check("a worker cannot date a hand-over on an earlier day", async () => {
+    resetDb();
+    const res = await callBroker("post", HANDOVER, {
+      params: { id: "1" },
+      body: {
+        amount: 30,
+        reason: "Owner collected last week",
+        Recipient: "Owner",
+        date: "2026-10-01",
+        CreatedAt: "2026-11-20 12:30:00",
+        TzOffset: 0,
+      },
+    });
+    eq(res.status, 403, "refused");
+    eq(
+      res.body.error,
+      "Only an admin can record a hand-over on an earlier date",
+      "a clear reason"
+    );
+    eq(db.movements.length, 0, "nothing recorded");
+    eq(db.brokers[0].CashBalance, 70, "balance untouched");
+  });
+
+  await check("a hand-over's date and recipient can be corrected later", async () => {
+    resetDb();
+    await callBroker("post", HANDOVER, {
+      params: { id: "1" },
+      body: {
+        amount: 50,
+        reason: "Owner collected",
+        Recipient: "Owner",
+        CreatedAt: "2026-11-16 12:30:00",
+      },
+    });
+    const id = String(db.movements[0].id);
+    const res = await callBroker("patch", PATCH_MOVEMENT, {
+      params: { id: "1", movementId: id },
+      user: { username: "admin1", role: 1 },
+      body: { Recipient: "Maria", date: "2026-10-02", TzOffset: 0 },
+    });
+    eq(res.status, 200, "accepted");
+    eq(db.movements[0].Recipient, "Maria", "the recipient is corrected");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-02 12:30:00",
+      "the date is corrected, the time of day is kept"
+    );
+    eq(db.brokers[0].CashBalance, 120, "a cosmetic correction never moves money");
+  });
+
+  await check("a hand-over cannot lose its recipient when corrected", async () => {
+    resetDb();
+    await callBroker("post", HANDOVER, {
+      params: { id: "1" },
+      body: {
+        amount: 50,
+        reason: "Owner collected",
+        Recipient: "Owner",
+      },
+    });
+    const id = String(db.movements[0].id);
+    const res = await callBroker("patch", PATCH_MOVEMENT, {
+      params: { id: "1", movementId: id },
+      body: { Recipient: "   " },
+    });
+    eq([res.status, res.body.error], [400, "recipient is required"], "refused");
+    eq(db.movements[0].Recipient, "Owner", "the recipient is unchanged");
+  });
+
+  await check("only a hand-over can be moved to another date", async () => {
+    resetDb();
+    db.movements.push({
+      id: 1,
+      BrokerId: 1,
+      Amount: 80,
+      Type: "increase",
+      Reason: "Branch top-up",
+      Recipient: null,
+      Author: "worker1",
+      BlancNumber: null,
+      CreatedAt: "2026-11-16 12:30:00",
+      Branch: BRANCH,
+      Currency: "EUR",
+      Deleted: 0,
+    });
+    db.nextMovement = 2;
+    const res = await callBroker("patch", PATCH_MOVEMENT, {
+      params: { id: "1", movementId: "1" },
+      user: { username: "admin1", role: 1 },
+      body: { date: "2026-10-02", TzOffset: 0 },
+    });
+    eq([res.status, res.body.error], [400, "only a hand-over can change its date"], "refused");
+    eq(db.movements[0].CreatedAt, "2026-11-16 12:30:00", "the date is unchanged");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

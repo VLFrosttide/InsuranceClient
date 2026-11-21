@@ -42,6 +42,7 @@ function addMovement(brokerId, amount, createdAt, extra = {}) {
     Amount: amount,
     Type: extra.Type || "increase",
     Reason: extra.Reason || "",
+    Recipient: extra.Recipient === undefined ? null : extra.Recipient,
     Author: extra.Author || "",
     BlancNumber: extra.BlancNumber === undefined ? null : extra.BlancNumber,
     CreatedAt: createdAt,
@@ -61,6 +62,7 @@ function addMovement(brokerId, amount, createdAt, extra = {}) {
       Amount: amount,
       Type: type,
       Reason: extra.Reason || "",
+      Recipient: extra.Recipient === undefined ? null : extra.Recipient,
       Author: extra.Author || "",
       Branch: extra.Branch === undefined ? null : extra.Branch,
       Currency: extra.Currency || "EUR",
@@ -328,6 +330,45 @@ async function query(sql, params = []) {
     ];
   }
   if (
+    s === "SELECT BlancNumber FROM insurance WHERE BrokerId = ? AND Deleted = 0"
+  ) {
+    // The history keeps only the rows of policies that still exist for the
+    // broker (a deleted or moved-away policy takes its charge history with it).
+    // A test that records only movements (no policy rows) keeps them: the old
+    // ledger is then the only source of blanc numbers.
+    const policies = db.policies
+      .filter((x) => Number(x.BrokerId) === Number(p[0]) && x.Deleted !== 1)
+      .map((x) => ({ BlancNumber: x.BlancNumber }));
+    if (policies.length) return [policies];
+    return [
+      db.movements
+        .filter((m) => Number(m.BrokerId) === Number(p[0]) && m.BlancNumber)
+        .map((m) => ({ BlancNumber: m.BlancNumber })),
+    ];
+  }
+  if (
+    s.startsWith(
+      "SELECT COALESCE(SUM(m.Amount), 0) AS Voided FROM broker_balance_movements m JOIN insurance i"
+    )
+  ) {
+    // Policy rows an admin soft-deleted (VOIDs) of a live policy.
+    const live = new Set(
+      db.policies
+        .filter((x) => Number(x.BrokerId) === Number(p[0]) && x.Deleted !== 1)
+        .map((x) => String(x.BlancNumber ?? "").trim())
+    );
+    const rows = db.movements.filter(
+      (m) =>
+        Number(m.BrokerId) === Number(p[0]) &&
+        Number(m.Deleted) === 1 &&
+        ["policy", "price_change", "annulment", "deletion"].includes(
+          String(m.Type || "").trim()
+        ) &&
+        live.has(String(m.BlancNumber ?? "").trim())
+    );
+    return [[{ Voided: rows.reduce((sum, m) => sum + Number(m.Amount || 0), 0) }]];
+  }
+  if (
     s.startsWith(
       "SELECT Type, Amount FROM broker_balance_movements WHERE BrokerId = ? AND Deleted = 0 AND Type NOT IN"
     )
@@ -423,6 +464,7 @@ const STUBS = {
           Amount: Number(change.amount) || 0,
           Type: type,
           Reason: change.reason || "",
+          Recipient: change.recipient === undefined ? null : change.recipient,
           Author: change.author || "",
           Branch: change.branch === undefined ? null : change.branch,
           Currency: change.currency || "EUR",
@@ -439,7 +481,9 @@ const STUBS = {
       row.Amount = Number(change.amount) || 0;
       row.Type = type;
       if (change.reason !== undefined) row.Reason = change.reason;
+      if (change.recipient !== undefined) row.Recipient = change.recipient;
       if (change.author !== undefined) row.Author = change.author;
+      if (change.createdAt !== undefined) row.CreatedAt = change.createdAt;
       row.Deleted = change.deleted ? 1 : 0;
     },
   },
@@ -629,6 +673,22 @@ resetDb();
     eq(r.body.netChange, 70, "net change");
     eq(r.body.balanceAtStart, 0, "balance at window start");
     eq(r.body.balanceAtEnd, 70, "balance at the window end");
+  });
+
+  await check("the history returns who received a hand-over", async () => {
+    resetDb();
+    addMovement(1, 50, "2026-10-15 10:00:00", {
+      Type: "handover",
+      Recipient: "Owner",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.movements.length, 1, "one movement");
+    eq(r.body.movements[0].Recipient, "Owner", "the recipient is returned");
   });
 
   await check("an annulled policy's sale shows its tax and its refund row disappears", async () => {
@@ -1740,6 +1800,25 @@ resetDb();
     eq(r.status, 200, "status");
     eq(db.payments[0].Amount, 150, "the money table is corrected too");
     eq(db.brokers[0].CashBalance, 150, "and the rebuilt balance follows");
+  });
+
+  await check("a hand-over's corrected date and recipient reach the payments table", async () => {
+    resetDb();
+    addMovement(1, 50, "2026-10-10 12:00:00", {
+      Type: "handover",
+      Recipient: "Owner",
+    });
+
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { date: "2026-10-02", Recipient: "Maria", TzOffset: 0 },
+    });
+    eq(r.status, 200, "status");
+    eq(db.movements[0].Recipient, "Maria", "the ledger takes the recipient");
+    eq(db.movements[0].CreatedAt, "2026-10-02 12:00:00", "the ledger takes the day");
+    eq(db.payments[0].Recipient, "Maria", "the payments table takes the recipient");
+    eq(db.payments[0].CreatedAt, "2026-10-02 12:00:00", "the payments table takes the day");
+    eq(db.brokers[0].CashBalance, 70, "money is unchanged");
   });
 
   await check("a policy movement correction cannot move a rebuilt balance", async () => {

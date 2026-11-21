@@ -138,16 +138,13 @@ function makeDb({ cash = 100, rows = [] } = {}) {
       return [[{ Returned: 0 }]];
     }
     if (s.startsWith("UPDATE cash_transactions SET Type = ?")) {
-      // [Type, Amount, Currency, Reason, Recipient, id]
-      const row = txRows.find((r) => Number(r.id) === Number(p[5]));
+      // Columns are read from the statement so an optional CreatedAt (an admin
+      // moved the hand-over to another day) is applied too.
+      const m = /^UPDATE cash_transactions SET (.+?) WHERE id = \?$/.exec(s);
+      const cols = m[1].split(",").map((x) => x.trim().split(/\s+/)[0]);
+      const row = txRows.find((r) => Number(r.id) === Number(p[p.length - 1]));
       if (!row) return [{ affectedRows: 0 }];
-      Object.assign(row, {
-        Type: p[0],
-        Amount: p[1],
-        Currency: p[2],
-        Reason: p[3],
-        Recipient: p[4],
-      });
+      cols.forEach((col, i) => (row[col] = p[i]));
       return [{ affectedRows: 1 }];
     }
     if (s.startsWith("UPDATE cash_transactions SET Deleted = 1")) {
@@ -208,7 +205,11 @@ async function callRoute(method, routePath, db, { body, user = USER } = {}) {
     },
   };
   await route.handler(
-    { body, params: { id: body && body.id }, user: { username: user } },
+    {
+      body,
+      params: { id: body && body.id },
+      user: user && typeof user === "object" ? user : { username: user },
+    },
     res
   );
   return res;
@@ -423,6 +424,51 @@ const callHandover = (db, body, user = USER) =>
     eq(db.ledger, [], "nothing is recorded");
   });
 
+  await check("an admin can record a hand-over on an earlier day", async () => {
+    const db = makeDb({ cash: 100 });
+    const res = await callHandover(
+      db,
+      {
+        amount: 10,
+        reason: "Runner to the safe",
+        Recipient: "Ivan",
+        branch: BRANCH,
+        CreatedAt: "2026-11-20 18:30:00",
+        date: "2026-10-01",
+        TzOffset: 0,
+      },
+      { username: "admin1", role: 1 }
+    );
+    eq(res.code, 201, "created");
+    eq(
+      db.ledger[0].CreatedAt,
+      "2026-10-01 18:30:00",
+      "the picked day keeps the time of day"
+    );
+    eq(db.state.cash, 90, "the live drawer still drops now");
+  });
+
+  await check("a worker cannot date a hand-over", async () => {
+    const db = makeDb({ cash: 100 });
+    const res = await callHandover(db, {
+      amount: 10,
+      reason: "Runner to the safe",
+      Recipient: "Ivan",
+      branch: BRANCH,
+      CreatedAt: "2026-11-20 18:30:00",
+      date: "2026-10-01",
+      TzOffset: 0,
+    });
+    eq(res.code, 403, "refused");
+    eq(
+      res.body,
+      { error: "Only an admin can record a hand-over on an earlier date" },
+      "a clear reason"
+    );
+    eq(db.state.cash, 100, "the drawer is untouched");
+    eq(db.ledger, [], "nothing is recorded");
+  });
+
   // --- correcting / deleting a hand-over -------------------------------------
   const handoverRow = (over = {}) =>
     Object.assign(
@@ -474,6 +520,90 @@ const callHandover = (db, body, user = USER) =>
       ["handover", 45, "Courier to the bank", "Maria"],
       "the entry keeps its type and takes the new recipient"
     );
+  });
+
+  await check("an admin can change the day a hand-over is recorded on", async () => {
+    const db = makeDb({
+      cash: 60,
+      // Recorded by a worker: the admin may still correct its date.
+      rows: [handoverRow({ Username: "worker2" })],
+    });
+    const res = await callRoute(
+      "patch",
+      "/currentcash/transactions/:id",
+      db,
+      {
+        body: {
+          id: 7,
+          Amount: 40,
+          Reason: "Runner to the safe",
+          Recipient: "Ivan",
+          date: "2026-10-01",
+          TzOffset: 0,
+          CreatedAt: "2026-11-20 19:00:00",
+        },
+        user: { username: "admin1", role: 1 },
+      }
+    );
+    eq(res.code, 200, "updated");
+    eq(
+      db.txRows[0].CreatedAt,
+      "2026-10-01 18:30:00",
+      "the day is corrected, the time of day is kept"
+    );
+    eq(db.state.cash, 60, "a date-only correction leaves the drawer as it was");
+  });
+
+  await check("a worker cannot change a hand-over's day", async () => {
+    const db = makeDb({ cash: 60, rows: [handoverRow()] });
+    const res = await callRoute("patch", "/currentcash/transactions/:id", db, {
+      body: {
+        id: 7,
+        Amount: 40,
+        Reason: "Runner",
+        Recipient: "Ivan",
+        date: "2026-10-01",
+        TzOffset: 0,
+      },
+    });
+    eq(res.code, 403, "refused");
+    eq(
+      res.body,
+      { error: "Only an admin can change the date of a hand-over" },
+      "a clear reason"
+    );
+    eq(db.txRows[0].CreatedAt, "2026-10-20 18:30:00", "the date is unchanged");
+  });
+
+  await check("only a hand-over can be moved to another day", async () => {
+    const db = makeDb({
+      cash: 60,
+      rows: [
+        handoverRow({
+          Type: "reduce",
+          Recipient: null,
+          Reason: "Rent",
+          Username: "admin1",
+        }),
+      ],
+    });
+    const res = await callRoute("patch", "/currentcash/transactions/:id", db, {
+      body: {
+        id: 7,
+        Amount: 40,
+        Reason: "Rent",
+        date: "2026-10-01",
+        TzOffset: 0,
+      },
+      user: { username: "admin1", role: 1 },
+    });
+    eq(res.code, 400, "refused");
+    eq(
+      res.body,
+      { error: "only a hand-over can change its date" },
+      "a clear reason"
+    );
+    eq(db.txRows[0].CreatedAt, "2026-10-20 18:30:00", "the date is unchanged");
   });
 
   await check(

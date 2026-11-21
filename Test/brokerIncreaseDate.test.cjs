@@ -186,13 +186,15 @@ const BROKER_STUBS = {
     recordBrokerPayment: async (conn, brokerId, amount, type, meta = {}) => {
       const [r] = await conn.query(
         `INSERT INTO broker_balance_movements
-           (BrokerId, Amount, Type, Reason, Author, BlancNumber, CreatedAt, Branch, Currency)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (BrokerId, Amount, Type, Reason, Recipient, Author, BlancNumber,
+            CreatedAt, Branch, Currency)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           brokerId,
           amount,
           type,
           meta.reason || "",
+          meta.recipient || null,
           meta.author || "",
           null,
           meta.createdAt || null,
@@ -367,7 +369,7 @@ const BRANCH = "Офис Харманли";
     eq(db.movements.length, 0, "nothing recorded");
   });
 
-  await check("a hand-over ignores the increase's date field", async () => {
+  await check("a hand-over honours the admin's date field too", async () => {
     resetDb();
     const res = await callBroker("post", "/brokers/:id/handover", {
       params: { id: "1" },
@@ -376,12 +378,18 @@ const BRANCH = "Офис Харманли";
         amount: 30,
         currency: "EUR",
         reason: "Owner collected",
+        Recipient: "Owner",
         date: "2026-10-01",
         CreatedAt: "2026-11-20 12:00:00",
+        TzOffset: 0,
       },
     });
     eq(res.status, 200, "accepted");
-    eq(db.movements[0].CreatedAt, "2026-11-20 12:00:00", "the increase-only field is not used");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-01 12:00:00",
+      "the picked day becomes the hand-over's date"
+    );
     eq(db.movements[0].Branch, null, "a hand-over still carries no branch");
   });
 
@@ -410,24 +418,38 @@ const BRANCH = "Офис Харманли";
     return tail.slice(0, closing.index + closing[0].length);
   }
 
-  await check("only an admin's increase form gets the date picker, bounded at today", async () => {
+  await check("only an admin's increase/hand-over form gets the date picker, bounded at today", async () => {
     const block = cutFunction("function brokerAdjust(broker, kind) {");
     ok(
-      block.includes('const canBackdate = kind === "increase" && userRole === "1";'),
-      "admins only, and only for an increase"
+      block.includes(
+        '(kind === "increase" || kind === "handover") && userRole === "1"'
+      ),
+      "admins only, for an increase and a hand-over"
     );
     ok(
       block.includes('key: "date"') && block.includes('type: "date"'),
       "a date picker"
     );
     ok(block.includes("max: localDateString()"), "the future cannot be picked");
-    ok(block.includes('t("increaseDate")'), "its label");
-    ok(block.includes('t("increaseDateHint")'), "the explanation above the form");
+    ok(block.includes('t("increaseDate")'), "the increase label");
+    ok(block.includes('t("handoverDate")'), "the hand-over label");
+    ok(block.includes('t("increaseDateHint")'), "the increase explanation");
+    ok(block.includes('t("handoverDateHint")'), "the hand-over explanation");
     ok(
       block.includes("payload.CreatedAt = brokerMovementCreatedAt("),
       "the picked day becomes the movement's date"
     );
     ok(block.includes("payload.TzOffset"), "the server is told the client's offset");
+  });
+
+  await check("the hand-over form asks who received the money", async () => {
+    const block = cutFunction("function brokerAdjust(broker, kind) {");
+    ok(
+      block.includes('if (kind === "handover")') &&
+        block.includes('key: "Recipient"') &&
+        block.includes('t("handedTo")'),
+      "a required Received by field on a broker hand-over"
+    );
   });
 
   await check("buildForm passes a date field's min/max to the input", async () => {

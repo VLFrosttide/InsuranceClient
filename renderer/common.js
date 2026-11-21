@@ -296,6 +296,9 @@ const I18N = {
     increaseDate: "Date of the increase",
     increaseDateHint:
       "Pick the day the broker handed the money over. An earlier day is allowed: that day's reports and the branch's Cash from brokers then include it.",
+    handoverDate: "Date of the hand-over",
+    handoverDateHint:
+      "Pick the day the money changed hands. An earlier day is allowed; the time of day is kept. Only an admin can change the date of a hand-over.",
     balanceAtDayEnd: "Balance at the end of the day",
     balanceAtDayEndHint:
       "The broker's balance when the shown day ended: the starting balance plus every payment, minus every insurance up to that moment.",
@@ -1172,6 +1175,9 @@ const I18N = {
     increaseDate: "Дата на увеличението",
     increaseDateHint:
       "Изберете деня, в който брокерът е предал парите. По-ранен ден е позволен: отчетите за този ден и „Кеш от брокери“ на клона го включват.",
+    handoverDate: "Дата на предаването",
+    handoverDateHint:
+      "Изберете деня, в който парите са предадени. По-ранен ден е позволен; часът се запазва. Само администратор може да променя датата на предаване.",
     balanceAtDayEnd: "Баланс в края на деня",
     balanceAtDayEndHint:
       "Балансът на брокера в края на показания ден: началният баланс плюс всички плащания, минус всички застраховки до този момент.",

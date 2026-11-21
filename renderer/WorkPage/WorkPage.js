@@ -4458,6 +4458,18 @@ async function currentCashView(overrideBranch, overrideDate) {
         value: "",
         placeholder: t("handedToPlaceholder"),
       });
+      // A hand-over can be recorded on an earlier day by an admin: the money may
+      // have changed hands before anyone could enter it. The picker cannot name
+      // a day that has not happened yet; a worker always records "now".
+      if (isAdmin) {
+        spec.push({
+          key: "date",
+          label: t("handoverDate"),
+          type: "date",
+          value: localDateString(),
+          max: localDateString(),
+        });
+      }
     }
     const submitLabel =
       kind === "increase"
@@ -4470,9 +4482,14 @@ async function currentCashView(overrideBranch, overrideDate) {
       async (payload) => {
         // Attach the branch and the client's local creation time before sending.
         // The server stores CreatedAt as sent, instead of stamping it with the
-        // database server's (UTC) clock.
+        // database server's (UTC) clock. A hand-over's picked day keeps the
+        // current time of day and is sent to the server as `date`, so it can
+        // insist on an admin.
         payload.branch = branch;
-        payload.CreatedAt = localDateTimeNow();
+        payload.CreatedAt =
+          kind === "handover" && isAdmin
+            ? brokerMovementCreatedAt(payload.date)
+            : localDateTimeNow();
         payload.TzOffset = -new Date().getTimezoneOffset();
         await api(`/currentcash/${kind}`, {
           method: "POST",
@@ -4563,13 +4580,26 @@ async function currentCashView(overrideBranch, overrideDate) {
         value: tx.Recipient || "",
         placeholder: t("handedToPlaceholder"),
       });
+      // An admin can correct which day the hand-over belongs to. Its time of
+      // day is kept by the server; the picker cannot name a future day.
+      if (isAdmin) {
+        spec.push({
+          key: "date",
+          label: t("handoverDate"),
+          type: "date",
+          value: dateFieldIso(tx.CreatedAt),
+          max: localDateString(),
+        });
+      }
     }
     const form = buildForm(
       spec,
       async (payload) => {
         // Stamp the correction's own ledger entries with the worker's local
-        // time (the original transaction keeps its CreatedAt).
+        // time (the original transaction keeps its CreatedAt unless the admin
+        // picked another day in the date field).
         payload.CreatedAt = localDateTimeNow();
+        payload.TzOffset = -new Date().getTimezoneOffset();
         await api(`/currentcash/transactions/${tx.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -4677,7 +4707,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     (tx) => {
       const rowActions = [];
       if (String(tx.Type || "") === "handover_return") return rowActions;
-      if (String(tx.Username) === String(username)) {
+      // The author edits it; an admin may also correct any hand-over (for
+      // example its date), whoever recorded it.
+      const canEdit =
+        String(tx.Username) === String(username) ||
+        (isAdmin && String(tx.Type || "") === "handover");
+      if (canEdit) {
         rowActions.push({
           label: t("edit"),
           class: "",
@@ -5900,6 +5935,13 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
       },
       { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—" },
       { key: "Reason", label: t("reason") },
+      // Only a hand-over carries it, but the column is shown for every row so
+      // the history reads as one table: it says who received the money.
+      {
+        key: "Recipient",
+        label: t("handedTo"),
+        format: (v) => v || "—",
+      },
       { key: "Author", label: t("author"), format: (v) => v || "—" },
       {
         key: "Amount",
@@ -6100,9 +6142,27 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
     { key: "reason", label: t("reason"), value: movement.Reason || "" },
     { key: "author", label: t("author"), value: movement.Author || "" }
   );
+  if (isHandover) {
+    // Who received the money, and the day it belongs to. Both are corrected
+    // here; the server keeps the time of day of the movement.
+    spec.push({
+      key: "Recipient",
+      label: t("handedTo"),
+      value: movement.Recipient || "",
+      placeholder: t("handedToPlaceholder"),
+    });
+    spec.push({
+      key: "date",
+      label: t("handoverDate"),
+      type: "date",
+      value: dateFieldIso(movement.CreatedAt),
+      max: localDateString(),
+    });
+  }
   const form = buildForm(
     spec,
     async (payload) => {
+      payload.TzOffset = -new Date().getTimezoneOffset();
       await api(`/brokers/${broker.id}/history/${movement.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -6185,11 +6245,13 @@ function brokerAdjust(broker, kind) {
     increase: t("brokerBalanceIncreased"),
     handover: t("brokerHandoverRecorded"),
   };
-  // Admins may record a top-up on an earlier day: money the broker handed over
-  // before anyone could enter it still belongs to that day's reports and to the
-  // branch's Cash from Brokers. The date picker opens on today and cannot name
-  // a day that has not happened yet; a worker always records "now".
-  const canBackdate = kind === "increase" && userRole === "1";
+  // Admins may record a payment on an earlier day: money the broker handed over
+  // before anyone could enter it still belongs to that day's reports (and, for a
+  // top-up, to the branch's Cash from Brokers). The date picker opens on today
+  // and cannot name a day that has not happened yet; a worker always records
+  // "now".
+  const canBackdate =
+    (kind === "increase" || kind === "handover") && userRole === "1";
   const spec = [
     { key: "amount", label: t("amount"), type: "number", value: "" },
     {
@@ -6204,10 +6266,20 @@ function brokerAdjust(broker, kind) {
     },
     { key: "reason", label: t("reason"), value: "" },
   ];
+  // A hand-over records who in the office received the money from the broker.
+  // The server requires it, just like it does for a cash hand-over.
+  if (kind === "handover") {
+    spec.push({
+      key: "Recipient",
+      label: t("handedTo"),
+      value: "",
+      placeholder: t("handedToPlaceholder"),
+    });
+  }
   if (canBackdate) {
     spec.push({
       key: "date",
-      label: t("increaseDate"),
+      label: kind === "handover" ? t("handoverDate") : t("increaseDate"),
       type: "date",
       value: localDateString(),
       max: localDateString(),
@@ -6217,7 +6289,7 @@ function brokerAdjust(broker, kind) {
     spec,
     async (payload) => {
       // The resulting broker movement is stamped with the worker's local time.
-      // A backdated increase keeps the picked day and the time of day it is
+      // A backdated movement keeps the picked day and the time of day it is
       // entered at, so the row still sorts last within that day. `date` is what
       // tells the server the day was chosen, so it can insist on an admin.
       payload.CreatedAt = brokerMovementCreatedAt(
@@ -6246,7 +6318,13 @@ function brokerAdjust(broker, kind) {
     return;
   }
   const body = el("div");
-  body.appendChild(el("p", t("increaseDateHint"), { class: "muted" }));
+  body.appendChild(
+    el(
+      "p",
+      kind === "handover" ? t("handoverDateHint") : t("increaseDateHint"),
+      { class: "muted" }
+    )
+  );
   body.appendChild(form);
   openModal(`${titles[kind] || kind} ${broker.Name}`, body);
 }
