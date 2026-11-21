@@ -139,6 +139,35 @@ body {
   font-weight: 600;
 }
 
+/* A balance card that starts folded (Hand-over statistics, Drawers, Daily
+   report). The summary is the card's heading; its other children are shown
+   only when it is opened. */
+.balance-card.folded-card {
+  padding: 0;
+}
+.balance-card.folded-card > summary {
+  cursor: pointer;
+  padding: 16px;
+  list-style-position: inside;
+}
+.balance-card.folded-card > summary h3 {
+  display: inline;
+  margin: 0;
+}
+.balance-card.folded-card[open] > summary {
+  padding-bottom: 8px;
+}
+.balance-card.folded-card > *:not(summary) {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+.balance-card.folded-card > *:last-child {
+  margin-bottom: 16px;
+}
+.balance-card.folded-card > summary::marker {
+  color: var(--muted);
+}
+
 .cash-cards {
   display: flex;
   flex-wrap: wrap;
@@ -1502,20 +1531,11 @@ input[type="file"].hidden {
   opacity: 0.5;
 }
 
-/* Admin broker toggle (accept negative-balance requests). Pushed to the right
-   of the toolbar so it stays visually separate from the action buttons. */
+/* Admin broker toggle (accept negative-balance requests). It is the shared
+   checkbox pill (app.css); this only pushes it to the right of the toolbar so
+   it stays visually separate from the action buttons. */
 .broker-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   margin-left: auto;
-  cursor: pointer;
-  color: var(--text);
-  font-size: 13px;
-  user-select: none;
-}
-.broker-toggle input[type="checkbox"] {
-  accent-color: var(--accent);
 }
 
 /* Admin repair for a forgotten shift: yesterday had activity but no End shift.

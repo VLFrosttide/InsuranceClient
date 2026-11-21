@@ -275,6 +275,34 @@ const I18N = {
     user: "User",
     created: "Created",
     transactions: "Transactions",
+    transactionPolicyCash: "Walk-in cash",
+    transactionPolicyCard: "Walk-in card",
+    transactionPolicyBroker: "Broker policy",
+    cashInsurances: "Walk-in cash insurances",
+    cashInsurancesHint:
+      "Walk-in policies paid in cash at this branch on the selected day. The Available cash card opens this list.",
+
+    bankAccount: "Bank account",
+    bankAccountHint:
+      "The company bank account: the cash kept at the end of each shift plus the manual cash increases to brokers (booked at 00:00 the next day), minus what was handed over from the bank. Only admins see it. It starts fresh every month; older months stay in the history.",
+    bankMonthLabel: "Month: {month}",
+    bankAccountMonth: "Bank account — {month}",
+    bankBalance: "Bank balance",
+    bankCashKept: "Available cash at shift end",
+    bankCashKeptHint:
+      "The cash kept when each shift was ended, across every branch.",
+    bankBrokerIncreases: "Manual cash increases to brokers",
+    bankBrokerIncreasesHint:
+      "Manual top-ups of a broker balance that carry a branch. A day's increases reach the bank at 00:00 the next day.",
+    bankHandedOver: "Handed over from the bank",
+    bankHandedOverHint:
+      "Money handed out of the company bank account this month.",
+    bankHandOver: "Hand over from bank",
+    bankHandoverRecorded: "Bank hand-over recorded",
+    bankHandovers: "Bank hand-overs",
+    bankHistory: "Monthly history",
+    bankMonth: "Month",
+    bankClosingBalance: "Closing balance",
     annulments: "Annulments",
     active: "Active",
     resets: "Resets",
@@ -1153,6 +1181,34 @@ const I18N = {
     user: "Потребител",
     created: "Създаден",
     transactions: "Транзакции",
+    transactionPolicyCash: "На място в брой",
+    transactionPolicyCard: "На място с карта",
+    transactionPolicyBroker: "Брокерска полица",
+    cashInsurances: "Застраховки в брой (на място)",
+    cashInsurancesHint:
+      "Полици на място, платени в брой в този офис за избрания ден. Картата „Наличен кеш“ отваря този списък.",
+
+    bankAccount: "Банкова сметка",
+    bankAccountHint:
+      "Фирмената банкова сметка: кешът, запазен в края на всяка смяна, плюс ръчните увеличения на брокерски баланс в брой (осчетоводяват се в 00:00 на следващия ден), минус предаденото от банката. Вижда се само от администратори. Започва наново всеки месец; старите месеци остават в историята.",
+    bankMonthLabel: "Месец: {month}",
+    bankAccountMonth: "Банкова сметка — {month}",
+    bankBalance: "Баланс в банката",
+    bankCashKept: "Наличен кеш в края на смяната",
+    bankCashKeptHint:
+      "Кешът, запазен при завършване на всяка смяна, от всички офиси.",
+    bankBrokerIncreases: "Ръчни увеличения на брокери в брой",
+    bankBrokerIncreasesHint:
+      "Ръчни увеличения на брокерски баланс, които имат офис. Увеличенията за деня влизат в банката в 00:00 на следващия ден.",
+    bankHandedOver: "Предадено от банката",
+    bankHandedOverHint:
+      "Пари, предадени от фирмената банкова сметка този месец.",
+    bankHandOver: "Предай пари от банката",
+    bankHandoverRecorded: "Предаването от банката е записано",
+    bankHandovers: "Предавания от банката",
+    bankHistory: "История по месеци",
+    bankMonth: "Месец",
+    bankClosingBalance: "Краен баланс",
     annulments: "Анулирания",
     active: "Активни",
     resets: "Нулирания",

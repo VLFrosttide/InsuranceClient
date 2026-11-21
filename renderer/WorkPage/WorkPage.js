@@ -1525,6 +1525,122 @@ function cashTypeLabel(type) {
   return kind;
 }
 
+// The money a policy row contributes to a ledger: its price while active, or
+// just the annulment fee once annulled. A walk-in policy writes no row to
+// cash_transactions, so the combined Transactions table reads it from the
+// policy itself.
+function policyLedgerAmount(policy) {
+  if (!policy) return 0;
+  return Number(policy.Annulled) === 1
+    ? Number(policy.AnnulFee) || 0
+    : Number(policy.Price) || 0;
+}
+
+// One row of the combined Transactions table for an insurance policy.
+function policyTransactionRow(policy, type) {
+  const row = policy || {};
+  return {
+    ...row,
+    Type: type,
+    Source: "insurance",
+    Amount: policyLedgerAmount(row),
+    Currency: row.CurrencyType,
+    Username: row.Author,
+    CreatedAt: row.CreationDate,
+    Reason: row.Reason,
+  };
+}
+
+// The Transactions table is the day's full ledger: every walk-in policy (cash
+// or card), every broker-funded policy, the broker payments (manual increases
+// and hand-overs) and the drawer's own manual movements (increases, expenses
+// and hand-overs). A policy's correction rows are still not listed - the
+// policy is shown once, at its current price.
+function combinedCashTransactions(data) {
+  const source = data || {};
+  const rows = [];
+  for (const tx of source.transactions || []) {
+    rows.push({ ...tx, Source: "cash" });
+  }
+  for (const policy of source.cashInsurances || []) {
+    rows.push(policyTransactionRow(policy, "policy_cash"));
+  }
+  for (const policy of source.cardInsurances || []) {
+    rows.push(policyTransactionRow(policy, "policy_card"));
+  }
+  for (const policy of source.brokerInsurances || []) {
+    rows.push(policyTransactionRow(policy, "policy_broker"));
+  }
+  for (const tx of source.brokerCashTransactions || []) {
+    rows.push({ ...tx, Type: "broker_increase", Source: "broker" });
+  }
+  for (const tx of source.brokerHandovers || []) {
+    rows.push({ ...tx, Type: "broker_handover", Source: "broker" });
+  }
+  return rows.sort((a, b) => {
+    const byDate = String(b.CreatedAt || "").localeCompare(
+      String(a.CreatedAt || "")
+    );
+    if (byDate !== 0) return byDate;
+    return (Number(b.id) || 0) - (Number(a.id) || 0);
+  });
+}
+
+// The Type label of a combined Transactions row. Unknown values fall back to
+// the cash ledger label so a new ledger type is never hidden.
+function transactionTypeLabel(row) {
+  const kind = String((row && row.Type) || "");
+  if (kind === "policy_cash") return t("transactionPolicyCash");
+  if (kind === "policy_card") return t("transactionPolicyCard");
+  if (kind === "policy_broker") return t("transactionPolicyBroker");
+  if (kind === "broker_increase") return t("increase");
+  if (kind === "broker_handover") return t("handOver");
+  return cashTypeLabel(kind);
+}
+
+// The Type cell: the label plus the broker's name for a broker-funded row.
+function transactionTypeCell(row) {
+  const wrap = el("span", null, { class: "movement-type" });
+  wrap.appendChild(el("span", transactionTypeLabel(row)));
+  if (row && row.BrokerName) {
+    wrap.appendChild(el("span", ` — ${row.BrokerName}`, { class: "muted" }));
+  }
+  return wrap;
+}
+
+// Row tint of a combined row. Policy sales and broker payments are money in
+// (green), an expense is money out (red), a hand-over is amber.
+function transactionRowClass(row) {
+  const kind = String((row && row.Type) || "");
+  if (
+    kind === "policy_cash" ||
+    kind === "policy_card" ||
+    kind === "policy_broker" ||
+    kind === "broker_increase"
+  ) {
+    return cashLedgerRowClass(
+      "increase",
+      row && row.Amount,
+      row && row.Currency,
+      row && row.Reason
+    );
+  }
+  if (kind === "broker_handover") {
+    return cashLedgerRowClass(
+      "handover",
+      row && row.Amount,
+      row && row.Currency,
+      row && row.Reason
+    );
+  }
+  return cashLedgerRowClass(
+    kind,
+    row && row.Amount,
+    row && row.Currency,
+    row && row.Reason
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Per-type, per-price counts for the collapsible section headings
 // ---------------------------------------------------------------------------
@@ -1747,6 +1863,22 @@ function input(type, value, placeholder) {
   return node;
 }
 
+// A checkbox presented as a pill toggle, matching the compare-field toggles on
+// the reconcile daily report: the whole pill is the hit area and the round tick
+// on the left says whether it is on. The native checkbox stays inside the
+// <label>, so `.checked`, "change" events and disabled all keep working; the
+// wrapper exposes it as `.input` to the callers that need to read or set it.
+function checkboxToggle(labelText, checked, existingInput) {
+  const box = existingInput || input("checkbox");
+  if (!existingInput) box.checked = !!checked;
+  const wrap = el("label", null, { class: "checkbox-toggle" });
+  wrap.appendChild(box);
+  wrap.appendChild(el("span", labelText || ""));
+  wrap.input = box;
+  return wrap;
+}
+
+
 // Password input plus its eye button, laid out by .password-row (app.css) so the
 // eye sits inside the field's right edge. Returns the wrapper; `focusTarget`
 // lets field() point the label at the input inside it, and buildForm() reads the
@@ -1906,7 +2038,15 @@ function buildForm(spec, onSubmit, submitLabel) {
     if (s.disabled) control.disabled = true;
     control.dataset.key = s.key;
     values[s.key] = control;
-    form.appendChild(field(s.label, control));
+    if (s.type === "checkbox") {
+      // A checkbox is a pill toggle, like the reconcile compare toggles. The
+      // .field holder keeps the modal's spacing.
+      const holder = el("div", null, { class: "field" });
+      holder.appendChild(checkboxToggle(s.label, null, control));
+      form.appendChild(holder);
+    } else {
+      form.appendChild(field(s.label, control));
+    }
   }
   const submit = el("button", submitLabel || t("save"), { type: "submit" });
   form.appendChild(submit);
@@ -2183,6 +2323,20 @@ function collapsibleSection(title, count, nodes, breakdown) {
   const body = el("div", null, { class: "collapsible-body" });
   for (const node of nodes) body.appendChild(node);
   details.appendChild(body);
+  return details;
+}
+
+// A balance card that starts FOLDED. The heading is the summary; clicking it
+// unfolds the figures. Used for the three big Current cash reports so a busy
+// day does not fill the screen before anything is asked for.
+function foldedCard(title, options = {}) {
+  const details = el("details", null, {
+    class: `balance-card folded-card${options.className ? ` ${options.className}` : ""}`,
+  });
+  if (options.hint) details.title = options.hint;
+  const summary = el("summary");
+  summary.appendChild(el("h3", title));
+  details.appendChild(summary);
   return details;
 }
 
@@ -3813,8 +3967,11 @@ const cashTableSort = {
   expenses: { key: null, dir: "desc" },
   brokerCash: { key: null, dir: "desc" },
   cardInsurances: { key: null, dir: "desc" },
+  cashInsurances: { key: null, dir: "desc" },
   resets: { key: null, dir: "desc" },
   handovers: { key: null, dir: "desc" },
+  bankHistory: { key: null, dir: "desc" },
+  bankHandovers: { key: null, dir: "desc" },
 };
 
 // True when a per-currency balance object holds anything besides zero.
@@ -3924,7 +4081,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   const dailyQuery =
     `/currentcash/daily?date=${encodeURIComponent(date)}` +
     `&tzOffset=${tzOffset}`;
-  const [data, daily, dailyAll] = await Promise.all([
+  const [data, daily, dailyAll, bank] = await Promise.all([
     api(
       `/currentcash?branch=${encodeURIComponent(branch)}` +
         `&date=${encodeURIComponent(date)}` +
@@ -3937,6 +4094,12 @@ async function currentCashView(overrideBranch, overrideDate) {
     // always country-wide; this call makes the money statistic country-wide
     // too instead of showing the selected branch only.
     api(dailyQuery),
+    // The company bank account is admin-only. The server refuses the call for
+    // anyone else, so it is simply not requested. A server that does not have
+    // the endpoint yet must not take the whole cash screen down with it.
+    isAdmin
+      ? api(`/bank?tzOffset=${tzOffset}`).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   // A newer load (branch or date switch) started while this one was in flight;
@@ -3971,28 +4134,23 @@ async function currentCashView(overrideBranch, overrideDate) {
     }
   }
 
-  // Workers see their own drawer's balance and card balance here, with the
-  // money brokers handed over sitting between them: cash from brokers is kept
-  // apart from the drawer, but it does belong to this branch. Admins get the
-  // drawer money broken out inside the Drawers card instead, so the Balance and
-  // Card balance cards are omitted for them.
+  // Balance cards are shortcuts to the ledger below them. Every role gets the
+  // Available cash and Card balance cards; the card titles carry no branch
+  // name (the heading above the row already says which branch is shown).
   const cardsRow = el("div", null, { class: "cash-cards" });
   const leftCol = el("div", null, { class: "cash-cards-left" });
   // Kept in variables (rather than only inside the blocks below) so each card
   // can be wired to its ledger section once the sections exist.
   let balanceCard = null;
   let cardCard = null;
-  if (!isAdmin) {
-    // The worker's own drawer: the same figure the admin sees in the Drawers
-    // card, derived from the branch's cash policies and manual movements for
-    // the picked day (the day picker below switches it).
-    balanceCard = el("div", null, { class: "balance-card" });
-    balanceCard.appendChild(el("h3", t("availableCash")));
+  let bankCard = null;
 
-    // Show each currency only when its balance is above/below 0.
-    fillBalanceCard(balanceCard, daily.availableCash || {});
-    leftCol.appendChild(balanceCard);
-  }
+  // The branch's cash drawer, derived from its cash policies and manual
+  // movements for the picked day (the day picker below switches it).
+  balanceCard = el("div", null, { class: "balance-card" });
+  balanceCard.appendChild(el("h3", t("availableCash")));
+  fillBalanceCard(balanceCard, daily.availableCash || {});
+  leftCol.appendChild(balanceCard);
 
   // Cash from brokers: the money brokers handed over at this branch since its
   // last reset. It is kept apart from the cash drawer above (a broker top-up
@@ -4003,12 +4161,27 @@ async function currentCashView(overrideBranch, overrideDate) {
   fillBalanceCard(brokerCashCard, data.brokerCash);
   leftCol.appendChild(brokerCashCard);
 
-  if (!isAdmin) {
-    // The branch's card balance - cleared together with the cash by "Reset to 0".
-    cardCard = el("div", null, { class: "balance-card" });
-    cardCard.appendChild(el("h3", t("cardBalance")));
-    cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
-    leftCol.appendChild(cardCard);
+  // The branch's card balance - cleared together with the cash by "Reset to 0".
+  cardCard = el("div", null, { class: "balance-card" });
+  cardCard.appendChild(el("h3", t("cardBalance")));
+  cardCard.appendChild(el("p", money(data.cardBalance), { class: "big" }));
+  leftCol.appendChild(cardCard);
+
+  // The company bank account is visible to admins only. It is a monthly figure
+  // and does not follow the branch selector.
+  if (isAdmin && bank) {
+    bankCard = el("div", null, {
+      class: "balance-card bank-card",
+      title: t("bankAccountHint"),
+    });
+    bankCard.appendChild(el("h3", t("bankAccount")));
+    fillBalanceCard(bankCard, bank.balance);
+    bankCard.appendChild(
+      el("p", fmt(t("bankMonthLabel"), { month: bank.month }), {
+        class: "muted",
+      })
+    );
+    leftCol.appendChild(bankCard);
   }
   cardsRow.appendChild(leftCol);
 
@@ -4095,11 +4268,10 @@ async function currentCashView(overrideBranch, overrideDate) {
   // outstanding hand-overs are listed further down with their branch.
   if (isAdmin && data.handoverStats) {
     const stats = data.handoverStats;
-    const handoverCard = el("div", null, {
-      class: "balance-card handover-card",
-      title: t("handoverStatsHint"),
+    const handoverCard = foldedCard(t("handoverStats"), {
+      className: "handover-card",
+      hint: t("handoverStatsHint"),
     });
-    handoverCard.appendChild(el("h3", t("handoverStats")));
 
     handoverCard.appendChild(dailyGroup(t("handoverGroupHandedOver")));
     handoverCard.appendChild(
@@ -4168,8 +4340,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   // and the card side (the day's card payments and the live card balance). It
   // was previously mixed into the Daily report card; keeping it apart lets the
   // report talk only about insurances.
-  const drawersCard = el("div", null, { class: "balance-card drawers-card" });
-  drawersCard.appendChild(el("h3", t("drawers")));
+  const drawersCard = foldedCard(t("drawers"), { className: "drawers-card" });
   drawersCard.appendChild(
     dailyStat(
       fmt(t("availableCashBranch"), {
@@ -4222,8 +4393,7 @@ async function currentCashView(overrideBranch, overrideDate) {
       brokerInsuranceMoney
     );
 
-  const dailyCard = el("div", null, { class: "balance-card daily-report" });
-  dailyCard.appendChild(el("h3", t("dailyReport")));
+  const dailyCard = foldedCard(t("dailyReport"), { className: "daily-report" });
 
   // Insurance number statistics.
   dailyCard.appendChild(dailyGroup(t("insuranceNumberStatistics")));
@@ -4555,16 +4725,70 @@ async function currentCashView(overrideBranch, overrideDate) {
     openModal(fmt(t("undoHandoverTitle"), { i: handover.id }), form);
   }
 
+  // Hand money over OUT of the company bank account. Admin only, like the bank
+  // balance itself. The picked day becomes the hand-over's CreatedAt, so a
+  // correction can be bookkept on the day it actually happened.
+  function openBankHandoverForm() {
+    if (!isAdmin) return;
+    const spec = [
+      { key: "amount", label: t("amount"), type: "number", value: "" },
+      {
+        key: "currency",
+        label: t("currency"),
+        type: "select",
+        options: CASH_CURRENCY_OPTIONS,
+        value: "EUR",
+      },
+      {
+        key: "Recipient",
+        label: t("handedTo"),
+        value: "",
+        placeholder: t("handedToPlaceholder"),
+      },
+      { key: "reason", label: t("reason"), value: "" },
+      {
+        key: "date",
+        label: t("handoverDate"),
+        type: "date",
+        value: localDateString(),
+        max: localDateString(),
+      },
+    ];
+    const form = buildForm(
+      spec,
+      async (payload) => {
+        payload.CreatedAt = brokerMovementCreatedAt(payload.date);
+        payload.TzOffset = -new Date().getTimezoneOffset();
+        await api("/bank/handover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        toast(t("bankHandoverRecorded"), "success");
+        closeModal();
+        currentCashView(branch, date);
+      },
+      t("bankHandOver")
+    );
+    openModal(t("bankHandOver"), form);
+  }
+
+  // The day's full ledger. Policies write no cash_transactions row, so the
+  // combined list adds the walk-in (cash and card) and broker-funded policies
+  // to the drawer movements and the broker's manual payments.
+  const combinedTransactions = combinedCashTransactions(data);
   const txTable = sortableTable(
-    data.transactions,
+    combinedTransactions,
     [
       {
         key: "Type",
         label: t("type"),
-        format: (v) => cashTypeLabel(v),
-        sortValue: (tx) => cashTypeLabel(tx.Type),
+        render: (_v, tx) => transactionTypeCell(tx),
+        sortValue: (tx) => transactionTypeLabel(tx),
         sortType: "text",
       },
+      { key: "BlancNumber", label: t("blankNo"), format: (v) => v || "—", sortType: "text" },
+      { key: "PolicyNumber", label: t("policyNumber"), format: (v) => v || "—", sortType: "text" },
       {
         key: "Amount",
         label: t("amount"),
@@ -4590,14 +4814,13 @@ async function currentCashView(overrideBranch, overrideDate) {
         sortType: "date",
       },
     ],
-    // The author can correct their own entry ("Edit"); an admin can delete any
-    // entry. The delete is the row's "X" and only appears while the row is
-    // hovered, so the ledger stays readable and a destructive click is never
-    // one stray click away. A hand-over RETURN is a locked bookkeeping row: it
-    // is undone through the hand-over itself (the Undo button), never edited or
-    // deleted here.
+    // Only a row of the drawer ledger can be edited or deleted here. A policy
+    // (walk-in or broker-funded) is corrected through its insurance, and a
+    // broker payment through the broker's history. A hand-over RETURN is a
+    // locked bookkeeping row: it is undone through the hand-over itself.
     (tx) => {
       const rowActions = [];
+      if (tx.Source !== "cash") return rowActions;
       if (String(tx.Type || "") === "handover_return") return rowActions;
       // The author edits it; an admin may also correct any hand-over (for
       // example its date), whoever recorded it.
@@ -4625,7 +4848,7 @@ async function currentCashView(overrideBranch, overrideDate) {
     // Soft green for money in, soft red for money spent, muted amber for money
     // handed over to a person; an amount above the currency's notable amount
     // (100 EUR / 5 500 TRY) is tinted a step stronger.
-    (tx) => cashLedgerRowClass(tx.Type, tx.Amount, tx.Currency, tx.Reason),
+    (tx) => transactionRowClass(tx),
     undefined,
     { sort: cashTableSort.transactions }
   );
@@ -4800,6 +5023,43 @@ async function currentCashView(overrideBranch, overrideDate) {
     { sort: cashTableSort.cardInsurances }
   );
 
+  // Walk-in policies paid in CASH on the picked day. This is the list behind the
+  // Available cash card: a walk-in sale writes no cash_transactions row, so its
+  // money is read live from the policy and shown here.
+  const cashInsurancesTable = sortableTable(
+    data.cashInsurances,
+    [
+      { key: "BlancNumber", label: t("blankNo"), sortType: "text" },
+      { key: "PolicyNumber", label: t("policyNumber"), sortType: "text" },
+      { key: "CarNumber", label: t("carNumber"), sortType: "text" },
+      {
+        key: "Price",
+        label: t("price"),
+        format: (_v, item) => money(policyLedgerAmount(item)),
+        sortType: "number",
+      },
+      { key: "CurrencyType", label: t("currency"), sortType: "text" },
+      { key: "Author", label: t("author"), sortType: "text" },
+      {
+        key: "CreationDate",
+        label: t("created"),
+        format: (v) => formatDateTime(v),
+        sortType: "date",
+      },
+      {
+        key: "Annulled",
+        label: t("status"),
+        format: (_v, item) => insuranceStatusLabel(item),
+        sortValue: (item) => insuranceStatusLabel(item),
+        sortType: "text",
+      },
+    ],
+    undefined,
+    (item) => annulledRowClass(item),
+    undefined,
+    { sort: cashTableSort.cashInsurances }
+  );
+
   // A "Reset to 0" clears the cash drawer (one `cash_resets` row per currency)
   // AND the branch's card balance (one `card_resets` row) AND its cash from
   // brokers (one `broker_cash_resets` row per currency with something kept).
@@ -4930,20 +5190,33 @@ async function currentCashView(overrideBranch, overrideDate) {
   }
 
   // One section per ledger table, kept in variables so the balance cards above
-  // can open and scroll to them. The Transactions list holds the movements typed
-  // in by hand plus hand-overs: a policy's own rows (its sale and every
-  // correction of it) are not drawer transactions - the price of the policy is
-  // read live from the policy itself - so an edit never shows up as a
-  // transaction, neither on the day it was made nor on any other day.
+  // can open and scroll to them. The Transactions list is the day's FULL
+  // ledger: every walk-in sale (cash and card), every broker-funded policy,
+  // the broker's manual payments (increases and hand-overs) and the drawer's
+  // own movements (manual increases, expenses and hand-overs). A policy's
+  // correction rows are still not repeated there - the policy is shown once.
   const transactionsSection = collapsibleSection(
     t("transactions"),
-    (data.transactions || []).length,
+    combinedTransactions.length,
     [txTable],
     // The heading lists the day's prices per type, with the annulments kept
     // apart (and their own prices) instead of inside the increases and expenses.
     cashLedgerTypeTiers(data.transactions).map((group) =>
       formatTierGroup(group, cashLedgerCountLabel)
     )
+  );
+  const cashInsurancesSection = collapsibleSection(
+    t("cashInsurances"),
+    (data.cashInsurances || []).length,
+    [el("p", t("cashInsurancesHint"), { class: "muted" }), cashInsurancesTable],
+    // The heading lists the day's cash prices per status, like the card list.
+    // An annulled policy is shown at the fee it actually contributed.
+    cardPaymentStatusTiers(
+      (data.cashInsurances || []).map((p) => ({
+        ...p,
+        Price: policyLedgerAmount(p),
+      }))
+    ).map((group) => formatTierGroup(group, cardPaymentStatusCountLabel))
   );
   const expensesSection = collapsibleSection(
     t("expenses"),
@@ -4977,12 +5250,119 @@ async function currentCashView(overrideBranch, overrideDate) {
     [resetTable]
   );
 
+  // The company bank account. Admin only: its balance and hand-overs are never
+  // built for a worker. It is monthly, so it does not follow the day picker.
+  let bankSection = null;
+  if (isAdmin && bank) {
+    const bankHandoversTable = sortableTable(
+      bank.handovers || [],
+      [
+        {
+          key: "Amount",
+          label: t("amount"),
+          format: (v) => money(v),
+          cellClass: amountCellClass,
+          sortType: "number",
+        },
+        { key: "Currency", label: t("currency"), sortType: "text" },
+        { key: "Recipient", label: t("handedTo"), sortType: "text" },
+        { key: "Reason", label: t("reason"), sortType: "text" },
+        { key: "Author", label: t("user"), sortType: "text" },
+        {
+          key: "CreatedAt",
+          label: t("created"),
+          format: (v) => formatDateTime(v),
+          sortType: "date",
+        },
+      ],
+      null,
+      (row) =>
+        cashLedgerRowClass("handover", row.Amount, row.Currency, row.Reason),
+      undefined,
+      { sort: cashTableSort.bankHandovers }
+    );
+    const bankHistoryTable = sortableTable(
+      bank.history || [],
+      [
+        { key: "Month", label: t("bankMonth"), sortType: "text" },
+        {
+          key: "CashKept",
+          label: t("bankCashKept"),
+          format: (v) => renderCashBalances(v),
+          sortType: "text",
+        },
+        {
+          key: "BrokerIncreases",
+          label: t("bankBrokerIncreases"),
+          format: (v) => renderCashBalances(v),
+          sortType: "text",
+        },
+        {
+          key: "HandedOver",
+          label: t("bankHandedOver"),
+          format: (v) => renderCashBalances(v),
+          sortType: "text",
+        },
+        {
+          key: "Balance",
+          label: t("bankClosingBalance"),
+          format: (v) => renderCashBalances(v),
+          sortType: "text",
+        },
+      ],
+      null,
+      undefined,
+      undefined,
+      { sort: cashTableSort.bankHistory }
+    );
+    const bankHandoverBtn = el("button", t("bankHandOver"), {
+      class: "secondary",
+    });
+    bankHandoverBtn.addEventListener("click", openBankHandoverForm);
+    bankSection = collapsibleSection(
+      fmt(t("bankAccountMonth"), { month: bank.month }),
+      (bank.handovers || []).length,
+      [
+        el("p", t("bankAccountHint"), { class: "muted" }),
+        dailyStat(
+          t("bankCashKept"),
+          renderCashBalances(bank.cashKept),
+          t("bankCashKeptHint")
+        ),
+        dailyStat(
+          t("bankBrokerIncreases"),
+          renderCashBalances(bank.brokerIncreases),
+          t("bankBrokerIncreasesHint")
+        ),
+        dailyStat(
+          t("bankHandedOver"),
+          renderCashBalances(bank.handedOver),
+          t("bankHandedOverHint")
+        ),
+        dailyStat(
+          t("bankBalance"),
+          renderCashBalances(bank.balance),
+          t("bankAccountHint")
+        ),
+        bankHandoverBtn,
+        dailyGroup(t("bankHandovers")),
+        bankHandoversTable,
+        dailyGroup(t("bankHistory")),
+        bankHistoryTable,
+      ]
+    );
+  }
+
   // A card is a shortcut to its table, but only when it has something to show:
   // a zero balance leaves the card inert.
   activateCashCard(
     balanceCard,
-    transactionsSection,
-    hasNonZeroCash(daily.availableCash)
+    // Available cash opens the walk-in CASH policies of the day - the sales
+    // that put money in the drawer. A policy writes no cash_transactions row,
+    // so this list is read from the policies themselves.
+    cashInsurancesSection,
+    hasNonZeroCash(daily.availableCash) ||
+      (data.cashInsurances || []).length > 0
   );
   activateCashCard(
     brokerCashCard,
@@ -4995,6 +5375,14 @@ async function currentCashView(overrideBranch, overrideDate) {
     // day, so the card opens exactly that list.
     cardInsurancesSection,
     Number(data.cardBalance) !== 0
+  );
+  activateCashCard(
+    bankCard,
+    bankSection,
+    Boolean(
+      bank &&
+        (hasNonZeroCash(bank.balance) || (bank.handovers || []).length > 0)
+    )
   );
   activateCashCard(
     expensesCard,
@@ -5010,12 +5398,16 @@ async function currentCashView(overrideBranch, overrideDate) {
     // Every ledger row list comes after the day picker, so the picker governs
     // all of them (the handed-over cash included).
     dateRow,
-    ...(handoverSection ? [handoverSection] : []),
+    // The combined Transactions table is the FIRST table on the page: it is
+    // the day's full money ledger (walk-ins, broker payments and the drawer).
     transactionsSection,
-    expensesSection,
-    brokerCashSection,
+    cashInsurancesSection,
     cardInsurancesSection,
-    resetsSection
+    brokerCashSection,
+    expensesSection,
+    ...(handoverSection ? [handoverSection] : []),
+    resetsSection,
+    ...(bankSection ? [bankSection] : [])
   );
 }
 
@@ -5249,11 +5641,12 @@ async function brokersView() {
   // Admin-only toggle: accept broker requests that would push the broker
   // balance below zero. When off, such requests are rejected by the server.
   if (isAdmin) {
-    const toggle = el("label", null, { class: "broker-toggle" });
-    const toggleInput = input("checkbox");
-    toggleInput.checked = data.allowNegativeBalance !== false;
-    toggle.appendChild(toggleInput);
-    toggle.appendChild(el("span", t("brokerAllowNegative")));
+    const toggle = checkboxToggle(
+      t("brokerAllowNegative"),
+      data.allowNegativeBalance !== false
+    );
+    toggle.classList.add("broker-toggle");
+    const toggleInput = toggle.input;
     toggle.title = t("brokerAllowNegativeHint");
     toggleInput.addEventListener("change", async () => {
       toggleInput.disabled = true;
@@ -8688,8 +9081,11 @@ async function adminDiagnostics() {
   const collectCard = el("div", null, { class: "balance-card diag-collect" });
   collectCard.appendChild(el("h3", t("diag.collect")));
   collectCard.appendChild(el("p", t("diag.collectHint"), { class: "muted" }));
-  const collectToggle = input("checkbox");
-  collectToggle.checked = diagnosticsEnabled;
+  const collectToggleWrap = checkboxToggle(
+    t("diag.collectToggle"),
+    diagnosticsEnabled
+  );
+  const collectToggle = collectToggleWrap.input;
   const collectState = el("span", "", { class: "muted" });
   const syncCollectState = () => {
     collectState.textContent = collectToggle.checked
@@ -8722,9 +9118,8 @@ async function adminDiagnostics() {
     }
   });
   const collectRow = el("div", null, { class: "row" });
-  const collectField = field(t("diag.collectToggle"), collectToggle);
-  collectField.title = t("diag.collectHint");
-  collectRow.appendChild(collectField);
+  collectToggleWrap.title = t("diag.collectHint");
+  collectRow.appendChild(collectToggleWrap);
   collectRow.appendChild(collectState);
   collectCard.appendChild(collectRow);
   // Show what the server is actually doing, not what this screen assumed: a

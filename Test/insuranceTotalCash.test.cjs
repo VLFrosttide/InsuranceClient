@@ -1308,14 +1308,26 @@ const ledger = () =>
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
-    eq(seen.length, 8, "transactions + resets + cash from brokers + card insurances queried");
+    eq(seen.length, 11, "transactions + resets + cash from brokers + insurance lists queried");
     // The day's history: cash movements, cash resets, card resets, the broker
-    // top-ups and the Cash from Brokers resets.
-    const dayScoped = seen.filter((q) => q.s.includes("CreatedAt < ?"));
-    eq(dayScoped.length, 5, "one day-scoped query per history table");
+    // top-ups, the Cash from Brokers resets and the broker hand-overs.
+    const dayScoped = seen.filter(
+      (q) => q.s.includes("CreatedAt < ?") && q.s.includes("Branch = ?")
+    );
+    eq(dayScoped.length, 5, "one day-scoped query per branch history table");
     for (const q of dayScoped) {
       eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
+    // Broker hand-overs carry no branch, so they are day-scoped only.
+    const brokerHandoversQuery = seen.find(
+      (q) => q.s.includes("m.Type = 'handover'") && q.s.includes("CreatedAt < ?")
+    );
+    ok(brokerHandoversQuery, "broker hand-overs queried");
+    eq(
+      brokerHandoversQuery.params,
+      [today, CC.addDays(today, 1)],
+      "broker hand-over day bounds"
+    );
     // The walk-in card policies are day-scoped on their CREATION date, like the
     // daily card payments figure they explain.
     const cardInsurancesQuery = seen.find(
@@ -1326,6 +1338,24 @@ const ledger = () =>
       cardInsurancesQuery.params,
       [BRANCH, today, CC.addDays(today, 1)],
       "card insurance day bounds: " + cardInsurancesQuery.s
+    );
+    const cashInsurancesQuery = seen.find(
+      (q) => /FROM insurance/.test(q.s) && q.s.includes("PaymentType = 'Cash'")
+    );
+    ok(cashInsurancesQuery, "walk-in cash insurances queried");
+    eq(
+      cashInsurancesQuery.params,
+      [BRANCH, today, CC.addDays(today, 1)],
+      "cash insurance day bounds"
+    );
+    const brokerInsurancesQuery = seen.find(
+      (q) => /FROM insurance i/.test(q.s) && q.s.includes("BrokerId IS NOT NULL")
+    );
+    ok(brokerInsurancesQuery, "broker-funded insurances queried");
+    eq(
+      brokerInsurancesQuery.params,
+      [BRANCH, today, CC.addDays(today, 1)],
+      "broker insurance day bounds"
     );
     // The branch's live Cash from Brokers: the reset marker and the top-up sum.
     const branchScoped = seen.filter(
@@ -1726,7 +1756,7 @@ const ledger = () =>
       ok(cardQ, "card query issued");
       ok(brokerQ, "broker query issued");
       ok(/BrokerId IS NULL/.test(cardQ.s), "card counts walk-ins only: " + cardQ.s);
-      ok(/CASE WHEN Annulled = 0/.test(cardQ.s), "card nets annulments (fee after annul): " + cardQ.s);
+      ok(/CASE WHEN (i\.)?Annulled = 0/.test(cardQ.s), "card nets annulments (fee after annul): " + cardQ.s);
       ok(/CreationDate >= \?/.test(cardQ.s), "card is keyed on the creation date: " + cardQ.s);
       ok(/AND Branch = \?/.test(cardQ.s), "card query is branch-scoped: " + cardQ.s);
       ok(/AND Branch = \?/.test(brokerQ.s), "broker query is branch-scoped: " + brokerQ.s);

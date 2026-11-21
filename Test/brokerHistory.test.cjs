@@ -1218,8 +1218,10 @@ resetDb();
 
   await check("history PATCH: amount change shifts the broker balance by the delta", async () => {
     resetDb();
+    // A payment row, not a policy-derived one: a policy's charge is rewritten
+    // from the insurance itself and cannot have its amount corrected here.
     addMovement(1, -10, "2026-10-10 00:00:00", {
-      Type: "policy",
+      Type: "increase",
       BlancNumber: "100001",
       Reason: "old",
     });
@@ -1585,7 +1587,7 @@ resetDb();
     eq(Object.keys(db.startingBalances).length, 1, "one row per broker");
   });
 
-  await check("starting balance: the history always shows the stored balance", async () => {
+  await check("starting balance: the history always shows the rebuilt balance", async () => {
     resetDb();
     addPolicy("100001", { Price: 30, BrokerId: 1 });
     addPolicy("100002", { Price: 20, BrokerId: 1 });
@@ -1603,11 +1605,10 @@ resetDb();
       params: { id: "1" },
       body: { amount: 200, date: "2026-09-30" },
     });
-    // A hand-fixed balance that no longer follows the ledger must still be the
-    // figure the history shows: the stored balance is the single source of
-    // truth (the server rebuilds it from the insurances + the payments), and the
-    // ledger is only the who-did-what list. This is what keeps the Brokers tab
-    // and this page from ever disagreeing.
+    // A hand-fixed balance does not survive the rebuild: the balance is the
+    // starting balance plus the policies minus the payments, and the history
+    // shows that rebuilt figure. This is what keeps the Brokers tab and this
+    // page from ever disagreeing.
     db.brokers[0].CashBalance = 999;
 
     const r = await call("get", "/brokers/:id/history", {
@@ -1617,13 +1618,13 @@ resetDb();
     eq(r.status, 200, "status");
     const ms = r.body.movements; // newest first: top-up, then the two sales
     eq(ms[0].Amount, 100, "the newest row is the top-up");
-    eq(ms[0].BalanceAfter, 999, "the newest row shows the stored balance");
-    eq(ms[1].BalanceAfter, 899, "999 - 100 after the newer sale");
-    eq(ms[2].BalanceAfter, 919, "and + 20 back before it");
+    eq(ms[0].BalanceAfter, 250, "the newest row shows the rebuilt balance");
+    eq(ms[1].BalanceAfter, 150, "250 - 100 after the newer sale");
+    eq(ms[2].BalanceAfter, 170, "and + 20 back before it");
     eq(r.body.netChange, 50, "net change of the shown movements");
-    eq(r.body.balanceAtEnd, 999, "the page ends on the stored balance");
-    eq(r.body.balanceAtStart, 949, "and starts at the stored balance - net");
-    eq(r.body.broker.CashBalance, 999, "the stored balance is reported as is");
+    eq(r.body.balanceAtEnd, 250, "the page ends on the rebuilt balance");
+    eq(r.body.balanceAtStart, 200, "and starts at the rebuilt balance - net");
+    eq(r.body.broker.CashBalance, 999, "the broker row is returned as stored");
   });
 
   await check("starting balance: a corrected starting balance moves every row", async () => {
@@ -1838,8 +1839,8 @@ resetDb();
       params: { id: "1", movementId: "1" },
       body: { amount: -50 },
     });
-    eq(r.status, 200, "status");
-    eq(db.movements[0].Amount, -50, "the history row keeps the correction");
+    eq(r.status, 400, "the policy row's money cannot be rewritten here");
+    eq(db.movements[0].Amount, -30, "the history row is unchanged");
     eq(
       db.brokers[0].CashBalance,
       -30,

@@ -246,6 +246,9 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
       if (s.startsWith("SELECT * FROM card_resets")) return [[]];
       if (s.startsWith("SELECT * FROM broker_cash_resets")) return [[]];
       if (s.startsWith("SELECT * FROM insurance")) return [[]];
+      if (s.startsWith("SELECT i.*, b.Name AS BrokerName FROM insurance i")) {
+        return [[]]; // no broker-funded policies on this day
+      }
       if (s.startsWith("SELECT COALESCE(MAX(LastMovementId), 0) AS Marker")) {
         return [[{ Marker: 0 }]];
       }
