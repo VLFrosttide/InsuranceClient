@@ -107,6 +107,21 @@ async function brokerQuery(sql, params = []) {
   if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_balance_movements")) {
     return [{}];
   }
+  // The balance rebuild asks for the starting balance first; no row means the
+  // incremental update stands (these tests cover the incremental path).
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_starting_balances")) {
+    return [{}];
+  }
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_payments")) {
+    return [{}];
+  }
+  if (
+    s.startsWith(
+      "SELECT Amount FROM broker_starting_balances WHERE BrokerId = ?"
+    )
+  ) {
+    return [[]];
+  }
   if (
     s ===
     "SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?"
@@ -162,6 +177,32 @@ const BROKER_STUBS = {
   },
   "./PaymentSchedule.js": {
     getSchedule: () => ({ periodStart: "2026-11-01", days: 14 }),
+  },
+  // Payments live in their own table now; the stub writes the same ledger row so
+  // the assertions on db.movements still hold.
+  "../db/brokerPayments.js": {
+    ensureBrokerPaymentsTable: async () => {},
+    sumBrokerPayments: async () => 0,
+    recordBrokerPayment: async (conn, brokerId, amount, type, meta = {}) => {
+      const [r] = await conn.query(
+        `INSERT INTO broker_balance_movements
+           (BrokerId, Amount, Type, Reason, Author, BlancNumber, CreatedAt, Branch, Currency)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          brokerId,
+          amount,
+          type,
+          meta.reason || "",
+          meta.author || "",
+          null,
+          meta.createdAt || null,
+          typeof meta.branch === "string" ? meta.branch : null,
+          meta.currency || "EUR",
+        ]
+      );
+      return { id: r && r.insertId, amount };
+    },
+    syncBrokerPaymentFromMovement: async () => {},
   },
 };
 

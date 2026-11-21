@@ -106,6 +106,21 @@ async function brokerQuery(sql, params = []) {
   if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_balance_movements")) {
     return [{}];
   }
+  // The balance rebuild asks whether the broker has a starting balance first; no
+  // row means the incremental update stands, which is what these tests assert.
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_starting_balances")) {
+    return [{}];
+  }
+  if (s.startsWith("CREATE TABLE IF NOT EXISTS broker_payments")) {
+    return [{}];
+  }
+  if (
+    s.startsWith(
+      "SELECT Amount FROM broker_starting_balances WHERE BrokerId = ?"
+    )
+  ) {
+    return [[]];
+  }
   if (
     s ===
     "SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?"
@@ -129,8 +144,9 @@ async function brokerQuery(sql, params = []) {
   }
   if (
     s.startsWith(
-      "SELECT id, BrokerId, Amount, Type, Reason, Author, BlancNumber FROM broker_balance_movements"
-    )
+      "SELECT id, BrokerId, Amount, Type, Reason, Author, BlancNumber"
+    ) &&
+    s.includes("FROM broker_balance_movements")
   ) {
     const row = db.movements.find(
       (m) =>
@@ -181,6 +197,33 @@ const BROKER_STUBS = {
   },
   "./PaymentSchedule.js": {
     getSchedule: () => ({ periodStart: "2026-11-01", days: 14 }),
+  },
+  // Money the broker paid now lives in its own table; the balance formula reads
+  // it there instead of summing the history ledger. The fake writes the same
+  // ledger row through conn.query, so the assertions on db.movements still hold.
+  "../db/brokerPayments.js": {
+    ensureBrokerPaymentsTable: async () => {},
+    sumBrokerPayments: async () => 0,
+    recordBrokerPayment: async (conn, brokerId, amount, type, meta = {}) => {
+      const [r] = await conn.query(
+        `INSERT INTO broker_balance_movements
+           (BrokerId, Amount, Type, Reason, Author, BlancNumber, CreatedAt, Branch, Currency)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          brokerId,
+          amount,
+          type,
+          meta.reason || "",
+          meta.author || "",
+          null,
+          meta.createdAt || null,
+          typeof meta.branch === "string" ? meta.branch : null,
+          meta.currency || "EUR",
+        ]
+      );
+      return { id: r && r.insertId, amount };
+    },
+    syncBrokerPaymentFromMovement: async () => {},
   },
 };
 

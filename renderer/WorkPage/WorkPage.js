@@ -27,6 +27,11 @@ const emailCards = new Map(); // thread key -> { emails, email (newest), node }
 let emailSocket = null;
 let pendingClaimEmail = null;
 
+// Re-reads whichever broker view is on screen (the Brokers table or one broker's
+// balance history). Set by those views, cleared by the marker element: a push
+// from the server only refreshes when that view is still the visible one.
+let refreshActiveBrokersView = null;
+
 // What the worker typed into the search bar of the email card tab. Kept here
 // (not in the DOM) so a re-render - a new email arriving, a card being
 // completed - keeps the filter and the field's text.
@@ -1074,6 +1079,28 @@ function reconcileEmailCards(serverEmails) {
   renderEmailCardsIfVisible();
 }
 
+// The server rebuilds a broker's balance on every change (policy sold, edited,
+// annulled, restored, deleted; a top-up, a hand-over, a paid bill) and pushes
+// the affected broker ids. Refresh the broker view on screen so a colleague's
+// change shows up here without a reload.
+function handleBrokerBalanceChanged(msg) {
+  const host = Content.querySelector("[data-brokers-view]");
+  if (!host) return;
+  if (host.dataset.brokersView === "history") {
+    const ids = Array.isArray(msg && msg.data && msg.data.brokers)
+      ? msg.data.brokers.map(Number)
+      : [];
+    const viewing = Number(host.dataset.brokerId);
+    if (ids.length > 0 && !ids.includes(viewing)) return;
+  }
+  if (typeof refreshActiveBrokersView === "function") {
+    // A failed refresh must not break the socket's message loop.
+    Promise.resolve()
+      .then(() => refreshActiveBrokersView())
+      .catch((err) => console.error("Failed to refresh the broker view:", err));
+  }
+}
+
 function setupEmailSocket() {
   if (userRole !== "2") return;
 
@@ -1099,6 +1126,8 @@ function setupEmailSocket() {
       // If the worker clicked an email card while the socket was reconnecting,
       // send the pending claim now.
       sendPendingClaimNow();
+      // Catch up on broker balance changes pushed while the socket was down.
+      handleBrokerBalanceChanged(null);
     },
     // The connection dropped: allow a reconnect within CLAIM_TIMEOUT_MS to
     // re-send any pending claim automatically.
@@ -1151,6 +1180,9 @@ function setupEmailSocket() {
         addEmailCard({ messageId: msg.messageId, subject: "" });
       }
     },
+    // A broker balance moved (by this client or another one): refresh the
+    // Brokers tab / balance history if it is the view on screen.
+    broker_balance_changed: handleBrokerBalanceChanged,
   });
   emailSocket.connect();
 
@@ -1254,11 +1286,15 @@ function setupPresenceSocket() {
       } catch (err) {
         console.error("Failed to send presence request:", err);
       }
+      // After a reconnect, catch up on balance changes that were pushed while
+      // the socket was down.
+      handleBrokerBalanceChanged(null);
     },
     presence_update: (msg) => {
       presenceWorkers = Array.isArray(msg.data) ? msg.data : [];
       renderPresence(presenceWorkers);
     },
+    broker_balance_changed: handleBrokerBalanceChanged,
   });
   presenceSocket.connect();
 
@@ -5233,6 +5269,11 @@ async function brokersView() {
   const data = await api(isAdmin ? "/brokers?includeDeleted=1" : "/brokers");
   const deletedBrokers = (data && data.deleted) || [];
 
+  // Another client can move a balance at any time (a policy sold/annulled, a
+  // top-up, a bill paid). The server pushes that over the WebSocket; re-read
+  // this list so the figure on screen is always the stored one.
+  refreshActiveBrokersView = () => brokersView();
+
   const toolbar = el("div", null, { class: "row" });
   if (isAdmin) {
     const addBtn = el("button", t("newBroker"));
@@ -5281,6 +5322,8 @@ async function brokersView() {
   }
 
   const tableHolder = el("div");
+  // Marks this view for the live-refresh handler (broker balance push).
+  tableHolder.dataset.brokersView = "list";
   // Shown under the table when the Name filter matches no broker. It lives
   // outside the table, so the header input survives an empty result.
   const filterStatus = el("p", null, {
@@ -5627,10 +5670,19 @@ async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = f
 }
 
 function renderBrokerHistory(broker, data, page, date = "", includeDeleted = false) {
+  // A change made by another client (a policy annulled, a top-up, the starting
+  // balance corrected) arrives over the WebSocket; re-read this page instead of
+  // showing a stale figure.
+  refreshActiveBrokersView = () =>
+    brokerHistoryView(broker, page, date, includeDeleted);
+
   const backBtn = el("button", t("back"), { class: "secondary", type: "button" });
   backBtn.addEventListener("click", () => brokersView());
 
   const heading = el("h2", `${t("brokerHistory")}: ${broker.Name}`);
+  // Marks this view for the live-refresh handler (broker balance push).
+  heading.dataset.brokersView = "history";
+  heading.dataset.brokerId = String(broker.id);
   const range = `${formatDateTime(data.since)} – ${formatDateTime(data.until)}`;
   // The balance of the scoped range's END (what the broker owed then), not the
   // current balance: walking the date back has to change the figure instead of

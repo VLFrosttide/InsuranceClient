@@ -285,12 +285,12 @@ const I18N = {
     pageOf: "Page {page} of {total}",
     brokerHistory: "Balance history",
     brokerHistoryBalanceHint:
-      "The broker's balance at the end of the shown range. Pick a date to see the balance on that day; the history goes all the way back to the first movement.",
+      "The broker's balance at the end of the shown range - the same figure the Brokers tab shows, rebuilt from the broker's insurances and the payments it made. Pick a date to see the balance on that day; the history goes all the way back to the first movement.",
     startingBalance: "Starting balance",
     startingBalanceNotSet: "Not set",
     startingBalanceDate: "Starting balance date",
     startingBalanceHint:
-      "The broker's balance before the first insurance was created. Saving it rebuilds the whole balance history from this figure - every insurance then shows the balance after it - and recalculates the broker's balance from all of its insurances (an annulled one at its annulment tax only when the broker paid it) and all of its payments (top-ups and hand-overs).",
+      "The broker's balance before the first insurance was created. It is the base of the broker's balance, which the server rebuilds from this figure, all of its insurances (an annulled one at its annulment tax only when the broker paid it) and all of the payments it made (top-ups, hand-overs and paid bills) after every change.",
     startingBalanceSaved:
       "Starting balance saved — the broker balance has been recalculated",
     increaseDate: "Date of the increase",
@@ -1156,12 +1156,12 @@ const I18N = {
     pageOf: "Страница {page} от {total}",
     brokerHistory: "История на баланса",
     brokerHistoryBalanceHint:
-      "Балансът на брокера в края на показания период. Изберете дата, за да видите баланса за този ден; историята стига до първото движение.",
+      "Балансът на брокера в края на показания период - същата сума, която показва разделът „Брокери“, изчислена от застраховките на брокера и плащанията му. Изберете дата, за да видите баланса за този ден; историята стига до първото движение.",
     startingBalance: "Начален баланс",
     startingBalanceNotSet: "Не е зададен",
     startingBalanceDate: "Дата на началния баланс",
     startingBalanceHint:
-      "Балансът на брокера преди създаването на първата му застраховка. При запазване цялата история на баланса се построява от тази сума - всяка застраховка показва баланса след нея - а балансът на брокера се преизчислява от всички негови застраховки (анулираните – по тяхната такса за анулиране само когато брокерът я е платил) и всички негови плащания (увеличения и предадени суми).",
+      "Балансът на брокера преди създаването на първата му застраховка. Той е основата на баланса, който сървърът преизчислява от тази сума, от всички негови застраховки (анулираните – по тяхната такса за анулиране само когато брокерът я е платил) и от всички негови плащания (увеличения, предадени суми и платени фактури) при всяка промяна.",
     startingBalanceSaved:
       "Началният баланс е запазен — балансът на брокера е преизчислен",
     increaseDate: "Дата на увеличението",

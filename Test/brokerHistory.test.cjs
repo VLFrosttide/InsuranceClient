@@ -24,6 +24,10 @@ function resetDb() {
     // Stored starting balances, one per broker id (the balance before the
     // broker's first insurance).
     startingBalances: {},
+    // Money the broker paid, one row per payment (the balance formula reads
+    // this table, never the ledger).
+    payments: [],
+    nextPayment: 1,
     nextMovement: 1,
   };
 }
@@ -31,8 +35,9 @@ function resetDb() {
 const flat = (s) => String(s).replace(/\s+/g, " ").trim();
 
 function addMovement(brokerId, amount, createdAt, extra = {}) {
+  const id = db.nextMovement++;
   db.movements.push({
-    id: db.nextMovement++,
+    id,
     BrokerId: brokerId,
     Amount: amount,
     Type: extra.Type || "increase",
@@ -43,7 +48,28 @@ function addMovement(brokerId, amount, createdAt, extra = {}) {
     Deleted: extra.Deleted ? 1 : 0,
     DeletedAt: extra.DeletedAt === undefined ? null : extra.DeletedAt,
     DeletedBy: extra.DeletedBy === undefined ? null : extra.DeletedBy,
+    Branch: extra.Branch === undefined ? null : extra.Branch,
+    Currency: extra.Currency || "EUR",
   });
+  // The real server writes a payment to BOTH tables in the same transaction; the
+  // balance formula only reads this one.
+  const type = String(extra.Type || "increase").trim();
+  if (type === "increase" || type === "handover") {
+    db.payments.push({
+      id: db.nextPayment++,
+      BrokerId: brokerId,
+      Amount: amount,
+      Type: type,
+      Reason: extra.Reason || "",
+      Author: extra.Author || "",
+      Branch: extra.Branch === undefined ? null : extra.Branch,
+      Currency: extra.Currency || "EUR",
+      CreatedAt: createdAt,
+      MovementId: id,
+      Deleted: extra.Deleted ? 1 : 0,
+    });
+  }
+  return id;
 }
 
 function addPolicy(blancNumber, extra = {}) {
@@ -357,6 +383,66 @@ const STUBS = {
     parseClientDateTime,
   },
   "./PaymentSchedule.js": { getSchedule: () => ({}) },
+  // The real db/brokerPayments.js, against this fake database: the balance
+  // formula reads ONLY these rows for money the broker paid.
+  "../db/brokerPayments.js": {
+    ensureBrokerPaymentsTable: async () => {},
+    sumBrokerPayments: async (_conn, brokerId) => {
+      const rows = db.payments.filter(
+        (p) =>
+          Number(p.BrokerId) === Number(brokerId) &&
+          p.Deleted !== 1 &&
+          ["increase", "handover"].includes(String(p.Type || "").trim())
+      );
+      return (
+        Math.round(rows.reduce((sum, p) => sum + Number(p.Amount), 0) * 100) /
+        100
+      );
+    },
+    recordBrokerPayment: async (_conn, brokerId, amount, type, meta = {}) => {
+      const movementId = addMovement(brokerId, amount, meta.createdAt || "", {
+        Type: type,
+        Reason: meta.reason,
+        Author: meta.author,
+        Branch: meta.branch,
+        Currency: meta.currency,
+      });
+      return { id: movementId, amount };
+    },
+    syncBrokerPaymentFromMovement: async (_conn, change = {}) => {
+      const row = db.payments.find(
+        (p) => Number(p.MovementId) === Number(change.movementId)
+      );
+      const type = String(change.type || "").trim();
+      const isPayment = type === "increase" || type === "handover";
+      if (!row) {
+        if (!isPayment) return;
+        db.payments.push({
+          id: db.nextPayment++,
+          BrokerId: Number(change.brokerId),
+          Amount: Number(change.amount) || 0,
+          Type: type,
+          Reason: change.reason || "",
+          Author: change.author || "",
+          Branch: change.branch === undefined ? null : change.branch,
+          Currency: change.currency || "EUR",
+          CreatedAt: change.createdAt || "",
+          MovementId: Number(change.movementId),
+          Deleted: change.deleted ? 1 : 0,
+        });
+        return;
+      }
+      if (!isPayment) {
+        row.Deleted = 1;
+        return;
+      }
+      row.Amount = Number(change.amount) || 0;
+      row.Type = type;
+      if (change.reason !== undefined) row.Reason = change.reason;
+      if (change.author !== undefined) row.Author = change.author;
+      row.Deleted = change.deleted ? 1 : 0;
+    },
+  },
 };
 
 const mod = { exports: {} };
@@ -1439,7 +1525,7 @@ resetDb();
     eq(Object.keys(db.startingBalances).length, 1, "one row per broker");
   });
 
-  await check("starting balance: the history is rebuilt from it, insurance by insurance", async () => {
+  await check("starting balance: the history always shows the stored balance", async () => {
     resetDb();
     addPolicy("100001", { Price: 30, BrokerId: 1 });
     addPolicy("100002", { Price: 20, BrokerId: 1 });
@@ -1457,8 +1543,11 @@ resetDb();
       params: { id: "1" },
       body: { amount: 200, date: "2026-09-30" },
     });
-    // A hand-fixed balance that no longer follows the ledger: the history must
-    // be read forward from the starting balance, not back-solved from this.
+    // A hand-fixed balance that no longer follows the ledger must still be the
+    // figure the history shows: the stored balance is the single source of
+    // truth (the server rebuilds it from the insurances + the payments), and the
+    // ledger is only the who-did-what list. This is what keeps the Brokers tab
+    // and this page from ever disagreeing.
     db.brokers[0].CashBalance = 999;
 
     const r = await call("get", "/brokers/:id/history", {
@@ -1468,16 +1557,16 @@ resetDb();
     eq(r.status, 200, "status");
     const ms = r.body.movements; // newest first: top-up, then the two sales
     eq(ms[0].Amount, 100, "the newest row is the top-up");
-    eq(ms[0].BalanceAfter, 250, "200 + 100 - 30 - 20");
-    eq(ms[1].BalanceAfter, 150, "200 + 100 - 30 after the newer sale");
-    eq(ms[2].BalanceAfter, 170, "200 + 100 after the older sale");
+    eq(ms[0].BalanceAfter, 999, "the newest row shows the stored balance");
+    eq(ms[1].BalanceAfter, 899, "999 - 100 after the newer sale");
+    eq(ms[2].BalanceAfter, 919, "and + 20 back before it");
     eq(r.body.netChange, 50, "net change of the shown movements");
-    eq(r.body.balanceAtEnd, 250, "the history ends at the starting balance + its own rows");
-    eq(r.body.balanceAtStart, 200, "and starts at the starting balance");
-    eq(r.body.broker.CashBalance, 999, "the stored balance is not rewritten by the read");
+    eq(r.body.balanceAtEnd, 999, "the page ends on the stored balance");
+    eq(r.body.balanceAtStart, 949, "and starts at the stored balance - net");
+    eq(r.body.broker.CashBalance, 999, "the stored balance is reported as is");
   });
 
-  await check("starting balance: changing it shifts every row by the same amount", async () => {
+  await check("starting balance: a corrected starting balance moves every row", async () => {
     resetDb();
     addPolicy("100001", { Price: 40, BrokerId: 1 });
     addMovement(1, -40, "2026-10-05 10:00:00", {
@@ -1504,7 +1593,7 @@ resetDb();
     });
 
     eq(after.body.startingBalance.amount, 600, "the new figure is stored");
-    eq(before.body.movements.length, after.body.movements.length, "same rows");
+    eq(after.body.movements.length, before.body.movements.length, "same rows");
     for (let i = 0; i < before.body.movements.length; i++) {
       eq(
         after.body.movements[i].BalanceAfter,
@@ -1512,8 +1601,7 @@ resetDb();
         `row ${i} moved with the starting balance`
       );
     }
-    eq(after.body.balanceAtStart, 600, "the window starts at the new figure");
-    eq(after.body.balanceAtEnd, 570, "600 - 40 + 10");
+    eq(after.body.balanceAtEnd, 570, "600 + 10 - 40");
   });
 
   await check("starting balance: a past window also follows it", async () => {
@@ -1632,6 +1720,52 @@ resetDb();
     });
     eq(r.status, 404, "status");
     eq(r.body.error, "Broker not found", "error");
+  });
+
+  // --- the balance comes from the insurance table + broker_payments ----------
+
+  await check("a payment corrected in the history moves the payments table too", async () => {
+    resetDb();
+    addMovement(1, 100, "2026-10-02 10:00:00", { Type: "increase" });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 0, date: "2026-10-01" },
+    });
+    eq(db.brokers[0].CashBalance, 100, "the payment is the whole balance");
+
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { amount: 150 },
+    });
+    eq(r.status, 200, "status");
+    eq(db.payments[0].Amount, 150, "the money table is corrected too");
+    eq(db.brokers[0].CashBalance, 150, "and the rebuilt balance follows");
+  });
+
+  await check("a policy movement correction cannot move a rebuilt balance", async () => {
+    resetDb();
+    addPolicy("100001", { Price: 30, BrokerId: 1 });
+    addMovement(1, -30, "2026-10-02 10:00:00", {
+      Type: "policy",
+      BlancNumber: "100001",
+    });
+    await call("put", STARTING_BALANCE, {
+      params: { id: "1" },
+      body: { amount: 0, date: "2026-10-01" },
+    });
+    eq(db.brokers[0].CashBalance, -30, "0 - 30");
+
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { amount: -50 },
+    });
+    eq(r.status, 200, "status");
+    eq(db.movements[0].Amount, -50, "the history row keeps the correction");
+    eq(
+      db.brokers[0].CashBalance,
+      -30,
+      "the insurance row is the truth, so the balance is rebuilt from its price"
+    );
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -75,6 +75,7 @@ const STUBS = {
     decreaseBrokerForInsurance: async () => {},
     restoreBrokerForAnnulment: async () => {},
     adjustBrokerForPriceChange: async () => {},
+    refreshBrokerBalance: async () => null,
     getBrokerAllowNegativeBalance: async () => true,
   },
   "./PaymentSchedule.js": { getSchedule: async () => null },

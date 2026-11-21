@@ -362,6 +362,30 @@ const STUBS = {
       db.evicted.push(...(addresses || []));
     },
   },
+  // Payments have their own table now (the balance formula reads it); these
+  // helpers only insert, never read back.
+  "../db/brokerPayments.js": {
+    ensureBrokerPaymentsTable: async () => {},
+    sumBrokerPayments: async () => 0,
+    recordBrokerPayment: async (conn, brokerId, amount, type, meta = {}) =>
+      conn.query(
+        `INSERT INTO broker_balance_movements
+           (BrokerId, Amount, Type, Reason, Author, BlancNumber, CreatedAt, Branch, Currency)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          brokerId,
+          amount,
+          type,
+          meta.reason || "",
+          meta.author || "",
+          null,
+          meta.createdAt || null,
+          typeof meta.branch === "string" ? meta.branch : null,
+          meta.currency || "EUR",
+        ]
+      ),
+    syncBrokerPaymentFromMovement: async () => {},
+  },
 };
 
 const mod = { exports: {} };

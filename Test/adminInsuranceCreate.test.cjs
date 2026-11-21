@@ -110,6 +110,9 @@ const STUBS = {
     decreaseBrokerForInsurance: async (conn, brokerId, price, meta) => {
       brokerCharges.push({ brokerId, price, meta });
     },
+    // The balance is rebuilt from the insurances after each change; these tests
+    // stub the broker layer, so the rebuild is a no-op here.
+    refreshBrokerBalance: async () => null,
     restoreBrokerForAnnulment: async () => {},
     restoreBrokerForDeletion: async () => {},
     adjustBrokerForPriceChange: async () => {},

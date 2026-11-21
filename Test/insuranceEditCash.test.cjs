@@ -249,6 +249,7 @@ const STUBS = {
       brokerDeltas.push({ brokerId, delta: Number(price) });
       return Number(price);
     },
+    refreshBrokerBalance: async () => null,
     restoreBrokerForAnnulment: async (conn, brokerId, price) => {
       brokerRestores.push({ brokerId, amount: Number(price) });
     },

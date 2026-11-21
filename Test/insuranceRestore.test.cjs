@@ -172,6 +172,7 @@ const STUBS = {
       brokerCharges.push({ brokerId, amount: Number(price) });
       return Number(price);
     },
+    refreshBrokerBalance: async () => null,
     restoreBrokerForAnnulment: async () => {},
     restoreBrokerForDeletion: async () => {},
     adjustBrokerForPriceChange: async () => {},

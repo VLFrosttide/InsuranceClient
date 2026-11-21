@@ -297,6 +297,7 @@ const STUBS = {
     resolveBrokerByEmail: async () => null,
     blancInBrokerBatches: async () => true,
     decreaseBrokerForInsurance: async () => 0,
+    refreshBrokerBalance: async () => null,
     restoreBrokerForAnnulment: async () => {},
     restoreBrokerForDeletion: async () => {},
     adjustBrokerForPriceChange: async () => {},

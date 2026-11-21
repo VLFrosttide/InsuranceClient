@@ -91,6 +91,7 @@ const STUBS = {
     decreaseBrokerForInsurance: async () => {},
     restoreBrokerForAnnulment: async () => {},
     adjustBrokerForPriceChange: async () => {},
+    refreshBrokerBalance: async () => null,
     resolveBrokerCutOff: async () => false,
     getBrokerAllowNegativeBalance: async () => true,
   },
