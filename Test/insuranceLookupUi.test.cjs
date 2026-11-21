@@ -15,7 +15,9 @@
 //   - a search shows a spinner while it runs, then says how many results came
 //     back, that none did, or that the result is unchanged, with a short
 //     result animation;
-//   - the broker balance history renders the movement author.
+//   - the broker balance history renders the movement author;
+//   - its movements table numbers its rows ("No.") and the numbering carries on
+//     across pages.
 //
 // Run with:  node Test/insuranceLookupUi.test.cjs   (or: npm test)
 
@@ -329,7 +331,7 @@ check("retired broker movements are tagged and stand out", () => {
     "the delete confirmation explains that a retired row leaves the balance"
   );
   ok(
-    src.includes('t(\n        movement && movement.Retired\n          ? "restoreRetiredMovementConfirm"'),
+    src.includes('t(\n      movement && movement.Retired\n        ? "restoreRetiredMovementConfirm"'),
     "the restore confirmation mentions retired rows"
   );
   ok(appCss.includes(".movement-retired-tag"), "the tag has a style");
@@ -351,6 +353,37 @@ check("the history pager sits above and below the table", () => {
     block.indexOf('buildPagers("pagination-top")') < block.indexOf("table,"),
     "the top pager comes before the table"
   );
+});
+
+check("the history numbers its rows", () => {
+  const start = src.indexOf("function renderBrokerHistory(");
+  const end = src.indexOf(
+    "// Restore a previously soft-deleted broker movement",
+    start
+  );
+  ok(start >= 0 && end > start, "renderBrokerHistory block not found");
+  const block = src.slice(start, end);
+  // The movements table starts with the row's number ("No." in EN, "№" in BG,
+  // the same label the export preview uses).
+  ok(block.includes('key: "__rowNo"'), "a row-number column is added");
+  ok(block.includes('label: t("rowNo")'), "its header uses the shared label");
+  ok(
+    block.includes("format: (_v, m) => rowNumbers.get(m)"),
+    "each row looks up its own number"
+  );
+  // The numbers carry on across pages: 40 rows a page means page 2 starts at
+  // 41 instead of restarting at 1.
+  ok(
+    block.includes("(page - 1) * BROKER_HISTORY_PAGE_SIZE"),
+    "the numbering is offset by the pages before it"
+  );
+  ok(
+    src.includes("const BROKER_HISTORY_PAGE_SIZE = 40;") &&
+      src.includes("const pageSize = BROKER_HISTORY_PAGE_SIZE;"),
+    "one page-size constant feeds both the request and the numbering"
+  );
+  eq((common.match(/\browNo:/g) || []).length, 2, "rowNo in EN and BG");
+  ok(appCss.includes("td.row-number"), "the number column has its own style");
 });
 
 check("re-reading the history keeps the page instead of blanking it", () => {

@@ -754,10 +754,11 @@ function removeEmailMessage(messageId) {
 }
 
 
-function markEmailIrrelevant(entry) {
+async function markEmailIrrelevant(entry) {
   const emails = entry && Array.isArray(entry.emails) ? entry.emails : [];
   if (emails.length === 0) return;
-  if (!confirm(t("email.irrelevantConfirm"))) return;
+  const confirmed = await appConfirm(t("email.irrelevantConfirm"));
+  if (!confirmed) return;
 
   // Dismiss on the server. The server removes the email from the shared pool
   // and marks the Gmail message read, so it disappears for every worker and
@@ -3584,9 +3585,11 @@ function branchForm(branch) {
 // other list/search endpoint so it no longer gets parsed (e.g. in the daily
 // reconcile report).
 async function deleteInsurance(insurance, onDone) {
-  if (
-    !confirm(t("deleteInsuranceConfirm").replace("{b}", insurance.BlancNumber))
-  ) {
+  const confirmed = await appConfirm(
+    t("deleteInsuranceConfirm").replace("{b}", insurance.BlancNumber),
+    { danger: true, confirmLabel: t("delete") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3609,9 +3612,11 @@ async function deleteInsurance(insurance, onDone) {
 // policy was broker-funded) and sets Deleted back to 0, so the policy reappears
 // in lists and reports.
 async function restoreInsurance(insurance, onDone) {
-  if (
-    !confirm(t("restoreInsuranceConfirm").replace("{b}", insurance.BlancNumber))
-  ) {
+  const confirmed = await appConfirm(
+    t("restoreInsuranceConfirm").replace("{b}", insurance.BlancNumber),
+    { confirmLabel: t("restore") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3635,7 +3640,11 @@ async function restoreInsurance(insurance, onDone) {
 // in or appear in the users list, but an admin can bring it back with
 // restoreUser.
 async function deleteUser(user, onDone) {
-  if (!confirm(t("deleteUserConfirm").replace("{u}", user.Username))) {
+  const confirmed = await appConfirm(
+    t("deleteUserConfirm").replace("{u}", user.Username),
+    { danger: true, confirmLabel: t("delete") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3651,7 +3660,11 @@ async function deleteUser(user, onDone) {
 // account can sign in and shows up in the users list again. Nothing else is
 // reapplied - the delete never touched the password, broker link or balance.
 async function restoreUser(user, onDone) {
-  if (!confirm(t("restoreUserConfirm").replace("{u}", user.Username))) {
+  const confirmed = await appConfirm(
+    t("restoreUserConfirm").replace("{u}", user.Username),
+    { confirmLabel: t("restore") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3669,7 +3682,11 @@ async function restoreUser(user, onDone) {
 // lists and stops being recognised as an email sender, and an admin can bring it
 // back with restoreBroker.
 async function deleteBroker(broker, onDone) {
-  if (!confirm(t("deleteBrokerConfirm").replace("{b}", broker.Name))) {
+  const confirmed = await appConfirm(
+    t("deleteBrokerConfirm").replace("{b}", broker.Name),
+    { danger: true, confirmLabel: t("delete") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3684,7 +3701,11 @@ async function deleteBroker(broker, onDone) {
 // Restore a soft-deleted broker: the server clears the Deleted flags, so the
 // broker (with the balance and blancs it kept) reappears in the lists.
 async function restoreBroker(broker, onDone) {
-  if (!confirm(t("restoreBrokerConfirm").replace("{b}", broker.Name))) {
+  const confirmed = await appConfirm(
+    t("restoreBrokerConfirm").replace("{b}", broker.Name),
+    { confirmLabel: t("restore") }
+  );
+  if (!confirmed) {
     return;
   }
   try {
@@ -3710,7 +3731,11 @@ async function deleteCashTransaction(tx, onDone) {
     .replace("{a}", money(tx.Amount))
     .replace("{c}", tx.Currency)
     .replace("{r}", tx.Reason || "");
-  if (!confirm(text)) {
+  const confirmed = await appConfirm(text, {
+    danger: true,
+    confirmLabel: t("delete"),
+  });
+  if (!confirmed) {
     return;
   }
   try {
@@ -3829,7 +3854,7 @@ function openForgottenShiftFix(branch, defaultDate) {
       } catch (err) {
         throw new Error(translateError(err.message) || err.message);
       }
-      const confirmed = window.confirm(
+      const confirmed = await appConfirm(
         fmt(t("fixShiftConfirm"), {
           date: formatDateOnly(shiftDate),
           cutoff: formatDateTime(cutoff),
@@ -4479,7 +4504,8 @@ async function currentCashView(overrideBranch, overrideDate) {
     cashForm("handover", t("handOverCash"))
   );
   resetBtn.addEventListener("click", async () => {
-    if (!confirm(t("resetConfirm"))) return;
+    const confirmed = await appConfirm(t("resetConfirm"), { danger: true });
+    if (!confirmed) return;
     try {
       // "Reset to 0" also clears the branch's cash from brokers, recording what
       // was kept.
@@ -5648,6 +5674,11 @@ function brokerHistoryOnScreen(broker) {
 // still in flight, so an older answer must not repaint over the newer page.
 let brokerHistoryRequestId = 0;
 
+// Movements per page of the broker balance history. It is also the step of the
+// table's "No." column: the numbering runs on across pages (the first row of
+// page 2 is 41), because the rows are one numbered history, not separate lists.
+const BROKER_HISTORY_PAGE_SIZE = 40;
+
 // The broker balance history "page": every balance movement of the broker,
 // newest first, with a back button to the list. It goes all the way back to the
 // broker's first movement, and a calendar picker scopes it to a single day.
@@ -5664,7 +5695,7 @@ async function brokerHistoryView(broker, page = 1, date = "", includeDeleted = f
     Content.replaceChildren(el("p", t("loading"), { class: "muted" }));
   }
   try {
-    const pageSize = 40;
+    const pageSize = BROKER_HISTORY_PAGE_SIZE;
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
@@ -5823,13 +5854,11 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
             class: "danger",
             hover: true,
             onClick: async (m) => {
-              if (
-                !confirm(
-                  t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm")
-                )
-              ) {
-                return;
-              }
+              const confirmed = await appConfirm(
+                t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm"),
+                { danger: true, confirmLabel: t("delete") }
+              );
+              if (!confirmed) return;
               try {
                 await api(`/brokers/${broker.id}/history/${m.id}`, {
                   method: "DELETE",
@@ -5844,9 +5873,25 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
         ]
       : undefined;
 
+  // "No." column: renderTable hands a column the row itself, not its position,
+  // so the numbers are looked up per row. They follow the order the table shows
+  // (newest first) and carry on from the previous page: with 40 rows a page,
+  // page 2 starts at 41. Numbering the rows makes a movement easy to point at
+  // ("row 17") without relying on its date or amount.
+  const firstRowNumber = (page - 1) * BROKER_HISTORY_PAGE_SIZE + 1;
+  const rowNumbers = new Map(
+    (data.movements || []).map((m, idx) => [m, firstRowNumber + idx])
+  );
+
   const table = renderTable(
     data.movements || [],
     [
+      {
+        key: "__rowNo",
+        label: t("rowNo"),
+        format: (_v, m) => rowNumbers.get(m),
+        cellClass: () => "row-number",
+      },
       { key: "CreatedAt", label: t("date"), format: (v) => formatDateTime(v) },
       {
         key: "Type",
@@ -5985,17 +6030,15 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
 // movement's amount to the broker's balance and clears the Deleted flag, putting
 // the row back exactly where it was.
 async function restoreBrokerMovement(broker, movement, page, date) {
-  if (
-    !confirm(
-      t(
-        movement && movement.Retired
-          ? "restoreRetiredMovementConfirm"
-          : "restoreMovementConfirm"
-      )
-    )
-  ) {
-    return;
-  }
+  const confirmed = await appConfirm(
+    t(
+      movement && movement.Retired
+        ? "restoreRetiredMovementConfirm"
+        : "restoreMovementConfirm"
+    ),
+    { confirmLabel: t("restore") }
+  );
+  if (!confirmed) return;
   try {
     await api(`/brokers/${broker.id}/history/${movement.id}/restore`, {
       method: "POST",
@@ -6415,7 +6458,11 @@ async function brokerBatchesView(broker) {
                 const msg = t("deleteBatchConfirm")
                   .replace("{s}", b.RangeStart)
                   .replace("{e}", b.RangeEnd);
-                if (!confirm(msg)) return;
+                const confirmed = await appConfirm(msg, {
+                  danger: true,
+                  confirmLabel: t("delete"),
+                });
+                if (!confirmed) return;
                 try {
                   await send(`/${b.id}`, "DELETE");
                   toast(t("batchDeleted"), "success");
@@ -8772,7 +8819,11 @@ async function adminDiagnostics() {
     type: "button",
   });
   clearButton.addEventListener("click", async () => {
-    if (!window.confirm(t("diag.clearConfirm"))) return;
+    const confirmed = await appConfirm(t("diag.clearConfirm"), {
+      danger: true,
+      confirmLabel: t("delete"),
+    });
+    if (!confirmed) return;
     try {
       const result = await api("/admin/diagnostics", {
         method: "DELETE",

@@ -18,16 +18,22 @@ const vm = require("vm");
 
 let passed = 0;
 let failed = 0;
+// The checks run in order on a promise chain: the confirmation is now
+// promise-based (the themed dialog, common.js appConfirm), so a check may await
+// the action it triggers.
+let checkChain = Promise.resolve();
 function check(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log("  PASS  " + name);
-  } catch (err) {
-    failed++;
-    console.log("  FAIL  " + name);
-    console.log("        " + (err && err.stack ? err.stack : err));
-  }
+  checkChain = checkChain.then(async () => {
+    try {
+      await fn();
+      passed++;
+      console.log("  PASS  " + name);
+    } catch (err) {
+      failed++;
+      console.log("  FAIL  " + name);
+      console.log("        " + (err && err.stack ? err.stack : err));
+    }
+  });
 }
 function eq(actual, expected, label) {
   const a = JSON.stringify(actual);
@@ -205,10 +211,6 @@ const ctx = {
   window: {
     addEventListener: () => {},
     removeEventListener: () => {},
-    confirm: () => {
-      confirmCalls++;
-      return confirmAnswer;
-    },
     bridge: {
       LoadNewPage: (page) => {
         navigatedTo = page;
@@ -233,6 +235,13 @@ vm.runInContext(
   { filename: "common.js" }
 );
 const api = ctx.__exports;
+
+// common.js asks through its themed dialog (appConfirm); in this test the
+// answer comes straight from `confirmAnswer` instead of a click.
+ctx.appConfirm = async () => {
+  confirmCalls++;
+  return confirmAnswer;
+};
 
 function onlyTimeout() {
   const entries = Array.from(timeouts.entries());
@@ -286,20 +295,20 @@ check("dismissing removes the banner and silences this day", () => {
   eq(body.querySelector(".shift-reminder"), null, "stays hidden");
 });
 
-check("Finish shift on a form asks before leaving, then queues the view", () => {
+check("Finish shift on a form asks before leaving, then queues the view", async () => {
   storage.delete("shiftReminderDismissedDay");
   api.showShiftReminder();
   const banner = body.querySelector(".shift-reminder");
   ok(banner, "banner shown again");
 
   confirmAnswer = false;
-  api.openCurrentCashForShiftReminder();
+  await api.openCurrentCashForShiftReminder();
   eq(confirmCalls, 1, "asked first");
   eq(navigatedTo, null, "cancel keeps the form");
   ok(body.querySelector(".shift-reminder"), "banner still visible after cancel");
 
   confirmAnswer = true;
-  api.openCurrentCashForShiftReminder();
+  await api.openCurrentCashForShiftReminder();
   eq(confirmCalls, 2, "asked again");
   eq(navigatedTo, "renderer/WorkPage/WorkPage.html", "dashboard loaded");
   eq(
@@ -316,5 +325,7 @@ check("the dashboard consumes the request exactly once", () => {
   eq(api.consumeShiftReminderPendingView(), false, "second read");
 });
 
-if (failed) process.exit(1);
-console.log(`shiftReminderBanner: ${passed} passed, ${failed} failed`);
+checkChain.then(() => {
+  if (failed) process.exit(1);
+  console.log(`shiftReminderBanner: ${passed} passed, ${failed} failed`);
+});

@@ -340,6 +340,11 @@ const I18N = {
     exportExcel: "Export Excel",
     rowNo: "No.",
     close: "Close",
+    // Themed confirmation dialog (see appConfirm below), used everywhere the
+    // app used to call the native window.confirm().
+    confirmTitle: "Please confirm",
+    confirmOk: "Confirm",
+    confirmCancel: "Cancel",
     editInsurance: "Edit insurance",
     insuranceUpdated: "Insurance updated",
     userUpdated: "User updated",
@@ -1211,6 +1216,9 @@ const I18N = {
     exportExcel: "Експорт Excel",
     rowNo: "№",
     close: "Затвори",
+    confirmTitle: "Потвърждение",
+    confirmOk: "Потвърди",
+    confirmCancel: "Отмени",
     editInsurance: "Редактирай застраховка",
     insuranceUpdated: "Застраховката е обновена",
     userUpdated: "Потребителят е обновен",
@@ -2420,6 +2428,139 @@ function toast(text, type = "info") {
   toastTimer = setTimeout(() => node.remove(), TOAST_DURATION_MS);
 }
 
+// ---------------------------------------------------------------------------
+// Themed confirmation dialog - replaces the native window.confirm()
+//
+// The native dialog is drawn by the OS: a bright window that ignores the app's
+// dark theme, with a system font and system buttons. appConfirm() asks the same
+// question in the app's own dialog - a card over a dimmed backdrop, styled like
+// the modals and toasts - and resolves true/false exactly like confirm():
+//
+//   if (
+//     !(await appConfirm(t("deleteInsuranceConfirm"), {
+//       danger: true,
+//       confirmLabel: t("delete"),
+//     }))
+//   ) {
+//     return;
+//   }
+//
+// Options: `danger` paints the icon and the confirm button in the danger colour
+// (for actions that delete or discard data), `title`, `confirmLabel` and
+// `cancelLabel` override the default texts.
+//
+// Escape and a click on the backdrop cancel. The two buttons are ordinary
+// <button>s, so Enter/Space activate whichever has focus; Cancel is focused
+// first so a stray Enter cannot destroy anything.
+// ---------------------------------------------------------------------------
+let confirmDialogNode = null;
+let confirmDialogResolve = null;
+let confirmDialogKeydown = null;
+let confirmDialogPreviousFocus = null;
+
+function closeConfirmDialog(result) {
+  if (!confirmDialogResolve) return;
+  const resolve = confirmDialogResolve;
+  const node = confirmDialogNode;
+  const keydown = confirmDialogKeydown;
+  const previousFocus = confirmDialogPreviousFocus;
+  confirmDialogNode = null;
+  confirmDialogResolve = null;
+  confirmDialogKeydown = null;
+  confirmDialogPreviousFocus = null;
+  document.removeEventListener("keydown", keydown, true);
+  if (node) node.remove();
+  // Hand focus back to whatever the worker was using before the question.
+  if (previousFocus && typeof previousFocus.focus === "function") {
+    try {
+      previousFocus.focus();
+    } catch (err) {
+      // The control may have been re-rendered away in the meantime.
+    }
+  }
+  resolve(result);
+}
+
+function appConfirm(message, options) {
+  const opts = options || {};
+  // One question at a time: a newer one replaces the open one, and the older
+  // promise resolves false so the action it guarded never runs.
+  if (confirmDialogResolve) closeConfirmDialog(false);
+  // Without a DOM (unit tests, a plain-browser preview) there is nothing to
+  // click, so the answer is "no" - never run a destructive action by default.
+  if (typeof document === "undefined" || !document.body) {
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    const backdrop = el("div", null, { class: "confirm-backdrop" });
+    const dialog = el("div", null, {
+      class: "confirm-dialog",
+      role: "alertdialog",
+      "aria-modal": "true",
+      "aria-labelledby": "ConfirmDialogTitle",
+      "aria-describedby": "ConfirmDialogMessage",
+    });
+
+    const header = el("div", null, { class: "confirm-header" });
+    header.appendChild(
+      el("span", opts.danger ? "⚠" : "?", {
+        class: opts.danger ? "confirm-icon danger" : "confirm-icon",
+        "aria-hidden": "true",
+      })
+    );
+    header.appendChild(
+      el("h2", opts.title || t("confirmTitle"), {
+        class: "confirm-title",
+        id: "ConfirmDialogTitle",
+      })
+    );
+    dialog.appendChild(header);
+    dialog.appendChild(
+      el("p", message, {
+        class: "confirm-message",
+        id: "ConfirmDialogMessage",
+      })
+    );
+
+    const actions = el("div", null, { class: "confirm-actions" });
+    const cancelButton = el("button", opts.cancelLabel || t("confirmCancel"), {
+      class: "secondary",
+      type: "button",
+    });
+    const confirmButton = el("button", opts.confirmLabel || t("confirmOk"), {
+      class: opts.danger ? "danger" : "",
+      type: "button",
+    });
+    cancelButton.addEventListener("click", () => closeConfirmDialog(false));
+    confirmButton.addEventListener("click", () => closeConfirmDialog(true));
+    actions.appendChild(cancelButton);
+    actions.appendChild(confirmButton);
+    dialog.appendChild(actions);
+    backdrop.appendChild(dialog);
+
+    // Capture phase: an open dashboard modal closes on Escape in its own
+    // document-level listener, which must not also fire behind the question.
+    const keydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeConfirmDialog(false);
+    };
+    document.addEventListener("keydown", keydown, true);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) closeConfirmDialog(false);
+    });
+
+    confirmDialogNode = backdrop;
+    confirmDialogResolve = resolve;
+    confirmDialogKeydown = keydown;
+    confirmDialogPreviousFocus = document.activeElement || null;
+    document.body.appendChild(backdrop);
+    cancelButton.focus();
+  });
+}
+
 // Log an error to the console and show it to the user in an error toast.
 // `context` describes what failed (console only); the toast shows the error's
 // own message, or the translated `fallbackKey` when the error has none.
@@ -2561,7 +2702,7 @@ function updateShiftReminderCountdown() {
 // page installs `window.__openCurrentCash`; on the insurance form the request
 // is handed to the dashboard through localStorage and a page load, because the
 // form has no Current cash view of its own.
-function openCurrentCashForShiftReminder() {
+async function openCurrentCashForShiftReminder() {
   if (typeof window.__openCurrentCash === "function") {
     hideShiftReminder(true);
     try {
@@ -2573,7 +2714,10 @@ function openCurrentCashForShiftReminder() {
   }
   // On the insurance form this leaves the page, so make the loss of unsaved
   // form data explicit before navigating away.
-  if (!window.confirm(t("shiftReminder.leaveFormConfirm"))) return;
+  const confirmed = await appConfirm(t("shiftReminder.leaveFormConfirm"), {
+    confirmLabel: t("shiftReminder.endShift"),
+  });
+  if (!confirmed) return;
   hideShiftReminder(true);
   try {
     localStorage.setItem(SHIFT_REMINDER_PENDING_VIEW_KEY, "1");
@@ -3025,8 +3169,12 @@ function renderOutboxPanel() {
         class: "danger small",
         type: "button",
       });
-      discard.addEventListener("click", () => {
-        if (!confirm(t("outbox.discardConfirm"))) return;
+      discard.addEventListener("click", async () => {
+        const confirmed = await appConfirm(t("outbox.discardConfirm"), {
+          danger: true,
+          confirmLabel: t("outbox.discard"),
+        });
+        if (!confirmed) return;
         window.bridge
           .OutboxDiscard(item.id)
           .catch((err) => reportError("Outbox discard failed", err));

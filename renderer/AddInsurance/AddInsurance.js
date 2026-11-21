@@ -2314,8 +2314,12 @@ async function closeFormAfterReply() {
 BackButton.addEventListener("click", goBack);
 
 // Clearing wipes every entered value and attached file, so ask first.
-ClearButton.addEventListener("click", () => {
-  if (!confirm(t("add.clearConfirm"))) return;
+ClearButton.addEventListener("click", async () => {
+  const confirmed = await appConfirm(t("add.clearConfirm"), {
+    danger: true,
+    confirmLabel: t("clear"),
+  });
+  if (!confirmed) return;
   clearForm();
 });
 
@@ -2592,7 +2596,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
       ) {
         setMessage(message, true);
         toast(message, "error");
-        if (!confirm(t("add.blancOutsideBatchesConfirm"))) {
+        const confirmed = await appConfirm(t("add.blancOutsideBatchesConfirm"));
+        if (!confirmed) {
           return;
         }
         forceOutsideBlancBatch = true;
@@ -2637,7 +2642,10 @@ async function sendReply() {
       return;
     }
 
-    if (!confirm(t("add.replyConfirm"))) return;
+    const confirmed = await appConfirm(t("add.replyConfirm"), {
+      confirmLabel: t("add.replyButton"),
+    });
+    if (!confirmed) return;
 
     replySending = true;
     syncReplyButton();

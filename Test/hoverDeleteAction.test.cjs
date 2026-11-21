@@ -103,7 +103,9 @@ const CTX = {
   el: makeNode,
   t: (key) => (key === "deleteTransactionConfirm" ? CONFIRM_TEMPLATE : key),
   money: (value) => `M(${value})`,
-  confirm: (text) => {
+  // The themed dialog (common.js appConfirm) is promise-based; the answer comes
+  // straight from the test instead of a click.
+  appConfirm: async (text) => {
     confirmTexts.push(text);
     return confirmAnswer;
   },

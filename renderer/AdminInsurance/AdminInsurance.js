@@ -455,7 +455,8 @@ InsuranceForm.addEventListener("submit", async function (e) {
       ) {
         setMessage(message, true);
         toast(message, "error");
-        if (!confirm(t("add.blancOutsideBatchesConfirm"))) {
+        const confirmed = await appConfirm(t("add.blancOutsideBatchesConfirm"));
+        if (!confirmed) {
           return;
         }
         forceOutsideBlancBatch = true;
@@ -488,8 +489,12 @@ if (LangButton) {
 }
 if (BackButton) BackButton.addEventListener("click", goBack);
 if (ClearButton) {
-  ClearButton.addEventListener("click", () => {
-    if (!confirm(t("add.clearConfirm"))) return;
+  ClearButton.addEventListener("click", async () => {
+    const confirmed = await appConfirm(t("add.clearConfirm"), {
+      danger: true,
+      confirmLabel: t("clear"),
+    });
+    if (!confirmed) return;
     clearForm();
   });
 }

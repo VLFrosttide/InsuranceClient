@@ -93,7 +93,9 @@ const CONFIRM_KEYS = {
 const clientCtx = {
   console,
   t: (key) => CONFIRM_KEYS[key] ?? key,
-  confirm: (text) => {
+  // The themed dialog (common.js appConfirm) is promise-based; the answer comes
+  // straight from the test instead of a click.
+  appConfirm: async (text) => {
     confirmTexts.push(text);
     return confirmAnswer;
   },
