@@ -21,7 +21,7 @@ if (!requireLogin()) {
 }
 
 // ---------------------------------------------------------------------------
-// Unread email cards (workers only)
+// Unread email cards (admins and workers)
 // ---------------------------------------------------------------------------
 const emailCards = new Map(); // thread key -> { emails, email (newest), node }
 let emailSocket = null;
@@ -53,7 +53,9 @@ function brokerCodeForEmail(email) {
 }
 
 async function loadBrokerCodes() {
-  if (userRole !== "2") return;
+  // Admins get the same email cards as workers, so they need the broker code
+  // chip too. Both roles may read the broker list.
+  if (userRole !== "1" && userRole !== "2") return;
   try {
     const data = await api("/brokers");
     const map = new Map();
@@ -417,7 +419,7 @@ function emailCardMatchesQuery(entry) {
 }
 
 function renderEmailCardsIfVisible() {
-  if (!activeNav || activeNav.load !== workerDashboard) return;
+  if (!activeNav || activeNav.load !== emailCardsView) return;
   const cards = document.getElementById("EmailCards");
   if (cards) {
     cards.replaceWith(emailCardsContainer());
@@ -1103,7 +1105,9 @@ function handleBrokerBalanceChanged(msg) {
 }
 
 function setupEmailSocket() {
-  if (userRole !== "2") return;
+  // Admins receive the unread email cards as well, so they can work an email
+  // themselves when no worker is available.
+  if (userRole !== "1" && userRole !== "2") return;
 
   emailSocket = new UnreadEmailSocket({
     new_email: (msg) => addEmailCard(msg.data),
@@ -1116,10 +1120,12 @@ function setupEmailSocket() {
       }
       // Keep emails of queued policies reserved; complete delivered ones.
       syncOutboxEmails(emailSocket);
-      // Share this connection for worker presence so the page only opens one
-      // WebSocket instead of two.
+      // Share this connection for the presence board so the page only opens one
+      // WebSocket instead of two. Admins see the board but are not listed on it.
       try {
-        sendPresence(presenceStatusFor("online", lastActivityAt));
+        if (userRole === "2") {
+          sendPresence(presenceStatusFor("online", lastActivityAt));
+        }
         emailSocket.send({ type: "list_presence" });
       } catch (err) {
         console.error("Failed to send presence request:", err);
@@ -1196,7 +1202,13 @@ function setupEmailSocket() {
 }
 
 function fetchUnreadEmails() {
-  if (userRole !== "2" || !emailSocket || !emailSocket.isReady()) return;
+  if (
+    (userRole !== "1" && userRole !== "2") ||
+    !emailSocket ||
+    !emailSocket.isReady()
+  ) {
+    return;
+  }
   try {
     emailSocket.send({ type: "list_emails" });
   } catch (err) {
@@ -1263,10 +1275,11 @@ function markActivity() {
 
 function setupPresenceSocket() {
   if (userRole !== "1" && userRole !== "2") return;
-  if (userRole === "2" && emailSocket) {
-    // Reuse the worker's emailSocket so the dashboard maintains a single
-    // WebSocket connection for both emails and presence.
+  if (emailSocket) {
+    // Reuse the emailSocket so the dashboard maintains a single WebSocket
+    // connection for both emails and presence (admins and workers).
     presenceSocket = emailSocket;
+    if (userRole !== "2") return;
     trackUserActivity(markActivity);
     // Heartbeat: re-assert "online"/"afk" on every tick even when it did not
     // change. The server only re-broadcasts a real change, so this is cheap -
@@ -2186,7 +2199,7 @@ function collapsibleSection(title, count, nodes, breakdown) {
 const EDIT_DURATION_OPTIONS = [15, 30, 90];
 const EDIT_VEHICLE_TYPES = ["Automobile", "Motor", "Bus", "Trailer"];
 // Branch dropdown options for the edit form. Mirrors the login page's branch
-// dropdown and KNOWN_BRANCHES below, so the lists cannot drift apart.
+// dropdown below, so the lists cannot drift apart.
 let EDIT_BRANCHES = ["ГКПП Капитан Андреево", "ГКПП Лесово", "Офис Харманли"];
 const EDIT_NON_TURK_FEE = 5;
 const EDIT_NON_TURK_FEE_TRY = 200;
@@ -3034,20 +3047,8 @@ function openAnnulForm(insurance, onDone) {
 // Admin views
 // ---------------------------------------------------------------------------
 
-// The set of known branches (mirrors the login page's branch dropdown). Used so
-// the Overview always shows a card for every known branch — even when it has no
-// current-cash record yet (shown as 0) — while never displaying a blank/unknown
-// "branch" that legacy or malformed records may carry. Populated from the server
-// (see loadEnabledBranches and adminDashboard), with these names as an offline
-// fallback.
-let KNOWN_BRANCHES = [
-  "ГКПП Капитан Андреево",
-  "ГКПП Лесово",
-  "Офис Харманли",
-];
-
-// Fetch the currently enabled branches so the edit form's branch dropdown and
-// the admin overview always reflect newly created / disabled branches.
+// Fetch the currently enabled branches so the edit form's branch dropdown
+// always reflects newly created / disabled branches.
 async function loadEnabledBranches() {
   try {
     const data = await api("/branches");
@@ -3056,119 +3057,10 @@ async function loadEnabledBranches() {
       .filter(Boolean);
     if (names.length > 0) {
       EDIT_BRANCHES = names;
-      KNOWN_BRANCHES = names;
     }
   } catch (err) {
     console.warn("Failed to load branches:", err);
   }
-}
-
-async function adminDashboard() {
-  // Fetch all insurances and branch cash data. The branch balances are the same
-  // derived drawer figures the Current cash tab shows; tzOffset keeps "today"
-  // identical on both.
-  const tzOffset = -new Date().getTimezoneOffset();
-  const [insuranceData, branchesData, allBranchesData] = await Promise.all([
-    api("/admin/insurances"),
-    api(`/currentcash/branches?tzOffset=${tzOffset}`),
-    api("/admin/branches"),
-  ]);
-
-  const insurances = insuranceData.insurances || [];
-  const branches = branchesData.branches || {};
-
-  // Keep the Overview's known-branch list in sync with the branch registry,
-  // including branches that have been disabled (so they still appear with 0).
-  const managedBranches = (
-    allBranchesData && allBranchesData.branches ? allBranchesData.branches : []
-  )
-    .map((b) => b.Name)
-    .filter(Boolean);
-  if (managedBranches.length > 0) KNOWN_BRANCHES = managedBranches;
-
-  // Today's date as a LOCAL "YYYY-MM-DD". toISOString() would give the UTC day,
-  // which differs from the local day around midnight.
-  const now = new Date();
-  const today = `${now.getFullYear()}-${reconPad(now.getMonth() + 1)}-${reconPad(
-    now.getDate()
-  )}`;
-
-  // Count insurances by branch for today. CreationDate holds the local wall
-  // clock time, so its first 10 characters are the local creation day.
-  const branchCounts = {};
-  for (const insurance of insurances) {
-    const creationDate = insurance.CreationDate
-      ? String(insurance.CreationDate).slice(0, 10)
-      : null;
-    if (creationDate === today) {
-      const branch = insurance.Branch;
-      if (!branch) continue; // skip legacy/blank branch entries
-      branchCounts[branch] = (branchCounts[branch] || 0) + 1;
-    }
-  }
-
-  // Build branch cards with insurance count and cash balance. Always show
-  // every known branch (defaulting to 0 when there is no data for it yet),
-  // plus any other non-blank branch name the server knows about. Blank or
-  // missing branch names (e.g. legacy data from before branch tracking) are
-  // intentionally dropped instead of shown as "Unknown branch", so no card
-  // ever displays money without a real branch to attribute it to.
-  const branchesSection = el("div", null, null);
-  const branchNames = Array.from(
-    new Set([...KNOWN_BRANCHES, ...Object.keys(branches)])
-  )
-    .filter((name) => name)
-    .sort();
-
-  if (branchNames.length > 0) {
-    const branchGrid = el("div", null, { class: "stat-grid" });
-
-    for (const branchName of branchNames) {
-      const branchCard = el("div", null, { class: "stat-card" });
-      branchCard.appendChild(el("h4", branchName));
-
-      // Insurance count for today (0 when the branch has no data yet).
-      const insuranceCount = branchCounts[branchName] || 0;
-      branchCard.appendChild(
-        el("p", `${t("nav.insurances")}: ${insuranceCount}`, {
-          class: "muted",
-        })
-      );
-
-      // Current cash balance (only non-zero currencies, same as the
-      // Current Cash tab). Branches with no current-cash record yet render
-      // as 0.
-      const balances = branches[branchName] || {};
-      branchCard.appendChild(
-        el("p", renderCashBalances(balances), { class: "big" })
-      );
-
-      // Jump straight into the Current Cash tab, pre-filtered to this
-      // branch, so the balance can be increased/reduced/reset from here.
-      const manageBtn = el("button", t("manage"), {
-        class: "secondary small",
-      });
-      manageBtn.addEventListener("click", () => {
-        const defs = navDefs();
-        const idx = defs.findIndex((d) => d.load === currentCashView);
-        if (idx !== -1) {
-          activeNav = defs[idx];
-          Array.from(Nav.children).forEach((btn, i) =>
-            btn.classList.toggle("active", i === idx)
-          );
-        }
-        runLoader(() => currentCashView(branchName));
-      });
-      branchCard.appendChild(manageBtn);
-
-      branchGrid.appendChild(branchCard);
-    }
-    branchesSection.appendChild(branchGrid);
-  } else {
-    branchesSection.appendChild(el("p", t("noData"), { class: "muted" }));
-  }
-
-  Content.replaceChildren(el("h2", t("overview")), branchesSection);
 }
 
 // Sort state of the users table. Kept outside the DOM so saving a user,
@@ -8585,7 +8477,10 @@ async function reconcileView() {
 // ---------------------------------------------------------------------------
 // Worker views
 // ---------------------------------------------------------------------------
-async function workerDashboard() {
+// The dashboard view shared by admins and workers: the unread email cards they
+// can claim and work. Admins used to get a branch overview here, but it held no
+// useful data, so they now get the same cards and can step in when needed.
+async function emailCardsView() {
   Content.replaceChildren(...emailCardsDashboard());
 }
 
@@ -9196,7 +9091,9 @@ async function adminDiagnostics() {
 // ---------------------------------------------------------------------------
 const NAV_DEFS = {
   1: [
-    { key: "nav.dashboard", load: adminDashboard },
+    // The Dashboard tab shows the unread email cards, so an admin can work an
+    // email when no worker is available (the old overview was removed).
+    { key: "nav.dashboard", load: emailCardsView },
     { key: "nav.users", load: adminUsers },
     { key: "nav.branches", load: adminBranches },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
@@ -9208,7 +9105,7 @@ const NAV_DEFS = {
     { key: "nav.diagnostics", load: adminDiagnostics },
   ],
   2: [
-    { key: "nav.dashboard", load: workerDashboard },
+    { key: "nav.dashboard", load: emailCardsView },
     { key: "nav.insurances", load: workerInsurances },
     // No Card tab: workers see only their own branch's card balance, shown
     // on the Current cash screen.
