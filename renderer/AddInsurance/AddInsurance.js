@@ -579,17 +579,28 @@ function autofillEmailNumbers() {
   if (!PendingEmail) return;
   const text = [PendingEmail.subject, PendingEmail.body].filter(Boolean).join("\n");
 
-  const blancInput = document.getElementById("BlancNumberInput");
-  if (blancInput) {
-    const found = extractBlankNumber(text);
-    if (found !== null) blancInput.value = found;
-  }
+  autoFillNumber("BlancNumberInput", extractBlankNumber(text));
+  autoFillNumber("CarNumberInput", extractCarNumber(text));
+}
 
-  const carInput = document.getElementById("CarNumberInput");
-  if (carInput) {
-    const found = extractCarNumber(text);
-    if (found !== null) carInput.value = found;
-  }
+// Values the form wrote into a number field by itself - from the email text, a
+// PDF's file name or a PDF's contents - per input id. A later, better source
+// (the policy PDFs, which arrive after the page has loaded) may replace an
+// automatic value, while anything the worker has typed is never overwritten.
+const autoFilledNumbers = new Map();
+
+// Write one number into a field unless the field already holds something the
+// worker typed. Returns true when the value is now in the field.
+function autoFillNumber(id, value) {
+  const text = stripWhitespace(value);
+  if (!text) return false;
+  const input = document.getElementById(id);
+  if (!input) return false;
+  const current = stripWhitespace(input.value);
+  if (current && current !== autoFilledNumbers.get(id)) return false;
+  if (input.value !== text) input.value = text;
+  autoFilledNumbers.set(id, text);
+  return true;
 }
 
 // Trim all whitespace the moment a value is pasted into the car / policy /
@@ -1552,12 +1563,20 @@ function stopDesktopPdfWatch() {
 // names one of the policy PDFs "BG_02_ FI<policy>.pdf", so the policy number
 // can be read straight out of the filename (the "FI" marker is stripped — see
 // extractPolicyNumber in numberField.js). Only fills the field when a number
-// is actually found and leaves any existing value untouched otherwise.
+// is actually found and leaves any typed value untouched otherwise.
 function prefillPolicyNumberFromFilename(filename) {
-  const found = extractPolicyNumber(filename);
-  if (found === null) return;
-  const input = document.getElementById("PolicyNumberInput");
-  if (input) input.value = found;
+  autoFillNumber("PolicyNumberInput", extractPolicyNumber(filename));
+}
+
+// Fill the form from the values the main process read out of the two policy
+// PDFs (see pdfFields.js): the policy and car numbers from the policy PDF and
+// the blank number from the sticker PDF. Each field arrives as soon as its PDF
+// has been downloaded, in email and walk-in mode alike.
+function applyPdfFields(fields) {
+  if (!fields) return;
+  autoFillNumber("PolicyNumberInput", fields.policyNumber);
+  autoFillNumber("CarNumberInput", fields.carNumber);
+  autoFillNumber("BlancNumberInput", fields.blancNumber);
 }
 
 // Files discovered on the Desktop, ready to be attached to the policy.
@@ -1609,6 +1628,14 @@ function startDesktopPdfWatch() {
   if (OpenedFromEmail) {
     window.bridge.OnDesktopPdfFound((file) => attachDesktopPdf([file]));
   }
+
+  // Both modes fill the policy, car and blank numbers from the PDFs the moment
+  // each one is downloaded - a walk-in form has no attachments but the same
+  // two PDFs, so the same values are there to be read.
+  if (typeof window.bridge.OnDesktopPdfFields === "function") {
+    window.bridge.OnDesktopPdfFields((fields) => applyPdfFields(fields));
+  }
+
   window.bridge
     .StartDesktopPdfWatch(sinceMs, {
       mode: OpenedFromEmail ? "email" : "walkin",

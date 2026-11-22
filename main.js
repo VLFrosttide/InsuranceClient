@@ -25,6 +25,12 @@ import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
 import { BulinsController } from "./bulins.js";
 import { ScanWatcher, ensureOcrLanguages } from "./scans.js";
+import { pdfFields } from "./pdfFields.js";
+import {
+  desktopPdfAlreadyHandled,
+  desktopPdfBelongsToForm,
+  desktopPdfIdentity,
+} from "./desktopPdfWatch.js";
 import { API } from "./config.js";
 const { autoUpdater } = electronUpdater;
 let win;
@@ -1016,8 +1022,22 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 // While a worker processes a policy, an external tool downloads the policy
 // PDFs to the user's Desktop. The renderer starts this watcher when the email
 // card or the walk-in insurance button is clicked; we then poll the Desktop
-// every second for PDFs created after that moment and queue paper copies in
+// every second for PDFs downloaded after that moment and queue paper copies in
 // the background (see the print queue below).
+//
+// Only files that belong to THIS form are touched. Anything already sitting on
+// the Desktop when the watch starts is left alone, however old it is, and
+// nothing that predates the click is ever printed, uploaded or deleted. Two
+// signals decide that together:
+//   - a snapshot of the Desktop's PDFs taken when the watch starts: a file that
+//     is not in it appeared after the form was opened, so it is ours;
+//   - the file's creation time, for the one case the snapshot cannot see: a PDF
+//     downloaded in the gap between the click and the form finishing loading
+//     (it is in the snapshot, but created after the click).
+// The timestamp alone is not enough: a downloader may keep the server's
+// (older) timestamp, and a filesystem without a usable creation time reports
+// the modification time instead — either would make a fresh PDF look old and
+// leave it on the Desktop forever.
 //
 // Email mode: both PDFs are pushed to the form at once and deleted from the
 // Desktop; the policy PDF ("BG_02_ FI<policy>.pdf") is uploaded but never
@@ -1025,9 +1045,9 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 // once it has collected both files.
 //
 // Walk-in mode: both PDFs get a paper copy, and each Desktop file is deleted
-// only after its print has settled. The watcher stops once both paper copies
-// are done (or the form is closed).
-let DesktopPdfWatch = null; // { mode, sinceMs, timer, emitted, sizes, foundPolicy, foundOther, foundCount, printedCount }
+// only after its print has settled — printed, cancelled or failed — so a file
+// this watch took over is never left behind.
+let DesktopPdfWatch = null; // { mode, sinceMs, timer, existing, emitted, sizes, foundPolicy, foundOther, foundCount, printedCount, fields }
 
 function DesktopPdfDirectory() {
   try {
@@ -1036,6 +1056,64 @@ function DesktopPdfDirectory() {
     console.error("[DesktopPdfWatch] Could not resolve the Desktop path:", err);
     return null;
   }
+}
+
+// Every PDF already on the Desktop when a watch starts, with the size and
+// creation time it had at that moment. A file that is not in here was written
+// after the watch started, so it can only belong to the form being opened.
+// Which of these files may then be handled is decided by
+// desktopPdfBelongsToForm (./desktopPdfWatch.js).
+function DesktopPdfSnapshot(dir) {
+  const snapshot = new Map();
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    console.error("[DesktopPdfWatch] Failed to list the Desktop:", err);
+    return snapshot;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (path.extname(entry.name).toLowerCase() !== ".pdf") continue;
+    const filePath = path.join(dir, entry.name);
+    try {
+      snapshot.set(filePath, desktopPdfIdentity(fs.statSync(filePath)));
+    } catch (err) {
+      // Vanished or unreadable: leave it out. When it does turn up it is treated
+      // like any other new file.
+    }
+  }
+  return snapshot;
+}
+
+// True when this PDF may have been downloaded for the form that opened the
+// watch, so it may be uploaded, printed and deleted. The rules - and why the
+// snapshot and the click time are both needed - live in ./desktopPdfWatch.js.
+
+// Windows keeps a freshly downloaded PDF locked for a moment (the downloader,
+// antivirus or a viewer may still hold it open), so a single unlink can fail
+// with EBUSY/EPERM and the file would stay on the Desktop. Retry with a growing
+// delay, and treat an already-missing file as deleted.
+const DesktopPdfDeleteAttempts = 8;
+const DesktopPdfDeleteRetryMs = 250;
+
+async function DeleteDesktopPdfFile(filePath, logTag = "[DesktopPdfWatch]") {
+  for (let attempt = 1; attempt <= DesktopPdfDeleteAttempts; attempt += 1) {
+    try {
+      await fs.promises.unlink(filePath);
+      return true;
+    } catch (err) {
+      if (err.code === "ENOENT") return true;
+      const locked =
+        err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES";
+      if (!locked || attempt === DesktopPdfDeleteAttempts) {
+        console.error(`${logTag} Failed to delete "${filePath}":`, err);
+        return false;
+      }
+      await printDelay(DesktopPdfDeleteRetryMs * attempt);
+    }
+  }
+  return false;
 }
 
 function StopDesktopPdfWatch() {
@@ -1233,6 +1311,43 @@ async function WaitForImageDecode(webContents) {
 
 let DesktopPdfScanning = false;
 
+// Read the fields out of a downloaded PDF and push whatever is new to the form.
+// Each PDF only carries some of them (the policy PDF: policy and car number,
+// the other: blank number), so the values are collected on the watcher and each
+// field is sent once - a later file never overwrites a value already found.
+// Anything that goes wrong here is logged and ignored: the upload and the print
+// must never depend on the form being fillable.
+function SendDesktopPdfFields(watch, filename, bytes) {
+  if (!watch || !bytes) return;
+  if (!watch.fields) watch.fields = {};
+  let fields;
+  try {
+    fields = pdfFields(bytes, filename);
+  } catch (err) {
+    console.warn(`[DesktopPdfWatch] Could not read the fields of "${filename}":`, err);
+    return;
+  }
+  if (!fields) return;
+
+  const found = {};
+  for (const key of ["policyNumber", "carNumber", "blancNumber"]) {
+    const value = fields[key];
+    if (!value || watch.fields[key]) continue;
+    watch.fields[key] = value;
+    found[key] = value;
+  }
+  if (!Object.keys(found).length) return;
+
+  console.log(
+    `[DesktopPdfWatch] "${filename}" -> ${Object.entries(found)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(", ")}`
+  );
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("DesktopPdfFields", found);
+  }
+}
+
 // Single-flight guard: only one scan runs at a time. Printing is handled by the
 // background queue (see below), so the scan itself never blocks on a dialog.
 async function ScanDesktopPdfs() {
@@ -1266,7 +1381,6 @@ async function ScanDesktopPdfsOnce() {
     if (path.extname(entry.name).toLowerCase() !== ".pdf") continue;
 
     const filePath = path.join(dir, entry.name);
-    if (watch.emitted.has(filePath)) continue;
 
     // The policy PDF ("BG_02_ FI<policy>.pdf") is auto-attached like every
     // other PDF, but it is never auto-printed in email mode: only the
@@ -1279,14 +1393,19 @@ async function ScanDesktopPdfsOnce() {
     } catch (err) {
       continue; // transient (still being written) — retry next poll
     }
+    const identity = desktopPdfIdentity(stat);
 
-    // "Downloaded after the click": prefer the file's creation time and fall
-    // back to its modification time on filesystems that report birthtime as 0.
-    const createdMs =
-      Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
-        ? stat.birthtimeMs
-        : stat.mtimeMs;
-    if (!(createdMs > watch.sinceMs)) continue;
+    // Already handled in this watch - unless the file at that name has been
+    // written again since (same name, new download), which must be handled too
+    // or it would stay on the Desktop forever.
+    if (desktopPdfAlreadyHandled(watch.emitted.get(filePath), identity)) {
+      continue;
+    }
+
+    // Only PDFs downloaded for this form are touched. Files that were already
+    // on the Desktop before it was opened - including leftovers from an earlier
+    // walk-in - are left exactly where they are.
+    if (!desktopPdfBelongsToForm(watch, filePath, identity)) continue;
 
     // A download may still be in progress (its size keeps growing). Accept the
     // file only once its size has held steady across one poll cycle.
@@ -1296,15 +1415,16 @@ async function ScanDesktopPdfsOnce() {
     }
     watch.sizes.delete(filePath);
 
-    let base64;
+    let bytes;
     try {
-      base64 = fs.readFileSync(filePath).toString("base64");
+      bytes = fs.readFileSync(filePath);
     } catch (err) {
       console.error(`[DesktopPdfWatch] Failed to read "${entry.name}":`, err);
       continue;
     }
+    const base64 = bytes.toString("base64");
 
-    watch.emitted.add(filePath);
+    watch.emitted.set(filePath, identity);
     watch.foundCount += 1;
     if (isPolicyPdf) {
       watch.foundPolicy = true;
@@ -1312,11 +1432,18 @@ async function ScanDesktopPdfsOnce() {
       watch.foundOther = true;
     }
 
+    // Pre-fill the add-insurance form from the PDF that just arrived, in both
+    // modes (an email policy and a walk-in carry the same two PDFs). The
+    // policy number comes from the policy PDF's file name, the car number from
+    // that PDF's text and the blank number from the other PDF's text.
+    SendDesktopPdfFields(watch, entry.name, bytes);
+
     if (isWalkIn) {
       // Walk-ins are print-only: nothing is attached to the form. Every PDF
       // downloaded for the visit gets a paper copy, and the Desktop file is
       // kept until that print has settled (see the print queue below), so the
-      // source is still there if the print fails.
+      // source is still there if the print fails. The queue deletes it in every
+      // outcome - printed, cancelled or failed - so nothing is left behind.
       enqueueDesktopPrint(base64, entry.name, {
         filePath,
         deleteAfterPrint: true,
@@ -1355,11 +1482,9 @@ async function ScanDesktopPdfsOnce() {
       });
     }
 
-    try {
-      fs.unlinkSync(filePath);
-    } catch (err) {
-      console.error(`[DesktopPdfWatch] Failed to delete "${entry.name}":`, err);
-    }
+    // A PDF that was just downloaded is often still locked for a moment, so the
+    // delete retries instead of leaving the file on the Desktop.
+    await DeleteDesktopPdfFile(filePath);
 
     // Only the non-policy PDF is printed automatically.
     if (!isPolicyPdf) {
@@ -1388,7 +1513,19 @@ let DesktopPrintRunning = false;
 
 function enqueueDesktopPrint(base64, filename, options = {}) {
   if (!base64) return;
-  if (DesktopPrintQueue.some((job) => job.filename === filename)) return;
+  // One print per file name. A second request for a name that is still queued
+  // must not be dropped outright: its Desktop source still has to be removed
+  // once the queued print settles, so the delete is merged into that job
+  // instead (dropping it left the file on the Desktop forever).
+  const queued = DesktopPrintQueue.find((job) => job.filename === filename);
+  if (queued) {
+    if (options.filePath && !queued.filePath) queued.filePath = options.filePath;
+    if (options.deleteAfterPrint === true) queued.deleteAfterPrint = true;
+    if (typeof options.onSettled === "function" && !queued.onSettled) {
+      queued.onSettled = options.onSettled;
+    }
+    return;
+  }
   DesktopPrintQueue.push({
     base64,
     filename,
@@ -1434,18 +1571,12 @@ async function drainDesktopPrintQueue() {
 
       // Walk-in downloads stay on the Desktop for the entire print attempt.
       // Remove the source now that the print has settled (printed, cancelled
-      // or failed) so the file never lingers.
+      // or failed) so the file never lingers. A freshly downloaded file is
+      // often still locked, so the delete retries for a few seconds.
       if (job.deleteAfterPrint && job.filePath) {
-        try {
-          await fs.promises.unlink(job.filePath);
+        const deleted = await DeleteDesktopPdfFile(job.filePath);
+        if (deleted) {
           console.log(`[DesktopPdfWatch] Deleted "${job.filename}" after printing.`);
-        } catch (err) {
-          if (err.code !== "ENOENT") {
-            console.error(
-              `[DesktopPdfWatch] Failed to delete "${job.filename}" after printing:`,
-              err
-            );
-          }
         }
       }
 
@@ -1540,6 +1671,17 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
     printWin.show();
     printWin.focus();
     printWin.webContents.focus();
+
+    // Closing the print window by hand settles the job at once. Without this
+    // the queue only noticed when the 5-minute result timeout fired, so a
+    // walk-in PDF the worker closed the window on stayed on the Desktop for
+    // minutes - and forever if the app was closed first. (finish() closes the
+    // window itself; `settled` keeps this handler from running twice.)
+    printWin.on("closed", () => {
+      if (settled) return;
+      console.log(`${logTag} Print window for "${filename}" was closed.`);
+      finish({ ok: false, cancelled: true, error: "Print window closed." });
+    });
 
     // Listen from the start: the viewer may report readiness before
     // did-finish-load fires. Only PDFs emit it; other documents fall back to a
@@ -1693,14 +1835,24 @@ ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs, options) => {
     mode,
     sinceMs: since,
     timer: setInterval(ScanDesktopPdfs, 1000),
-    emitted: new Set(),
+    // The Desktop as it is right now: anything in here predates the form and is
+    // never touched (see desktopPdfBelongsToForm in ./desktopPdfWatch.js).
+    existing: DesktopPdfSnapshot(dir),
+    // path -> { size, createdMs } of the files already handled in this watch.
+    emitted: new Map(),
     sizes: new Map(),
     foundPolicy: false,
     foundOther: false,
     foundCount: 0,
     printedCount: 0,
+    // Values read out of the PDFs for the add-insurance form; each is sent to
+    // the renderer once, the first time it is found (see SendDesktopPdfFields).
+    fields: {},
   };
-  console.log(`[DesktopPdfWatch] Watching the Desktop (${mode} mode).`);
+  console.log(
+    `[DesktopPdfWatch] Watching the Desktop (${mode} mode); ` +
+      `${DesktopPdfWatch.existing.size} older PDF(s) ignored.`
+  );
   return { ok: true };
 });
 

@@ -54,6 +54,14 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.on("DesktopPdfFound", listener);
     return () => ipcRenderer.removeListener("DesktopPdfFound", listener);
   },
+  // Values read out of those PDFs as they arrive: { policyNumber, carNumber,
+  // blancNumber } - only the ones found in that file. Sent for walk-ins too,
+  // which get no attachments but still fill the form from their PDFs.
+  OnDesktopPdfFields: (callback) => {
+    const listener = (event, fields) => callback(fields);
+    ipcRenderer.on("DesktopPdfFields", listener);
+    return () => ipcRenderer.removeListener("DesktopPdfFields", listener);
+  },
 
   // Durable outbox (main process): requests that keep retrying until they
   // reach the server, across page changes and app restarts.
