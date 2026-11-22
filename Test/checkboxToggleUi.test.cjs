@@ -100,6 +100,32 @@ check("the broker and diagnostics checkboxes use the pill", () => {
   );
 });
 
+check("the lookup filters and broker history use the pill", () => {
+  // "Insurances by date" filters: the annulled and include-deleted flags were
+  // built with field() (caption ABOVE a bare tick); they must be the same pill
+  // as every other checkbox.
+  ok(
+    flat(WORKPAGE).includes(
+      'checkboxToggle(t("annulledFilter"), null, annulledInput)'
+    ),
+    "the annulled filter is a pill"
+  );
+  ok(
+    flat(WORKPAGE).includes(
+      'checkboxToggle(t("includeDeleted"), null, includeDeletedInput)'
+    ),
+    "the include-deleted filter is a pill (lookup + balance history)"
+  );
+  ok(
+    !flat(WORKPAGE).includes('field(t("annulledFilter"), annulledInput)'),
+    "no lookup checkbox is left in a bare field"
+  );
+  ok(
+    !flat(WORKPAGE).includes('field(t("includeDeleted"), includeDeletedInput)'),
+    "no include-deleted checkbox is left in a bare field"
+  );
+});
+
 check("both add-insurance forms use the pill class", () => {
   ok(
     (ADD_HTML.match(/<label class="checkbox-toggle">/g) || []).length === 3,

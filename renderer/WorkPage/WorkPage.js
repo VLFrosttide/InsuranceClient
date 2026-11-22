@@ -6137,7 +6137,11 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
   const dateRow = el("div", null, { class: "row filter-row" });
   dateRow.appendChild(field(t("date"), dateInput));
   if (includeDeletedInput) {
-    dateRow.appendChild(field(t("includeDeleted"), includeDeletedInput));
+    // Same pill toggle as everywhere else: the caption belongs inside the pill,
+    // not above a bare checkbox.
+    dateRow.appendChild(
+      checkboxToggle(t("includeDeleted"), null, includeDeletedInput)
+    );
   }
 
   // Total of the Amount column of the movements on THIS page, right-aligned
@@ -7538,7 +7542,10 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
   form.appendChild(field(t("payment"), paymentInput));
-  form.appendChild(field(t("annulledFilter"), annulledInput));
+  // Checkboxes are the shared pill toggle (see checkboxToggle), so the caption
+  // sits INSIDE the outlined pill like every other checkbox in the app instead
+  // of above a bare round tick.
+  form.appendChild(checkboxToggle(t("annulledFilter"), null, annulledInput));
   // Admins can also look up soft-deleted insurances (e.g. to check who deleted
   // a policy and when). Workers never get the option - the server ignores the
   // flag for them anyway.
@@ -7548,7 +7555,9 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     includeDeletedInput.checked = Boolean(
       savedSearch && savedSearch.includeDeleted
     );
-    form.appendChild(field(t("includeDeleted"), includeDeletedInput));
+    form.appendChild(
+      checkboxToggle(t("includeDeleted"), null, includeDeletedInput)
+    );
   }
   // Attach the visible autocomplete dropdowns now that the inputs are inside
   // their .field wrappers.
