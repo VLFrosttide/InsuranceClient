@@ -320,12 +320,13 @@ const I18N = {
       "The broker's balance before the first insurance was created. It is the base of the broker's balance, which the server rebuilds from this figure, all of its insurances (an annulled one at its annulment tax only when the broker paid it) and all of the payments it made (top-ups, hand-overs and paid bills) after every change.",
     startingBalanceSaved:
       "Starting balance saved — the broker balance has been recalculated",
-    increaseDate: "Date of the increase",
+    increaseDate: "Date and time of the increase",
     increaseDateHint:
-      "Pick the day the broker handed the money over. An earlier day is allowed: that day's reports and the branch's Cash from brokers then include it.",
-    handoverDate: "Date of the hand-over",
+      "Pick the day and the time (24-hour clock) the broker handed the money over. An earlier day is allowed: that day's reports and the branch's Cash from brokers then include it.",
+    expenseDate: "Date and time of the expense",
+    handoverDate: "Date and time of the hand-over",
     handoverDateHint:
-      "Pick the day the money changed hands. An earlier day is allowed; the time of day is kept. Only an admin can change the date of a hand-over.",
+      "Pick the day and the time (24-hour clock) the money changed hands. An earlier day is allowed. Only an admin can change the date and time of a hand-over.",
     balanceAtDayEnd: "Balance at the end of the day",
     balanceAtDayEndHint:
       "The broker's balance when the shown day ended: the starting balance plus every payment, minus every insurance up to that moment.",
@@ -1226,12 +1227,13 @@ const I18N = {
       "Балансът на брокера преди създаването на първата му застраховка. Той е основата на баланса, който сървърът преизчислява от тази сума, от всички негови застраховки (анулираните – по тяхната такса за анулиране само когато брокерът я е платил) и от всички негови плащания (увеличения, предадени суми и платени фактури) при всяка промяна.",
     startingBalanceSaved:
       "Началният баланс е запазен — балансът на брокера е преизчислен",
-    increaseDate: "Дата на увеличението",
+    increaseDate: "Дата и час на увеличението",
     increaseDateHint:
-      "Изберете деня, в който брокерът е предал парите. По-ранен ден е позволен: отчетите за този ден и „Кеш от брокери“ на клона го включват.",
-    handoverDate: "Дата на предаването",
+      "Изберете деня и часа (24-часов формат), в които брокерът е предал парите. По-ранен ден е позволен: отчетите за този ден и „Кеш от брокери“ на клона го включват.",
+    expenseDate: "Дата и час на разхода",
+    handoverDate: "Дата и час на предаването",
     handoverDateHint:
-      "Изберете деня, в който парите са предадени. По-ранен ден е позволен; часът се запазва. Само администратор може да променя датата на предаване.",
+      "Изберете деня и часа (24-часов формат), в които парите са предадени. По-ранен ден е позволен. Само администратор може да променя датата и часа на предаване.",
     balanceAtDayEnd: "Баланс в края на деня",
     balanceAtDayEndHint:
       "Балансът на брокера в края на показания ден: началният баланс плюс всички плащания, минус всички застраховки до този момент.",

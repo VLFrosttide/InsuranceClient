@@ -354,6 +354,23 @@ const STUBS = {
     normalizeBranch: (b) => b || "",
     clientLocalDateTime,
     parseClientDateTime,
+    // Faithful copy of CurrentCash.resolvePickedTime: the admin's 24-hour clock
+    // that travels next to `date`.
+    resolvePickedTime: (body) => {
+      const b = body || {};
+      const raw = b.time ?? b.Time;
+      if (raw === undefined || raw === null || !String(raw).trim()) {
+        return { time: "" };
+      }
+      const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(raw).trim());
+      if (!m) return { error: "Time must be HH:mm" };
+      const h = Number(m[1]);
+      const mi = Number(m[2]);
+      const s = m[3] === undefined ? 0 : Number(m[3]);
+      if (h > 23 || mi > 59 || s > 59) return { error: "Time must be HH:mm" };
+      const p = (n) => String(n).padStart(2, "0");
+      return { time: `${p(h)}:${p(mi)}:${p(s)}` };
+    },
   },
   "./PaymentSchedule.js": { getSchedule: () => ({}) },
   // Only the broker delete evicts live email claims (like the cut-off toggle).
@@ -757,7 +774,11 @@ const brokerOf = async (id) =>
   });
 
   await check("insurance create / annul / delete only move the balance", async () => {
-    eq(await M.decreaseBrokerForInsurance(fakeDb, 1, 30), 30, "charge");
+    eq(
+      (await M.decreaseBrokerForInsurance(fakeDb, 1, 30)).amount,
+      30,
+      "charge"
+    );
     eq(await M.restoreBrokerForAnnulment(fakeDb, 1, 30), 30, "annul refund");
     eq(await M.restoreBrokerForDeletion(fakeDb, 1, 30), 30, "delete refund");
     eq(await M.restoreBrokerForDeletion(fakeDb, 1, 0), 0, "delete after annul");

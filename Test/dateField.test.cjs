@@ -132,7 +132,10 @@ function makeFakeDom() {
     preventDefault() {
       this.defaultPrevented = true;
     }
-    stopPropagation() {}
+    stopPropagation() {
+      // A real DOM event does not reach the ancestors after this call.
+      this.propagationStopped = true;
+    }
   }
 
   class Node {
@@ -233,6 +236,9 @@ function makeFakeDom() {
         for (const fn of (node.listeners[event.type] || []).slice()) {
           fn.call(node, event);
         }
+        // Bubbling stops at the node whose listener called stopPropagation(),
+        // exactly like a real DOM event.
+        if (event.propagationStopped) break;
         node = node.parentNode;
       }
       return true;
@@ -475,6 +481,42 @@ check("the clear button empties the field", () => {
   eq(field.value, "", "value cleared");
   eq(field.textInput.value, "", "text cleared");
   eq(changes, 1, "a change event fired");
+});
+
+// The X sits inside the field, so it must clear on its own click: the field's
+// generic "a click anywhere opens the calendar" handler never runs for it (it
+// stops the click), and it must not pop the calendar open either.
+check("the clear button works on its own and leaves the calendar shut", () => {
+  closePopups();
+  const field = ctx.createDateField({ value: "2026-11-20" });
+  dom.document.body.appendChild(field);
+  const clear = field.children.find((node) =>
+    node.classList.contains("date-field-clear")
+  );
+  ok(clear, "clear button");
+  clear.dispatchEvent(new dom.Event("click", { bubbles: true }));
+  eq(field.value, "", "value cleared");
+  eq(openPopup(), null, "the calendar was not opened");
+  eq(clear.hidden, true, "the X hides itself once the field is empty");
+});
+
+check("the calendar's Clear footer empties the field too", () => {
+  closePopups();
+  const field = ctx.createDateField({ value: "2026-11-20" });
+  dom.document.body.appendChild(field);
+  field.dispatchEvent(new dom.Event("click", { bubbles: true }));
+  const popup = openPopup();
+  ok(popup, "the calendar is on screen");
+  const foot = popup.children.find((node) =>
+    node.classList.contains("date-calendar-foot")
+  );
+  ok(foot, "a footer with Today/Clear");
+  const clearFooter = foot.children.find((node) => node.textContent === "Clear");
+  ok(clearFooter, "the Clear button");
+  clearFooter.dispatchEvent(new dom.Event("click", { bubbles: true }));
+  eq(field.value, "", "value cleared");
+  eq(field.textInput.value, "", "text cleared");
+  eq(openPopup(), null, "the calendar closed");
 });
 
 check("a datetime field keeps the time and its datetime-local value", () => {

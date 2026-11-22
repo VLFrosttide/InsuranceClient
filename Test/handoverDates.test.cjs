@@ -56,25 +56,27 @@ function cutFunction(marker) {
 
 console.log("Hand-over dates and the broker 'Received by' field");
 
-check("the cash hand-over form gives admins a date picker on creation", () => {
+check("the cash forms give admins a date-and-time picker on creation", () => {
   const block = between(
     "function cashForm(kind, title) {",
     "function openTransactionEditor(tx) {"
   );
-  ok(
-    block.includes('kind === "handover" && isAdmin'),
-    "the picked date reaches the payload"
-  );
+  ok(block.includes("if (isAdmin)"), "admins only");
   ok(block.includes('key: "date"'), "a date field");
-  ok(block.includes('t("handoverDate")'), "its label");
+  ok(block.includes('t("handoverDate")'), "the hand-over label");
+  ok(block.includes('t("increaseDate")'), "the increase label");
+  ok(block.includes('t("expenseDate")'), "the expense label");
+  ok(block.includes('type: "datetime-local"'), "a 24-hour date-and-time picker");
+  ok(block.includes("localDateTimeInputNow()"), "it opens on now");
   ok(block.includes("max: localDateString()"), "the future cannot be picked");
   ok(
-    block.includes("brokerMovementCreatedAt(payload.date)"),
-    "the picked day becomes CreatedAt"
+    block.includes("brokerMovementCreatedAt(picked)"),
+    "the picked day and clock become CreatedAt"
   );
+  ok(block.includes("payload.time = parts.time"), "the clock is sent as `time`");
 });
 
-check("the cash hand-over editor lets an admin change the day", () => {
+check("the cash hand-over editor lets an admin change the day and the clock", () => {
   const block = between(
     "function openTransactionEditor(tx) {",
     "// Undo a hand-over"
@@ -82,8 +84,13 @@ check("the cash hand-over editor lets an admin change the day", () => {
   ok(block.includes("if (isHandover)"), "the field is only for hand-overs");
   ok(block.includes("if (isAdmin)"), "admins only");
   ok(block.includes('key: "date"'), "a date field");
-  ok(block.includes("dateFieldIso(tx.CreatedAt)"), "the stored day is shown");
+  ok(block.includes('type: "datetime-local"'), "a 24-hour date-and-time picker");
+  ok(
+    block.includes("datetimeInputValue(tx.CreatedAt)"),
+    "the stored day and time are shown"
+  );
   ok(block.includes("max: localDateString()"), "the future cannot be picked");
+  ok(block.includes("payload.time = parts.time"), "the clock is sent as `time`");
   ok(block.includes("payload.TzOffset"), "the server is told the offset");
 });
 
@@ -102,7 +109,7 @@ check("the broker hand-over form asks who received the money", () => {
   ok(block.includes('t("handedToPlaceholder")'), "its placeholder");
 });
 
-check("the broker hand-over form gives admins a date picker", () => {
+check("the broker hand-over form gives admins a date-and-time picker", () => {
   const block = cutFunction("function brokerAdjust(broker, kind) {");
   ok(
     block.includes(
@@ -112,24 +119,29 @@ check("the broker hand-over form gives admins a date picker", () => {
   );
   ok(block.includes('t("handoverDate")'), "the hand-over label");
   ok(block.includes('t("handoverDateHint")'), "the explanation");
+  ok(block.includes('type: "datetime-local"'), "a 24-hour date-and-time picker");
+  ok(block.includes("localDateTimeInputNow()"), "it opens on now");
   ok(block.includes("max: localDateString()"), "the future cannot be picked");
   ok(
     block.includes("payload.CreatedAt = brokerMovementCreatedAt("),
-    "the picked day becomes CreatedAt"
+    "the picked day and clock become CreatedAt"
   );
+  ok(block.includes("payload.time = parts.time"), "the clock is sent as `time`");
 });
 
-check("the broker history editor corrects a hand-over's recipient and day", () => {
+check("the broker history editor corrects a hand-over's recipient, day and clock", () => {
   const block = cutFunction(
     "function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = false) {"
   );
   ok(block.includes('key: "Recipient"'), "a recipient field");
   ok(block.includes('key: "date"'), "a date field");
+  ok(block.includes('type: "datetime-local"'), "a 24-hour date-and-time picker");
   ok(
-    block.includes("dateFieldIso(movement.CreatedAt)"),
-    "the stored day is shown"
+    block.includes("datetimeInputValue(movement.CreatedAt)"),
+    "the stored day and time are shown"
   );
   ok(block.includes("max: localDateString()"), "the future cannot be picked");
+  ok(block.includes("payload.time = parts.time"), "the clock is sent as `time`");
   ok(block.includes("payload.TzOffset"), "the server is told the offset");
 });
 
@@ -142,7 +154,12 @@ check("the broker history shows a Received by column", () => {
 });
 
 check("the labels exist in both languages", () => {
-  for (const key of ["handoverDate", "handoverDateHint"]) {
+  for (const key of [
+    "handoverDate",
+    "handoverDateHint",
+    "increaseDate",
+    "expenseDate",
+  ]) {
     eq(
       (common.match(new RegExp(`\\b${key}:`, "g")) || []).length,
       2,

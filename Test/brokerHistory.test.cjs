@@ -84,6 +84,9 @@ function addPolicy(blancNumber, extra = {}) {
     AnnulFee: extra.AnnulFee === undefined ? null : extra.AnnulFee,
     BrokerId: extra.BrokerId === undefined ? null : extra.BrokerId,
     Deleted: extra.Deleted ? 1 : 0,
+    // insurance.SaleMovementId: the policy's own sale row in the ledger.
+    SaleMovementId:
+      extra.SaleMovementId === undefined ? null : extra.SaleMovementId,
   });
 }
 
@@ -211,6 +214,48 @@ async function query(sql, params = []) {
   if (s.startsWith("SELECT id, Name, Code, CashBalance, ParentBrokerId, CutOff FROM brokers WHERE id = ?")) {
     return [db.brokers.filter((b) => b.id === Number(p[0]))];
   }
+  // Brokers.js helpers that guard on the broker existing before writing.
+  if (s === "SELECT id FROM brokers WHERE id = ?") {
+    return [db.brokers.filter((b) => b.id === Number(p[0]))];
+  }
+  // The live (not voided) refund row of one policy - the row un-annulling
+  // morphs to 0 (or a new annulment fills back in).
+  if (
+    s.startsWith(
+      "SELECT id FROM broker_balance_movements WHERE BrokerId = ? AND BlancNumber = ? AND Type = 'annulment'"
+    )
+  ) {
+    const rows = db.movements
+      .filter(
+        (m) =>
+          Number(m.BrokerId) === Number(p[0]) &&
+          String(m.BlancNumber ?? "").trim() === String(p[1] ?? "").trim() &&
+          String(m.Type || "").trim() === "annulment" &&
+          m.Deleted !== 1
+      )
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 1)
+      .map((m) => ({ id: m.id }));
+    return [rows];
+  }
+  if (
+    s.startsWith(
+      "SELECT id, Amount FROM broker_balance_movements WHERE BrokerId = ? AND BlancNumber = ? AND Type = 'annulment'"
+    )
+  ) {
+    const rows = db.movements
+      .filter(
+        (m) =>
+          Number(m.BrokerId) === Number(p[0]) &&
+          String(m.BlancNumber ?? "").trim() === String(p[1] ?? "").trim() &&
+          String(m.Type || "").trim() === "annulment" &&
+          m.Deleted !== 1
+      )
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 1)
+      .map((m) => ({ id: m.id, Amount: m.Amount }));
+    return [rows];
+  }
   if (
     s.startsWith(
       "SELECT MIN(CreatedAt) AS FirstMovement FROM broker_balance_movements"
@@ -298,10 +343,21 @@ async function query(sql, params = []) {
   }
   if (s.startsWith("UPDATE broker_balance_movements SET")) {
     const m = /^UPDATE broker_balance_movements SET (.+?) WHERE id = \?$/.exec(s);
-    const cols = m[1].split(",").map((x) => x.trim().split(/\s+/)[0]);
+    // "Amount = 0" (literal) and "Amount = ?, Reason = ?" (params) both occur:
+    // a literal has no parameter of its own.
+    const assignments = m[1].split(",").map((x) => x.trim());
     const movementId = Number(p[p.length - 1]);
     const mov = db.movements.find((x) => x.id === movementId);
-    if (mov) cols.forEach((col, i) => (mov[col] = p[i]));
+    let paramIndex = 0;
+    if (mov) {
+      for (const assignment of assignments) {
+        const eq = assignment.indexOf("=");
+        const col = assignment.slice(0, eq).trim();
+        const expr = assignment.slice(eq + 1).trim();
+        if (expr === "?") mov[col] = p[paramIndex++];
+        else if (/^-?\d+(?:\.\d+)?$/.test(expr)) mov[col] = Number(expr);
+      }
+    }
     return [{ affectedRows: mov ? 1 : 0 }];
   }
   if (s.startsWith("UPDATE brokers SET CashBalance = ? WHERE id = ?")) {
@@ -312,8 +368,11 @@ async function query(sql, params = []) {
   if (s.startsWith("UPDATE brokers SET CashBalance")) {
     const broker = db.brokers.find((b) => b.id === Number(p[1]));
     if (broker) {
+      const sign = s.includes("CashBalance - ?") ? -1 : 1;
       broker.CashBalance =
-        Math.round((Number(broker.CashBalance) + Number(p[0])) * 100) / 100;
+        Math.round(
+          (Number(broker.CashBalance) + sign * Number(p[0])) * 100
+        ) / 100;
     }
     return [{ affectedRows: broker ? 1 : 0 }];
   }
@@ -330,20 +389,26 @@ async function query(sql, params = []) {
     ];
   }
   if (
-    s === "SELECT BlancNumber FROM insurance WHERE BrokerId = ? AND Deleted = 0"
+    s ===
+    "SELECT BlancNumber, SaleMovementId FROM insurance WHERE BrokerId = ? AND Deleted = 0"
   ) {
     // The history keeps only the rows of policies that still exist for the
     // broker (a deleted or moved-away policy takes its charge history with it).
     // A test that records only movements (no policy rows) keeps them: the old
-    // ledger is then the only source of blanc numbers.
+    // ledger is then the only source of blanc numbers. SaleMovementId is the
+    // explicit link to a policy's sale row (see the relabel test below).
     const policies = db.policies
       .filter((x) => Number(x.BrokerId) === Number(p[0]) && x.Deleted !== 1)
-      .map((x) => ({ BlancNumber: x.BlancNumber }));
+      .map((x) => ({
+        BlancNumber: x.BlancNumber,
+        SaleMovementId:
+          x.SaleMovementId === undefined ? null : x.SaleMovementId,
+      }));
     if (policies.length) return [policies];
     return [
       db.movements
         .filter((m) => Number(m.BrokerId) === Number(p[0]) && m.BlancNumber)
-        .map((m) => ({ BlancNumber: m.BlancNumber })),
+        .map((m) => ({ BlancNumber: m.BlancNumber, SaleMovementId: null })),
     ];
   }
   if (
@@ -422,6 +487,23 @@ const STUBS = {
     normalizeBranch: (b) => b || "",
     clientLocalDateTime,
     parseClientDateTime,
+    // Faithful copy of CurrentCash.resolvePickedTime: the admin's 24-hour clock
+    // that travels next to `date`.
+    resolvePickedTime: (body) => {
+      const b = body || {};
+      const raw = b.time ?? b.Time;
+      if (raw === undefined || raw === null || !String(raw).trim()) {
+        return { time: "" };
+      }
+      const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(raw).trim());
+      if (!m) return { error: "Time must be HH:mm" };
+      const h = Number(m[1]);
+      const mi = Number(m[2]);
+      const s = m[3] === undefined ? 0 : Number(m[3]);
+      if (h > 23 || mi > 59 || s > 59) return { error: "Time must be HH:mm" };
+      const p = (n) => String(n).padStart(2, "0");
+      return { time: `${p(h)}:${p(mi)}:${p(s)}` };
+    },
   },
   "./PaymentSchedule.js": { getSchedule: () => ({}) },
   // The real db/brokerPayments.js, against this fake database: the balance
@@ -832,6 +914,48 @@ resetDb();
     eq(r.body.movements[0].Amount, -9, "it shows the tax after the price edit");
     eq(r.body.movements[0].PolicyAnnulled, true, "it is tinted as annulled");
     eq(r.body.netChange, -9, "the tax is the only remaining charge");
+  });
+
+  await check("a sale row linked to its policy survives a stale blanc", async () => {
+    resetDb();
+    // Sold under 776247; the blanc was corrected to 169979 later by a server
+    // that did not carry the ledger row, so the row still says 776247.
+    const sale = addMovement(1, -45, "2026-10-21 13:21:14", {
+      Type: "policy",
+      BlancNumber: "776247",
+      Reason: "776247",
+    });
+    addPolicy("169979", { Price: 45, BrokerId: 1, SaleMovementId: sale });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-10-21", until: "2026-10-22" },
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 1, "the charge is on the day it was made");
+    eq(
+      r.body.movements[0].BlancNumber,
+      "169979",
+      "shown under the policy's current number"
+    );
+    eq(r.body.movements[0].Amount, -45, "with its amount");
+    eq(r.body.netChange, -45, "and the day's net");
+  });
+
+  await check("without the link a stale sale row stays hidden", async () => {
+    resetDb();
+    addMovement(1, -45, "2026-10-21 13:21:14", {
+      Type: "policy",
+      BlancNumber: "776247",
+      Reason: "776247",
+    });
+    addPolicy("169979", { Price: 45, BrokerId: 1 });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: { since: "2026-10-21", until: "2026-10-22" },
+    });
+    eq(r.body.total, 0, "a row that belongs to no policy is still hidden");
   });
 
   await check("a policy moved to another broker disappears from the old broker", async () => {
@@ -1822,6 +1946,52 @@ resetDb();
     eq(db.brokers[0].CashBalance, 70, "money is unchanged");
   });
 
+  await check("a hand-over's corrected clock reaches both tables", async () => {
+    resetDb();
+    addMovement(1, 50, "2026-10-10 12:00:00", {
+      Type: "handover",
+      Recipient: "Owner",
+    });
+
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: {
+        date: "2026-10-02",
+        time: "07:45",
+        Recipient: "Owner",
+        TzOffset: 0,
+      },
+    });
+    eq(r.status, 200, "status");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-02 07:45:00",
+      "the ledger takes the day and 24-hour clock"
+    );
+    eq(
+      db.payments[0].CreatedAt,
+      "2026-10-02 07:45:00",
+      "the payments table takes the clock too"
+    );
+    eq(db.brokers[0].CashBalance, 70, "money is unchanged");
+  });
+
+  await check("a malformed clock on a movement correction is refused", async () => {
+    resetDb();
+    addMovement(1, 50, "2026-10-10 12:00:00", {
+      Type: "handover",
+      Recipient: "Owner",
+    });
+
+    const r = await call("patch", "/brokers/:id/history/:movementId", {
+      params: { id: "1", movementId: "1" },
+      body: { date: "2026-10-02", time: "7:99", Recipient: "Owner" },
+    });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "Time must be HH:mm", "error");
+    eq(db.movements[0].CreatedAt, "2026-10-10 12:00:00", "the moment is unchanged");
+  });
+
   await check("a policy movement correction cannot move a rebuilt balance", async () => {
     resetDb();
     addPolicy("100001", { Price: 30, BrokerId: 1 });
@@ -1846,6 +2016,175 @@ resetDb();
       -30,
       "the insurance row is the truth, so the balance is rebuilt from its price"
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Un-annulling (restoring) a policy: one row that morphs, not a growing list
+  // ---------------------------------------------------------------------------
+  await check("an un-annulled policy keeps its sale row and drops the legacy refund/re-charge pair", async () => {
+    resetDb();
+    // What older servers wrote: the sale, the refund and - when the admin
+    // un-annulled the policy - a NEW "policy" row charging the price back.
+    addPolicy("100020", { Price: 32, Annulled: 0 });
+    addMovement(1, -32, "2026-10-08 11:01:28", {
+      Type: "policy",
+      BlancNumber: "100020",
+      Reason: "100020",
+    });
+    addMovement(1, 32, "2026-10-11 08:07:34", {
+      Type: "annulment",
+      BlancNumber: "100020",
+      Reason: "Annul 100020",
+    });
+    addMovement(1, -32, "2026-10-11 08:11:20", {
+      Type: "policy",
+      BlancNumber: "100020",
+      Reason: "100020",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.status, 200, "status");
+    eq(r.body.total, 1, "the policy is one row, not three");
+    eq(r.body.movements[0].Type, "policy", "the sale row stays");
+    eq(r.body.movements[0].Amount, -32, "and shows the full price again");
+    ok(
+      !r.body.movements.some((m) => m.Type === "annulment"),
+      "no refund row is left behind"
+    );
+    eq(r.body.netChange, -32, "the money is the price once");
+  });
+
+  await check("an un-annulled policy whose refund was morphed to 0 shows one row", async () => {
+    resetDb();
+    // The server no longer writes a re-charge: it morphs the refund row itself.
+    addPolicy("100021", { Price: 32, Annulled: 0 });
+    addMovement(1, -32, "2026-10-08 11:01:28", {
+      Type: "policy",
+      BlancNumber: "100021",
+      Reason: "100021",
+    });
+    addMovement(1, 0, "2026-10-11 08:07:34", {
+      Type: "annulment",
+      BlancNumber: "100021",
+      Reason: "Annul 100021",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "the 0 refund is not a movement of its own");
+    eq(r.body.movements[0].Amount, -32, "the sale row shows the price");
+    ok(
+      !r.body.movements.some((m) => m.Type === "annulment"),
+      "the morphed refund row is folded away"
+    );
+  });
+
+  await check("settleBrokerForUnannulment morphs the refund row and charges the broker", async () => {
+    resetDb();
+    db.brokers[0].CashBalance = 8; // 40 top-up - 32 policy
+    addPolicy("100022", { Price: 32, Annulled: 0 });
+    addMovement(1, -32, "2026-10-08 11:01:28", {
+      Type: "policy",
+      BlancNumber: "100022",
+      Reason: "100022",
+    });
+    addMovement(1, 32, "2026-10-11 08:07:34", {
+      Type: "annulment",
+      BlancNumber: "100022",
+      Reason: "Annul 100022",
+    });
+
+    const charged = await M.settleBrokerForUnannulment(
+      fakeDb,
+      1,
+      "100022",
+      32
+    );
+    eq(charged, 32, "the refund is taken back");
+    eq(db.brokers[0].CashBalance, -24, "8 - 32");
+    const annul = db.movements.find((m) => m.Type === "annulment");
+    eq(annul.Amount, 0, "the refund record itself is morphed to 0");
+    eq(db.movements.length, 2, "no new movement is appended");
+  });
+
+  await check("a fresh annulment reuses the morphed refund row", async () => {
+    resetDb();
+    addPolicy("100023", {
+      Price: 9,
+      OriginalPrice: 32,
+      Annulled: 1,
+      AnnulReason: "worker",
+      AnnulFee: 9,
+    });
+    addMovement(1, -32, "2026-10-08 11:01:28", {
+      Type: "policy",
+      BlancNumber: "100023",
+      Reason: "100023",
+    });
+    addMovement(1, 0, "2026-10-11 08:07:34", {
+      Type: "annulment",
+      BlancNumber: "100023",
+      Reason: "Annul 100023",
+    });
+
+    await M.restoreBrokerForAnnulment(fakeDb, 1, 23, {
+      reason: "Annul 100023",
+      author: "admin",
+      blancNumber: "100023",
+      createdAt: "2026-11-01 09:00:00",
+      reuseExisting: true,
+    });
+    const annuls = db.movements.filter((m) => m.Type === "annulment");
+    eq(annuls.length, 1, "one refund row per policy");
+    eq(annuls[0].Amount, 23, "filled in with the new refund");
+    eq(annuls[0].CreatedAt, "2026-11-01 09:00:00", "stamped with the new time");
+  });
+
+  await check("a policy annulled again after an un-annul still shows one tax row", async () => {
+    resetDb();
+    // Sale, first refund, the legacy re-charge, then a second refund: only the
+    // last refund is live, so the sale row must show the tax again.
+    addPolicy("100024", {
+      Price: 0,
+      OriginalPrice: 32,
+      Annulled: 1,
+      AnnulReason: "none",
+      AnnulFee: 0,
+    });
+    addMovement(1, -32, "2026-10-08 11:01:28", {
+      Type: "policy",
+      BlancNumber: "100024",
+      Reason: "100024",
+    });
+    addMovement(1, 32, "2026-10-11 08:07:34", {
+      Type: "annulment",
+      BlancNumber: "100024",
+      Reason: "Annul 100024",
+    });
+    addMovement(1, -32, "2026-10-12 09:00:00", {
+      Type: "policy",
+      BlancNumber: "100024",
+      Reason: "100024",
+    });
+    addMovement(1, 32, "2026-10-13 10:00:00", {
+      Type: "annulment",
+      BlancNumber: "100024",
+      Reason: "Annul 100024",
+    });
+
+    const r = await call("get", "/brokers/:id/history", {
+      params: { id: "1" },
+      query: WINDOW,
+    });
+    eq(r.body.total, 1, "one row for the whole history");
+    eq(r.body.movements[0].Type, "policy", "the sale row stays");
+    eq(r.body.movements[0].Amount, 0, "the free annulment leaves no charge");
+    eq(r.body.movements[0].PolicyAnnulled, true, "the policy is annulled again");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

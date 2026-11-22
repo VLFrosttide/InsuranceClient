@@ -174,6 +174,23 @@ const BROKER_STUBS = {
     normalizeBranch: (b) => String(b || ""),
     clientLocalDateTime,
     parseClientDateTime,
+    // Faithful copy of CurrentCash.resolvePickedTime: the admin's 24-hour clock
+    // that travels next to `date`.
+    resolvePickedTime: (body) => {
+      const b = body || {};
+      const raw = b.time ?? b.Time;
+      if (raw === undefined || raw === null || !String(raw).trim()) {
+        return { time: "" };
+      }
+      const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(raw).trim());
+      if (!m) return { error: "Time must be HH:mm" };
+      const h = Number(m[1]);
+      const mi = Number(m[2]);
+      const s = m[3] === undefined ? 0 : Number(m[3]);
+      if (h > 23 || mi > 59 || s > 59) return { error: "Time must be HH:mm" };
+      const p = (n) => String(n).padStart(2, "0");
+      return { time: `${p(h)}:${p(mi)}:${p(s)}` };
+    },
   },
   "./PaymentSchedule.js": {
     getSchedule: () => ({ periodStart: "2026-11-01", days: 14 }),
@@ -393,8 +410,81 @@ const BRANCH = "Офис Харманли";
     eq(db.movements[0].Branch, null, "a hand-over still carries no branch");
   });
 
+  await check("an admin can pick the time of day of a top-up too", async () => {
+    resetDb();
+    const res = await callBroker("post", INCREASE, {
+      params: { id: "1" },
+      user: ADMIN,
+      body: {
+        amount: 40,
+        currency: "EUR",
+        reason: "Handed over last week at lunch",
+        branch: BRANCH,
+        date: "2026-10-01",
+        time: "13:45",
+        CreatedAt: "2026-11-20 10:15:30",
+        TzOffset: 120,
+      },
+    });
+    eq(res.status, 200, "accepted");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-01 13:45:00",
+      "the picked day AND the 24-hour clock"
+    );
+    eq(db.brokers[0].CashBalance, 110, "the money still lands in the balance");
+  });
+
+  await check("a malformed clock is refused", async () => {
+    for (const time of ["24:00", "12:75", "noon", "13:5"]) {
+      resetDb();
+      const res = await callBroker("post", INCREASE, {
+        params: { id: "1" },
+        user: ADMIN,
+        body: {
+          amount: 10,
+          currency: "EUR",
+          reason: "Typo",
+          branch: BRANCH,
+          date: "2026-10-01",
+          time,
+          CreatedAt: "2026-11-20 10:00:00",
+          TzOffset: 0,
+        },
+      });
+      eq([res.status, res.body.error], [400, "Time must be HH:mm"], time);
+      eq(db.movements.length, 0, "nothing recorded for " + time);
+      eq(db.brokers[0].CashBalance, 70, "balance untouched");
+    }
+  });
+
+  await check("a hand-over keeps the admin's clock as well", async () => {
+    resetDb();
+    const res = await callBroker("post", "/brokers/:id/handover", {
+      params: { id: "1" },
+      user: ADMIN,
+      body: {
+        amount: 30,
+        currency: "EUR",
+        reason: "Owner collected",
+        Recipient: "Owner",
+        date: "2026-10-01",
+        time: "07:05",
+        CreatedAt: "2026-11-20 12:00:00",
+        TzOffset: 0,
+      },
+    });
+    eq(res.status, 200, "accepted");
+    eq(
+      db.movements[0].CreatedAt,
+      "2026-10-01 07:05:00",
+      "the hand-over is booked at the picked moment"
+    );
+    eq(db.movements[0].Branch, null, "a hand-over still carries no branch");
+  });
+
   // -------------------------------------------------------------------------
-  // 2) Client: the date picker of the Increase form
+  // 2) Client: the date-and-time picker of the Increase form
   // -------------------------------------------------------------------------
   const ROOT = path.join(__dirname, "..");
   const WORKPAGE_JS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.js");
@@ -418,7 +508,7 @@ const BRANCH = "Офис Харманли";
     return tail.slice(0, closing.index + closing[0].length);
   }
 
-  await check("only an admin's increase/hand-over form gets the date picker, bounded at today", async () => {
+  await check("only an admin's increase/hand-over form gets the date-and-time picker, bounded at today", async () => {
     const block = cutFunction("function brokerAdjust(broker, kind) {");
     ok(
       block.includes(
@@ -427,9 +517,10 @@ const BRANCH = "Офис Харманли";
       "admins only, for an increase and a hand-over"
     );
     ok(
-      block.includes('key: "date"') && block.includes('type: "date"'),
-      "a date picker"
+      block.includes('key: "date"') && block.includes('type: "datetime-local"'),
+      "a 24-hour date-and-time picker"
     );
+    ok(block.includes("localDateTimeInputNow()"), "it opens on now");
     ok(block.includes("max: localDateString()"), "the future cannot be picked");
     ok(block.includes('t("increaseDate")'), "the increase label");
     ok(block.includes('t("handoverDate")'), "the hand-over label");
@@ -437,8 +528,9 @@ const BRANCH = "Офис Харманли";
     ok(block.includes('t("handoverDateHint")'), "the hand-over explanation");
     ok(
       block.includes("payload.CreatedAt = brokerMovementCreatedAt("),
-      "the picked day becomes the movement's date"
+      "the picked day and clock become the movement's date"
     );
+    ok(block.includes("payload.time = parts.time"), "the clock is sent as `time`");
     ok(block.includes("payload.TzOffset"), "the server is told the client's offset");
   });
 
@@ -458,12 +550,12 @@ const BRANCH = "Офис Харманли";
     ok(block.includes("control.max = s.max;"), "max");
   });
 
-  await check("the picked day keeps the current time of day", async () => {
+  await check("the picked day and clock become the movement's CreatedAt", async () => {
     const ctx = { console };
     vm.createContext(ctx);
     vm.runInContext(
       cutFunction("function localDateTimeNow(d = new Date()) {") +
-        cutFunction("function brokerMovementCreatedAt(day, now = new Date()) {"),
+        cutFunction("function brokerMovementCreatedAt(picked, now = new Date()) {"),
       ctx,
       { filename: "WorkPage.js#brokerMovementCreatedAt" }
     );
@@ -472,7 +564,22 @@ const BRANCH = "Офис Харманли";
     eq(
       brokerMovementCreatedAt("2026-10-01", now),
       "2026-10-01 14:05:06",
-      "an earlier day"
+      "a bare day keeps the current time of day"
+    );
+    eq(
+      brokerMovementCreatedAt("2026-10-01T13:45", now),
+      "2026-10-01 13:45:00",
+      "the picked 24-hour clock is kept"
+    );
+    eq(
+      brokerMovementCreatedAt("2026-10-01 07:05", now),
+      "2026-10-01 07:05:00",
+      "a space-separated clock is accepted too"
+    );
+    eq(
+      brokerMovementCreatedAt("2026-11-20T23:59", now),
+      "2026-11-20 23:59:00",
+      "late evening stays on the 24-hour clock"
     );
     eq(
       brokerMovementCreatedAt("2026-11-20", now),

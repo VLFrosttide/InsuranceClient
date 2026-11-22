@@ -42,6 +42,13 @@ const brokerDeltas = [];
 // Amounts the endpoint restores to a broker's balance when a policy is
 // annulled. Only the broker being at fault keeps part of the price back.
 const brokerRestores = [];
+// The options each restore was called with (e.g. reuseExisting on a fresh
+// annulment of a policy whose refund row was morphed by an un-annul).
+const brokerRestoreMeta = [];
+// Amounts the endpoint takes back from a broker's balance when an annulled
+// policy is un-annulled (restored). The refund row is morphed to 0 instead of a
+// new charge movement being appended, so this is asserted on its own.
+const brokerSettles = [];
 let txCount = 0;
 let txDepth = 0;
 // When true the cash "reduce" stub fails the way the real one does when the
@@ -250,8 +257,14 @@ const STUBS = {
       return Number(price);
     },
     refreshBrokerBalance: async () => null,
-    restoreBrokerForAnnulment: async (conn, brokerId, price) => {
+    settleBrokerForUnannulment: async (conn, brokerId, blancNumber, amount) => {
+      brokerSettles.push({ brokerId, blancNumber, amount: Number(amount) });
+      brokerDeltas.push({ brokerId, delta: Number(amount) });
+      return Number(amount);
+    },
+    restoreBrokerForAnnulment: async (conn, brokerId, price, meta = {}) => {
       brokerRestores.push({ brokerId, amount: Number(price) });
+      brokerRestoreMeta.push(meta);
     },
     adjustBrokerForPriceChange: async (conn, brokerId, delta) => {
       brokerDeltas.push({ brokerId, delta });
@@ -423,6 +436,8 @@ async function patch(body, opts = {}) {
   movements.length = 0;
   brokerDeltas.length = 0;
   brokerRestores.length = 0;
+  brokerRestoreMeta.length = 0;
+  brokerSettles.length = 0;
   queries.length = 0;
   txCount = 0;
   failReduce = !!opts.failReduce;
@@ -459,6 +474,9 @@ async function patch(body, opts = {}) {
     brokerDeltas: brokerDeltas.map((d) => `${d.delta} -> broker ${d.brokerId}`),
     brokerRestores: brokerRestores.map(
       (r) => `${r.amount} -> broker ${r.brokerId}`
+    ),
+    brokerSettles: brokerSettles.map(
+      (s) => `${s.amount} -> broker ${s.brokerId} (${s.blancNumber})`
     ),
     updated: queries.filter((q) => q.sql.startsWith("UPDATE insurance SET")),
     tx: txCount,
@@ -1348,6 +1366,8 @@ async function patch(body, opts = {}) {
     movements.length = 0;
     brokerDeltas.length = 0;
     brokerRestores.length = 0;
+    brokerRestoreMeta.length = 0;
+    brokerSettles.length = 0;
     queries.length = 0;
     row = { ...BASE_ROW, ...rowOverrides };
     const res = {
@@ -1381,6 +1401,8 @@ async function patch(body, opts = {}) {
       brokerRestores: brokerRestores.map(
         (r) => `${r.amount} -> broker ${r.brokerId}`
       ),
+      // The options the restore was called with (e.g. reuseExisting).
+      restoreMeta: brokerRestoreMeta.map((m) => ({ ...m })),
       // AnnulReason (who pays), AnnulFee, OriginalPrice and the new Price as
       // written to the row. Price is the tax once annulled.
       storedPayer: update ? update.params[0] : undefined,
@@ -1574,6 +1596,11 @@ async function patch(body, opts = {}) {
     );
     eq(r.status, 200, "status");
     eq(r.brokerRestores, ["100 -> broker 7"], "the full price returns to the broker");
+    eq(
+      r.restoreMeta[0] && r.restoreMeta[0].reuseExisting,
+      true,
+      "a fresh annulment reuses the policy's refund row instead of adding one"
+    );
   });
 
   await check("no fault refunds the full price to the broker", async () => {
@@ -1853,6 +1880,18 @@ async function patch(body, opts = {}) {
       "the refund returns to the Broker channel"
     );
     eq(r.brokerDeltas, ["100 -> broker 7"], "the broker is recharged the full price");
+    eq(
+      r.brokerSettles,
+      ["100 -> broker 7 (1234567)"],
+      "the recharge morphs the existing refund row instead of adding a policy row"
+    );
+    // No broker-ledger charge movement is appended: the refund row is the one
+    // record that changes (Amount 0), so there is nothing else to write.
+    eq(
+      brokerDeltas.length,
+      1,
+      "one balance change, not a refund plus a re-charge"
+    );
   });
 
   await check("un-annulling a broker-at-fault policy recharges only the partial refund", async () => {
@@ -1874,6 +1913,11 @@ async function patch(body, opts = {}) {
       r.brokerDeltas,
       ["91 -> broker 7"],
       "the broker is recharged the partial refund it received"
+    );
+    eq(
+      r.brokerSettles,
+      ["91 -> broker 7 (1234567)"],
+      "the partial refund row is morphed to 0"
     );
   });
 

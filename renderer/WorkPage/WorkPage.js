@@ -3817,15 +3817,36 @@ function localDateTimeNow(d = new Date()) {
   );
 }
 
-// The CreatedAt of a broker movement recorded for a chosen calendar day: that
-// day at the current time of day, so a backdated top-up still sorts last
-// within its day. An empty or malformed day means "now".
-function brokerMovementCreatedAt(day, now = new Date()) {
+// The CreatedAt of a broker movement recorded for a chosen day and time of day
+// ("YYYY-MM-DDTHH:mm" from an admin's picker): both are kept, so a backdated
+// payment can say when it really happened. A bare day ("YYYY-MM-DD") keeps the
+// current time of day, so the row still sorts last within its day. An empty or
+// malformed value means "now".
+function brokerMovementCreatedAt(picked, now = new Date()) {
   const stamp = localDateTimeNow(now);
-  const picked = String(day === undefined || day === null ? "" : day).trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(picked)
-    ? `${picked} ${stamp.slice(11)}`
-    : stamp;
+  const value = String(
+    picked === undefined || picked === null ? "" : picked
+  ).trim();
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2}))?$/.exec(value);
+  if (!m) return stamp;
+  return `${m[1]} ${
+    m[2] === undefined ? stamp.slice(11) : `${m[2]}:${m[3]}:00`
+  }`;
+}
+
+// The current local wall clock as an <input type="datetime-local"> value
+// ("YYYY-MM-DDTHH:mm"), the default of the admin's day-and-time pickers.
+function localDateTimeInputNow(d = new Date()) {
+  return localDateTimeNow(d).slice(0, 16).replace(" ", "T");
+}
+
+// The datetime-local value ("YYYY-MM-DDTHH:mm") of a stored DATETIME, so a
+// picker opens on the moment that is actually recorded.
+function datetimeInputValue(value) {
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/.exec(
+    String(value === undefined || value === null ? "" : value).trim()
+  );
+  return m ? `${m[1]}T${m[2]}:${m[3]}` : "";
 }
 
 // "YYYY-MM-DD" one calendar day after the given local date string.
@@ -4520,18 +4541,24 @@ async function currentCashView(overrideBranch, overrideDate) {
         value: "",
         placeholder: t("handedToPlaceholder"),
       });
-      // A hand-over can be recorded on an earlier day by an admin: the money may
-      // have changed hands before anyone could enter it. The picker cannot name
-      // a day that has not happened yet; a worker always records "now".
-      if (isAdmin) {
-        spec.push({
-          key: "date",
-          label: t("handoverDate"),
-          type: "date",
-          value: localDateString(),
-          max: localDateString(),
-        });
-      }
+    }
+    // An admin may record ANY of these movements on an earlier day and at an
+    // earlier time (money that moved before anyone could enter it): the picker
+    // carries a 24-hour clock and cannot name a day that has not happened yet.
+    // A worker always records "now".
+    if (isAdmin) {
+      spec.push({
+        key: "date",
+        label:
+          kind === "handover"
+            ? t("handoverDate")
+            : kind === "increase"
+            ? t("increaseDate")
+            : t("expenseDate"),
+        type: "datetime-local",
+        value: localDateTimeInputNow(),
+        max: localDateString(),
+      });
     }
     const submitLabel =
       kind === "increase"
@@ -4544,14 +4571,18 @@ async function currentCashView(overrideBranch, overrideDate) {
       async (payload) => {
         // Attach the branch and the client's local creation time before sending.
         // The server stores CreatedAt as sent, instead of stamping it with the
-        // database server's (UTC) clock. A hand-over's picked day keeps the
-        // current time of day and is sent to the server as `date`, so it can
-        // insist on an admin.
+        // database server's (UTC) clock. An admin's picker carries the day AND
+        // the 24-hour clock: they travel as `date` (the calendar day the server
+        // validates) and `time`, and CreatedAt takes both. A worker's movement is
+        // simply "now".
         payload.branch = branch;
-        payload.CreatedAt =
-          kind === "handover" && isAdmin
-            ? brokerMovementCreatedAt(payload.date)
-            : localDateTimeNow();
+        const picked = isAdmin ? payload.date : "";
+        payload.CreatedAt = brokerMovementCreatedAt(picked);
+        if (picked) {
+          const parts = dateFieldParseDateTime(picked);
+          payload.date = parts.iso;
+          payload.time = parts.time;
+        }
         payload.TzOffset = -new Date().getTimezoneOffset();
         await api(`/currentcash/${kind}`, {
           method: "POST",
@@ -4642,14 +4673,14 @@ async function currentCashView(overrideBranch, overrideDate) {
         value: tx.Recipient || "",
         placeholder: t("handedToPlaceholder"),
       });
-      // An admin can correct which day the hand-over belongs to. Its time of
-      // day is kept by the server; the picker cannot name a future day.
+      // An admin can correct which day AND which time (24-hour clock) the
+      // hand-over belongs to. The picker cannot name a future day.
       if (isAdmin) {
         spec.push({
           key: "date",
           label: t("handoverDate"),
-          type: "date",
-          value: dateFieldIso(tx.CreatedAt),
+          type: "datetime-local",
+          value: datetimeInputValue(tx.CreatedAt),
           max: localDateString(),
         });
       }
@@ -4659,8 +4690,14 @@ async function currentCashView(overrideBranch, overrideDate) {
       async (payload) => {
         // Stamp the correction's own ledger entries with the worker's local
         // time (the original transaction keeps its CreatedAt unless the admin
-        // picked another day in the date field).
+        // moved the picker). A picked day and 24-hour clock are sent as `date`
+        // and `time`, which the server accepts from an admin only.
         payload.CreatedAt = localDateTimeNow();
+        if (isHandover && isAdmin && payload.date) {
+          const parts = dateFieldParseDateTime(payload.date);
+          payload.date = parts.iso;
+          payload.time = parts.time;
+        }
         payload.TzOffset = -new Date().getTimezoneOffset();
         await api(`/currentcash/transactions/${tx.id}`, {
           method: "PATCH",
@@ -4726,8 +4763,8 @@ async function currentCashView(overrideBranch, overrideDate) {
   }
 
   // Hand money over OUT of the company bank account. Admin only, like the bank
-  // balance itself. The picked day becomes the hand-over's CreatedAt, so a
-  // correction can be bookkept on the day it actually happened.
+  // balance itself. The picked day and 24-hour clock become the hand-over's
+  // CreatedAt, so a correction can be bookkept on the moment it happened.
   function openBankHandoverForm() {
     if (!isAdmin) return;
     const spec = [
@@ -4749,15 +4786,21 @@ async function currentCashView(overrideBranch, overrideDate) {
       {
         key: "date",
         label: t("handoverDate"),
-        type: "date",
-        value: localDateString(),
+        type: "datetime-local",
+        value: localDateTimeInputNow(),
         max: localDateString(),
       },
     ];
     const form = buildForm(
       spec,
       async (payload) => {
-        payload.CreatedAt = brokerMovementCreatedAt(payload.date);
+        const picked = payload.date;
+        payload.CreatedAt = brokerMovementCreatedAt(picked);
+        if (picked) {
+          const parts = dateFieldParseDateTime(picked);
+          payload.date = parts.iso;
+          payload.time = parts.time;
+        }
         payload.TzOffset = -new Date().getTimezoneOffset();
         await api("/bank/handover", {
           method: "POST",
@@ -6432,8 +6475,9 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
     { key: "author", label: t("author"), value: movement.Author || "" }
   );
   if (isHandover) {
-    // Who received the money, and the day it belongs to. Both are corrected
-    // here; the server keeps the time of day of the movement.
+    // Who received the money, and the day AND time (24-hour clock) it belongs
+    // to. Both are corrected here; the server keeps the stored moment when the
+    // picker is cleared.
     spec.push({
       key: "Recipient",
       label: t("handedTo"),
@@ -6443,14 +6487,19 @@ function brokerHistoryEditForm(broker, movement, page, date, includeDeleted = fa
     spec.push({
       key: "date",
       label: t("handoverDate"),
-      type: "date",
-      value: dateFieldIso(movement.CreatedAt),
+      type: "datetime-local",
+      value: datetimeInputValue(movement.CreatedAt),
       max: localDateString(),
     });
   }
   const form = buildForm(
     spec,
     async (payload) => {
+      if (isHandover && payload.date) {
+        const parts = dateFieldParseDateTime(payload.date);
+        payload.date = parts.iso;
+        payload.time = parts.time;
+      }
       payload.TzOffset = -new Date().getTimezoneOffset();
       await api(`/brokers/${broker.id}/history/${movement.id}`, {
         method: "PATCH",
@@ -6534,11 +6583,11 @@ function brokerAdjust(broker, kind) {
     increase: t("brokerBalanceIncreased"),
     handover: t("brokerHandoverRecorded"),
   };
-  // Admins may record a payment on an earlier day: money the broker handed over
-  // before anyone could enter it still belongs to that day's reports (and, for a
-  // top-up, to the branch's Cash from Brokers). The date picker opens on today
-  // and cannot name a day that has not happened yet; a worker always records
-  // "now".
+  // Admins may record a payment on an earlier day AND at an earlier time: money
+  // the broker handed over before anyone could enter it still belongs to that
+  // day's reports (and, for a top-up, to the branch's Cash from Brokers). The
+  // picker opens on now, carries a 24-hour clock, and cannot name a day that has
+  // not happened yet; a worker always records "now".
   const canBackdate =
     (kind === "increase" || kind === "handover") && userRole === "1";
   const spec = [
@@ -6569,21 +6618,26 @@ function brokerAdjust(broker, kind) {
     spec.push({
       key: "date",
       label: kind === "handover" ? t("handoverDate") : t("increaseDate"),
-      type: "date",
-      value: localDateString(),
+      type: "datetime-local",
+      value: localDateTimeInputNow(),
       max: localDateString(),
     });
   }
   const form = buildForm(
     spec,
     async (payload) => {
-      // The resulting broker movement is stamped with the worker's local time.
-      // A backdated movement keeps the picked day and the time of day it is
-      // entered at, so the row still sorts last within that day. `date` is what
-      // tells the server the day was chosen, so it can insist on an admin.
-      payload.CreatedAt = brokerMovementCreatedAt(
-        canBackdate ? payload.date : ""
-      );
+      // The resulting broker movement is stamped with the picked day AND the
+      // picked 24-hour clock; without a pick it is the worker's local time. A
+      // backdated movement therefore carries the moment it really happened, not
+      // the moment it was typed in. `date` and `time` are what tell the server
+      // the moment was chosen, so it can insist on an admin.
+      const picked = canBackdate ? payload.date : "";
+      payload.CreatedAt = brokerMovementCreatedAt(picked);
+      if (picked) {
+        const parts = dateFieldParseDateTime(picked);
+        payload.date = parts.iso;
+        payload.time = parts.time;
+      }
       payload.TzOffset = -new Date().getTimezoneOffset();
       // Money handed over by the broker is kept apart from current cash as the
       // branch's Cash from Brokers, so an increase must name the branch that

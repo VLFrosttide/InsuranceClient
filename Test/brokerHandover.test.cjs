@@ -194,6 +194,23 @@ const BROKER_STUBS = {
     normalizeBranch: (b) => String(b || ""),
     clientLocalDateTime,
     parseClientDateTime,
+    // Faithful copy of CurrentCash.resolvePickedTime: the admin's 24-hour clock
+    // that travels next to `date`.
+    resolvePickedTime: (body) => {
+      const b = body || {};
+      const raw = b.time ?? b.Time;
+      if (raw === undefined || raw === null || !String(raw).trim()) {
+        return { time: "" };
+      }
+      const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(raw).trim());
+      if (!m) return { error: "Time must be HH:mm" };
+      const h = Number(m[1]);
+      const mi = Number(m[2]);
+      const s = m[3] === undefined ? 0 : Number(m[3]);
+      if (h > 23 || mi > 59 || s > 59) return { error: "Time must be HH:mm" };
+      const p = (n) => String(n).padStart(2, "0");
+      return { time: `${p(h)}:${p(mi)}:${p(s)}` };
+    },
   },
   "./PaymentSchedule.js": {
     getSchedule: () => ({ periodStart: "2026-11-01", days: 14 }),

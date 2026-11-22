@@ -448,6 +448,55 @@ const callHandover = (db, body, user = USER) =>
     eq(db.state.cash, 90, "the live drawer still drops now");
   });
 
+  await check("an admin can record the time of day of a hand-over", async () => {
+    const db = makeDb({ cash: 100 });
+    const res = await callHandover(
+      db,
+      {
+        amount: 10,
+        reason: "Runner to the safe",
+        Recipient: "Ivan",
+        branch: BRANCH,
+        CreatedAt: "2026-11-20 18:30:00",
+        date: "2026-10-01",
+        time: "07:05",
+        TzOffset: 0,
+      },
+      { username: "admin1", role: 1 }
+    );
+    eq(res.code, 201, "created");
+    eq(
+      db.ledger[0].CreatedAt,
+      "2026-10-01 07:05:00",
+      "the picked day AND 24-hour clock"
+    );
+    eq(db.state.cash, 90, "the live drawer still drops now");
+  });
+
+  await check("a malformed clock is refused and nothing is recorded", async () => {
+    for (const time of ["24:00", "12:75", "lunch"]) {
+      const db = makeDb({ cash: 100 });
+      const res = await callHandover(
+        db,
+        {
+          amount: 10,
+          reason: "Runner to the safe",
+          Recipient: "Ivan",
+          branch: BRANCH,
+          CreatedAt: "2026-11-20 18:30:00",
+          date: "2026-10-01",
+          time,
+          TzOffset: 0,
+        },
+        { username: "admin1", role: 1 }
+      );
+      eq(res.code, 400, time);
+      eq(res.body, { error: "Time must be HH:mm" }, "a clear reason for " + time);
+      eq(db.ledger, [], "nothing recorded for " + time);
+      eq(db.state.cash, 100, "the drawer is untouched");
+    }
+  });
+
   await check("a worker cannot date a hand-over", async () => {
     const db = makeDb({ cash: 100 });
     const res = await callHandover(db, {
@@ -552,6 +601,58 @@ const callHandover = (db, body, user = USER) =>
       "the day is corrected, the time of day is kept"
     );
     eq(db.state.cash, 60, "a date-only correction leaves the drawer as it was");
+  });
+
+  await check("an admin can correct the clock of a hand-over", async () => {
+    const db = makeDb({
+      cash: 60,
+      // Recorded by a worker: the admin may still correct its moment.
+      rows: [handoverRow({ Username: "worker2" })],
+    });
+    const res = await callRoute(
+      "patch",
+      "/currentcash/transactions/:id",
+      db,
+      {
+        body: {
+          id: 7,
+          Amount: 40,
+          Reason: "Runner to the safe",
+          Recipient: "Ivan",
+          date: "2026-10-01",
+          time: "08:15",
+          TzOffset: 0,
+          CreatedAt: "2026-11-20 19:00:00",
+        },
+        user: { username: "admin1", role: 1 },
+      }
+    );
+    eq(res.code, 200, "updated");
+    eq(
+      db.txRows[0].CreatedAt,
+      "2026-10-01 08:15:00",
+      "the day and the 24-hour clock are corrected"
+    );
+    eq(db.state.cash, 60, "a date-and-time correction leaves the drawer as it was");
+  });
+
+  await check("a malformed clock on a correction is refused", async () => {
+    const db = makeDb({ cash: 60, rows: [handoverRow()] });
+    const res = await callRoute("patch", "/currentcash/transactions/:id", db, {
+      body: {
+        id: 7,
+        Amount: 40,
+        Reason: "Runner",
+        Recipient: "Ivan",
+        date: "2026-10-01",
+        time: "25:61",
+        TzOffset: 0,
+      },
+      user: { username: "admin1", role: 1 },
+    });
+    eq(res.code, 400, "refused");
+    eq(res.body, { error: "Time must be HH:mm" }, "a clear reason");
+    eq(db.txRows[0].CreatedAt, "2026-10-20 18:30:00", "the moment is unchanged");
   });
 
   await check("a worker cannot change a hand-over's day", async () => {

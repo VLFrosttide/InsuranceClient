@@ -544,14 +544,20 @@ function createDateField(options) {
     timeInput.addEventListener("input", () => closeCalendar());
   }
 
+  // Empty the field. The X beside the calendar button and the calendar's own
+  // "Clear" footer both come through here, so they always behave the same.
+  function clearValue() {
+    setValue("", true);
+    closeCalendar();
+    if (!disabled && !readOnly) text.focus();
+  }
+
   // Clicking ANY part of the field opens the calendar, not only the glyph.
   wrap.addEventListener("click", (event) => {
     if (disabled || readOnly) return;
     if (event.target === clearBtn) {
       event.preventDefault();
-      setValue("", true);
-      closeCalendar();
-      text.focus();
+      clearValue();
       return;
     }
     if (event.target === timeInput) return; // the time part is typed
@@ -559,7 +565,16 @@ function createDateField(options) {
     openCalendar();
     text.focus();
   });
-  clearBtn.addEventListener("click", (event) => event.stopPropagation());
+  // The X button clears the field itself. It stops the click so the field's
+  // generic "open the calendar" handler (and any row/table click behind it)
+  // never sees it - but it must do the clearing: stopping the event alone left
+  // the button doing nothing at all.
+  clearBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (disabled || readOnly) return;
+    clearValue();
+  });
 
   if (readOnly) {
     text.readOnly = true;
@@ -618,11 +633,7 @@ function createDateField(options) {
       setValue(mode === "datetime" ? `${today}T${time || "00:00"}` : today, true);
       closeCalendar();
     });
-    clearFooter.addEventListener("click", () => {
-      setValue("", true);
-      closeCalendar();
-      text.focus();
-    });
+    clearFooter.addEventListener("click", () => clearValue());
     grid.addEventListener("click", (event) => {
       const day = event.target.closest
         ? event.target.closest(".date-calendar-day")
