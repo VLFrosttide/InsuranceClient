@@ -1577,6 +1577,94 @@ const ledger = () =>
   });
 
   await check(
+    "a finished day keeps the cash its shift brought in, End shift and all",
+    async () => {
+      // Every shift of the branch is ended a few minutes before midnight, so
+      // the drawer of the shift OPEN at the end of the day is 0 until the next
+      // sale (see the 2026-11-22 23:56 close in the live data). A day that is
+      // already over must still show the walk-in cash it brought in plus its
+      // manual movements, minus its expenses - otherwise the day reads 0
+      // while its "Balance from walk-ins cash" shows the sales.
+      resetTables();
+      const today = CC.clientLocalDate(0);
+      const yesterday = CC.addDays(today, -1);
+      tables.insurance.push({
+        BlancNumber: "D1",
+        Branch: BRANCH,
+        PaymentType: "Cash",
+        Price: "100.00",
+        CurrencyType: "EUR",
+        CreationDate: `${yesterday} 10:00:00`,
+        Annulled: 0,
+        Deleted: 0,
+        BrokerId: null,
+      });
+      tables.cash_transactions.push(
+        {
+          id: 1,
+          Branch: BRANCH,
+          Type: "increase",
+          Amount: 20,
+          Currency: "EUR",
+          Username: USER,
+          Reason: "top-up",
+          CreatedAt: `${yesterday} 12:00:00`,
+          Deleted: 0,
+        },
+        {
+          id: 2,
+          Branch: BRANCH,
+          Type: "reduce",
+          Amount: 5,
+          Currency: "EUR",
+          Username: USER,
+          Reason: "pens",
+          CreatedAt: `${yesterday} 13:00:00`,
+          Deleted: 0,
+        }
+      );
+      // "End shift" at 23:56: the drawer is emptied and its money recorded.
+      for (const cur of CURRENCIES) {
+        tables.cash_resets.push({
+          Branch: BRANCH,
+          Username: USER,
+          Currency: cur,
+          KeptAmount: 115,
+          CreatedAt: `${yesterday} 23:56:00`,
+        });
+      }
+
+      // The day itself: 100 cash + 20 increase - 5 expense.
+      eq(
+        await CC.getDayCash(fakeDb, BRANCH, yesterday, today),
+        { EUR: 115, TRY: 0 },
+        "the cash the day's shift brought into the drawer"
+      );
+      // The live drawer at the same moment is the NEW shift's, which is empty.
+      eq(
+        await CC.getAvailableCashAsOf(fakeDb, BRANCH, today),
+        { EUR: 0, TRY: 0 },
+        "the open shift starts at 0"
+      );
+
+      const call = routeCaller("/currentcash/daily");
+      let r = await call({ date: yesterday, tzOffset: "0", branch: BRANCH });
+      eq(r.code, 200, "status");
+      eq(
+        r.body.availableCash,
+        { EUR: 115, TRY: 0 },
+        "a finished day is not blanked by its own End shift"
+      );
+      r = await call({ date: today, tzOffset: "0", branch: BRANCH });
+      eq(
+        r.body.availableCash,
+        { EUR: 0, TRY: 0 },
+        "today keeps showing the live drawer"
+      );
+    }
+  );
+
+  await check(
     "GET /currentcash/daily names the two policies bounding the range",
     async () => {
       const routes = [];

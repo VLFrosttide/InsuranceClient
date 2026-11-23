@@ -35,6 +35,9 @@ const TIER_JS = serverFile("Requests", "TierEndpoints.js");
 const routes = [];
 const queries = [];
 const movements = [];
+// Reason relabels the endpoint asks for: a blanc correction has to carry the
+// drawer ledger (cash_transactions) and its Total cash mirror with it.
+const renames = [];
 // Price-delta adjustments the endpoint asks Brokers.js to make. A broker-funded
 // policy's balance is the only record of its payment, so a corrected price has
 // to move it too; asserting it separately keeps that visible.
@@ -108,6 +111,15 @@ const STUBS = {
   },
   "./CurrentCash.js": {
     toDecimal,
+    // The reasons a policy's own corrections carry; the insurance editor uses
+    // them to carry the drawer ledger with a corrected blanc number.
+    POLICY_MOVEMENT_REASON_PREFIXES: [
+      "Annul ",
+      "Delete ",
+      "Restore ",
+      "Edit ",
+      "Price change ",
+    ],
     recordCashMovement: async (
       conn,
       branch,
@@ -315,6 +327,15 @@ const fakeDb = {
     if (flat.startsWith("SELECT * FROM insurance")) {
       return [row ? [{ ...row }] : []];
     }
+    // A blanc correction relabels the policy's drawer rows (see the comment at
+    // the relabel in Requests/TierEndpoints.js).
+    const rename = flat.match(
+      /^UPDATE (cash_transactions|total_cash_transactions) SET Reason = \? WHERE Reason = \?$/
+    );
+    if (rename) {
+      renames.push({ table: rename[1], from: params[1], to: params[0] });
+      return [{ affectedRows: 1 }];
+    }
     if (flat.startsWith("UPDATE insurance SET")) {
       const setPart = flat.slice(
         "UPDATE insurance SET".length,
@@ -439,6 +460,7 @@ async function patch(body, opts = {}) {
   brokerRestoreMeta.length = 0;
   brokerSettles.length = 0;
   queries.length = 0;
+  renames.length = 0;
   txCount = 0;
   failReduce = !!opts.failReduce;
   row = { ...BASE_ROW, ...(opts.row || {}) };
@@ -479,6 +501,7 @@ async function patch(body, opts = {}) {
       (s) => `${s.amount} -> broker ${s.brokerId} (${s.blancNumber})`
     ),
     updated: queries.filter((q) => q.sql.startsWith("UPDATE insurance SET")),
+    renames: renames.map((r) => `${r.table}: ${r.from} -> ${r.to}`),
     tx: txCount,
     row: { ...row },
   };
@@ -1295,6 +1318,29 @@ async function patch(body, opts = {}) {
     );
     eq(r.body.insurance.BlancNumber, "7654321", "response carries the new number");
     eq(r.movements, [], "no movements expected");
+    // The drawer ledger follows the corrected number, in BOTH of its ledgers:
+    // the sale row (Reason = the old blanc) and every correction row of the
+    // policy. A row left under the old number belongs to no policy, so the
+    // derived drawer reads it as money typed in by hand and counts the policy
+    // twice (see getAvailableCashAsOf / getDayCash in CurrentCash.js).
+    eq(
+      r.renames,
+      [
+        "cash_transactions: 1234567 -> 7654321",
+        "cash_transactions: Annul 1234567 -> Annul 7654321",
+        "cash_transactions: Delete 1234567 -> Delete 7654321",
+        "cash_transactions: Restore 1234567 -> Restore 7654321",
+        "cash_transactions: Edit 1234567 -> Edit 7654321",
+        "cash_transactions: Price change 1234567 -> Price change 7654321",
+        "total_cash_transactions: 1234567 -> 7654321",
+        "total_cash_transactions: Annul 1234567 -> Annul 7654321",
+        "total_cash_transactions: Delete 1234567 -> Delete 7654321",
+        "total_cash_transactions: Restore 1234567 -> Restore 7654321",
+        "total_cash_transactions: Edit 1234567 -> Edit 7654321",
+        "total_cash_transactions: Price change 1234567 -> Price change 7654321",
+      ],
+      "the drawer ledger follows the new number"
+    );
   });
 
   await check("re-sending the same blank number is not an update of the key", async () => {
@@ -1305,6 +1351,7 @@ async function patch(body, opts = {}) {
     const setClause = r.updated[0].sql.split(" WHERE ")[0];
     ok(!setClause.includes("BlancNumber"), "BlancNumber is not in the SET clause");
     eq(r.row.PolicyNumber, "P-9", "the other field was still saved");
+    eq(r.renames, [], "no ledger relabel when the number did not change");
   });
 
   await check("a blank number already used by another policy is rejected", async () => {

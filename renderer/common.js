@@ -581,7 +581,7 @@ const I18N = {
     availableCash: "Available cash",
     availableCashBranch: "Available cash ({branch})",
     availableCashHint:
-      "The branch's cash drawer at the end of the selected day: the walk-in cash policies of its current shift plus manual increases, minus expenses and hand-overs. Walking the dates back shows how much cash the branch actually had available then.",
+      "The branch's cash of the selected day: its walk-in cash policies plus manual increases, minus expenses and hand-overs. Today shows the live drawer, carried over from the last shift close. A day that is already over shows what that day's shift brought into the drawer, so its own \"End shift\" does not blank it. Walking the dates back shows how much cash each day had.",
     countryWideInsurances: "Country-wide insurances",
     countryWideInsurancesHint:
       "The range of policy numbers issued in the country on this day: the highest number minus the lowest. The policies listed below set the ends of that range, so a mistyped or out-of-series number at either end changes the figure.",
@@ -1501,7 +1501,7 @@ const I18N = {
     availableCash: "Наличен кеш",
     availableCashBranch: "Наличен кеш ({branch})",
     availableCashHint:
-      "Кешът в касата на клона в края на избрания ден: застраховките на място, платени в брой, от текущата смяна, плюс ръчните увеличения, минус разходите и предадените пари. Връщането на датата назад показва колко кеш е имал клонът на разположение тогава.",
+      "Кешът на клона за избрания ден: застраховките на място, платени в брой, плюс ръчните увеличения, минус разходите и предадените пари. За днес се показва текущото съдържание на касата, пренесено от последното завършване на смяна. За отминал ден се показва какво е донесла смяната на този ден в касата, така че собственото ѝ \"Завърши смяна\" не го нулира. Връщането на датите назад показва колко кеш е имал всеки ден.",
     countryWideInsurances: "Застраховки в страната",
     countryWideInsurancesHint:
       "Диапазонът на номерата на полиците, издадени в страната за този ден: най-високият номер минус най-ниският. Полиците по-долу определят краищата на диапазона, така че сгрешен или чужд номер в някой от краищата променя стойността.",

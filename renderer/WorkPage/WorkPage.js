@@ -2309,10 +2309,14 @@ function sortableTable(items, columns, actions, rowClass, onRowClick, options) {
 // A collapsible table section: the heading stays visible - with the number of
 // rows it holds and, when given, a per-type price breakdown such as
 // "Increase: 10× 40 EUR, 20× 25 EUR" - and the body only opens when the heading
-// is clicked, so a busy day does not bury the rest of the page. Every render
-// starts collapsed.
-function collapsibleSection(title, count, nodes, breakdown) {
+// is clicked, so a busy day does not bury the rest of the page. A render
+// starts collapsed; only the Current cash tab re-opens the folds the user left
+// open (see applyCashFoldState).
+function collapsibleSection(title, count, nodes, breakdown, foldKey) {
   const details = el("details", null, { class: "collapsible-section" });
+  // A stable key lets the Current cash view keep the open/closed state across a
+  // rebuild (a new day or branch) instead of folding everything again.
+  if (foldKey) details.setAttribute("data-cash-fold", foldKey);
   const summary = el("summary", `${title} (${count})`);
   if (breakdown && breakdown.length > 0) {
     summary.appendChild(
@@ -2328,11 +2332,14 @@ function collapsibleSection(title, count, nodes, breakdown) {
 
 // A balance card that starts FOLDED. The heading is the summary; clicking it
 // unfolds the figures. Used for the three big Current cash reports so a busy
-// day does not fill the screen before anything is asked for.
+// day does not fill the screen before anything is asked for. options.foldKey
+// lets the tab keep the card as the user left it across a day/branch change
+// (see applyCashFoldState).
 function foldedCard(title, options = {}) {
   const details = el("details", null, {
     class: `balance-card folded-card${options.className ? ` ${options.className}` : ""}`,
   });
+  if (options.foldKey) details.setAttribute("data-cash-fold", options.foldKey);
   if (options.hint) details.title = options.hint;
   const summary = el("summary");
   summary.appendChild(el("h3", title));
@@ -4062,8 +4069,64 @@ function activateCashCard(card, section, active) {
   });
 }
 
+// The folding sections and cards of the Current cash tab carry a stable
+// data-cash-fold key. Picking another day (or branch, or saving a movement)
+// rebuilds the whole view; without this every fold the user had opened closed
+// itself again and the table being read was lost. cashOpenFolds() records what
+// was open in the view about to be replaced, applyCashFoldState() re-opens it
+// on the rebuilt nodes and - when the tab was already on screen - marks the
+// reloaded figures with .cash-updated, whose short flash (WorkPage.css) says
+// "the data inside changed" without moving anything.
+function cashOpenFolds() {
+  const open = new Set();
+  if (!Content || typeof Content.querySelectorAll !== "function") return open;
+  for (const details of Content.querySelectorAll("details[data-cash-fold]")) {
+    if (details.open) open.add(details.getAttribute("data-cash-fold"));
+  }
+  return open;
+}
+
+// `roots` are the new top-level nodes of the view: the cards row and each
+// ledger section. A root may be a folding element itself or contain the folded
+// cards. Only folds that were open are re-opened, so a first visit still starts
+// folded. `flash` is true only when this is a rebuild of a view already on
+// screen: a fresh visit gets no animation.
+function applyCashFoldState(roots, openFolds, flash) {
+  for (const root of roots) {
+    if (!root || typeof root.querySelectorAll !== "function") continue;
+    const folds = [];
+    if (root.matches && root.matches("details[data-cash-fold]")) {
+      folds.push(root);
+    }
+    folds.push(...root.querySelectorAll("details[data-cash-fold]"));
+    for (const details of folds) {
+      if (openFolds.has(details.getAttribute("data-cash-fold"))) {
+        details.open = true;
+      }
+    }
+    if (!flash) continue;
+    // Every reloaded figure flashes once: the folding sections and the balance
+    // cards above them.
+    const figures = new Set(folds);
+    if (root.matches && root.matches(".balance-card")) figures.add(root);
+    for (const card of root.querySelectorAll(".balance-card")) {
+      figures.add(card);
+    }
+    for (const node of figures) node.classList.add("cash-updated");
+  }
+}
+
 async function currentCashView(overrideBranch, overrideDate) {
   const seq = ++currentCashSeq;
+
+  // The tab may already be on screen - the day picker, the one-day steps, a
+  // branch switch or a save all rebuild it. Remember which folds the user had
+  // opened before the old view is thrown away: changing the day must swap only
+  // the figures inside them, never fold the table being read. A fresh visit
+  // through runLoader finds nothing here and opens collapsed, as before.
+  const refreshing =
+    Content.querySelectorAll("details[data-cash-fold]").length > 0;
+  const openFolds = cashOpenFolds();
 
   // Admins can inspect/manage any branch's cash (not just the branch they
   // logged in with); workers are always scoped to their own login branch.
@@ -4290,6 +4353,7 @@ async function currentCashView(overrideBranch, overrideDate) {
   if (isAdmin && data.handoverStats) {
     const stats = data.handoverStats;
     const handoverCard = foldedCard(t("handoverStats"), {
+      foldKey: "handoverStats",
       className: "handover-card",
       hint: t("handoverStatsHint"),
     });
@@ -4361,7 +4425,10 @@ async function currentCashView(overrideBranch, overrideDate) {
   // and the card side (the day's card payments and the live card balance). It
   // was previously mixed into the Daily report card; keeping it apart lets the
   // report talk only about insurances.
-  const drawersCard = foldedCard(t("drawers"), { className: "drawers-card" });
+  const drawersCard = foldedCard(t("drawers"), {
+    foldKey: "drawers",
+    className: "drawers-card",
+  });
   drawersCard.appendChild(
     dailyStat(
       fmt(t("availableCashBranch"), {
@@ -4414,7 +4481,10 @@ async function currentCashView(overrideBranch, overrideDate) {
       brokerInsuranceMoney
     );
 
-  const dailyCard = foldedCard(t("dailyReport"), { className: "daily-report" });
+  const dailyCard = foldedCard(t("dailyReport"), {
+    foldKey: "dailyReport",
+    className: "daily-report",
+  });
 
   // Insurance number statistics.
   dailyCard.appendChild(dailyGroup(t("insuranceNumberStatistics")));
@@ -4953,7 +5023,9 @@ async function currentCashView(overrideBranch, overrideDate) {
     handoverSection = collapsibleSection(
       t("handedOverCashSection"),
       outstandingHandovers.length,
-      [el("p", t("handedOverCashDayHint"), { class: "muted" }), handoversTable]
+      [el("p", t("handedOverCashDayHint"), { class: "muted" }), handoversTable],
+      undefined,
+      "handovers"
     );
   }
   // Expenses: the money that LEFT this branch's drawer as a spend on the picked
@@ -5246,7 +5318,8 @@ async function currentCashView(overrideBranch, overrideDate) {
     // apart (and their own prices) instead of inside the increases and expenses.
     cashLedgerTypeTiers(data.transactions).map((group) =>
       formatTierGroup(group, cashLedgerCountLabel)
-    )
+    ),
+    "transactions"
   );
   const cashInsurancesSection = collapsibleSection(
     t("cashInsurances"),
@@ -5259,7 +5332,8 @@ async function currentCashView(overrideBranch, overrideDate) {
         ...p,
         Price: policyLedgerAmount(p),
       }))
-    ).map((group) => formatTierGroup(group, cardPaymentStatusCountLabel))
+    ).map((group) => formatTierGroup(group, cardPaymentStatusCountLabel)),
+    "cashInsurances"
   );
   const expensesSection = collapsibleSection(
     t("expenses"),
@@ -5268,12 +5342,16 @@ async function currentCashView(overrideBranch, overrideDate) {
       expensesTotal,
       el("p", t("expensesHint"), { class: "muted" }),
       expensesTable,
-    ]
+    ],
+    undefined,
+    "expenses"
   );
   const brokerCashSection = collapsibleSection(
     t("transactionsCashFromBrokers"),
     (data.brokerCashTransactions || []).length,
-    [brokerCashTable]
+    [brokerCashTable],
+    undefined,
+    "brokerCash"
   );
   const cardInsurancesSection = collapsibleSection(
     t("cardInsurances"),
@@ -5283,14 +5361,17 @@ async function currentCashView(overrideBranch, overrideDate) {
     // (who paid the fee, and at which price) are visible without opening it.
     cardPaymentStatusTiers(data.cardInsurances).map((group) =>
       formatTierGroup(group, cardPaymentStatusCountLabel)
-    )
+    ),
+    "cardInsurances"
   );
   const resetsSection = collapsibleSection(
     t("resets"),
     (data.resets || []).length +
       cardResets.length +
       brokerCashResets.length,
-    [resetTable]
+    [resetTable],
+    undefined,
+    "resets"
   );
 
   // The company bank account. Admin only: its balance and hand-overs are never
@@ -5392,7 +5473,9 @@ async function currentCashView(overrideBranch, overrideDate) {
         bankHandoversTable,
         dailyGroup(t("bankHistory")),
         bankHistoryTable,
-      ]
+      ],
+      undefined,
+      "bank"
     );
   }
 
@@ -5431,6 +5514,25 @@ async function currentCashView(overrideBranch, overrideDate) {
     expensesCard,
     expensesSection,
     hasNonZeroCash(data.totalExpences)
+  );
+
+  // Everything is built. Re-open the folds that were open before the rebuild
+  // and let the reloaded figures flash once: only the figures change - the page
+  // never folds itself shut under the user.
+  applyCashFoldState(
+    [
+      cardsRow,
+      transactionsSection,
+      cashInsurancesSection,
+      cardInsurancesSection,
+      brokerCashSection,
+      expensesSection,
+      handoverSection,
+      resetsSection,
+      bankSection,
+    ],
+    openFolds,
+    refreshing
   );
 
   Content.replaceChildren(

@@ -325,6 +325,28 @@ body {
 .collapsible-body > p {
   margin: 0 0 8px 0;
 }
+/* A reload that only swaps the day's (or branch's) figures: the folding
+   sections keep the state the user left them in, and the reloaded headings and
+   cards flash once instead. Tiny on purpose - it says "the data inside changed"
+   without folding anything shut. */
+.collapsible-section.cash-updated > summary,
+.balance-card.cash-updated {
+  animation: cash-updated-flash 620ms ease-out;
+}
+@keyframes cash-updated-flash {
+  0% {
+    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-section.cash-updated > summary,
+  .balance-card.cash-updated {
+    animation: none;
+  }
+}
 
 /* The Expenses card borrows a whisper of the red used for money going out, so
    it is tellable from the cash and broker cards at a glance. */
