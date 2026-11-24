@@ -1,4 +1,4 @@
-npm "use strict";
+"use strict";
 
 // Static wiring test: the Diagnostics tab and the client recorder must be
 // loaded/wired exactly once and on every page.

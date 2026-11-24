@@ -25,11 +25,12 @@ import electronUpdater from "electron-updater";
 import { Outbox } from "./outbox.js";
 import { BulinsController } from "./bulins.js";
 import { ScanWatcher, ensureOcrLanguages } from "./scans.js";
-import { pdfFields } from "./pdfFields.js";
+import { pdfFields, policyPdfName } from "./pdfFields.js";
 import {
   desktopPdfAlreadyHandled,
   desktopPdfBelongsToForm,
   desktopPdfIdentity,
+  desktopPdfPrintOrder,
 } from "./desktopPdfWatch.js";
 import { API } from "./config.js";
 const { autoUpdater } = electronUpdater;
@@ -1041,13 +1042,16 @@ ipcMain.handle("WsHandshakeProbe", () => probeWsHandshake());
 //
 // Email mode: both PDFs are pushed to the form at once and deleted from the
 // Desktop; the policy PDF ("BG_02_ FI<policy>.pdf") is uploaded but never
-// auto-printed, only the remaining PDF gets a paper copy. The watcher stops
-// once it has collected both files.
+// auto-printed - an email card only ever prints invoices (the payment slip),
+// never the policy itself. The watcher stops once it has collected both files.
 //
-// Walk-in mode: both PDFs get a paper copy, and each Desktop file is deleted
-// only after its print has settled — printed, cancelled or failed — so a file
-// this watch took over is never left behind.
-let DesktopPdfWatch = null; // { mode, sinceMs, timer, existing, emitted, sizes, foundPolicy, foundOther, foundCount, printedCount, fields }
+// Walk-in mode: both PDFs get a paper copy - the policy first, the invoice
+// after it, whichever of the two was downloaded first (QueueWalkInPrint holds
+// an invoice until the policy is in the print queue, for at most
+// WalkInPolicyWaitMs) - and each Desktop file is deleted only after its print
+// has settled - printed, cancelled or failed - so a file this watch took over
+// is never left behind.
+let DesktopPdfWatch = null; // { mode, sinceMs, timer, existing, emitted, sizes, foundPolicy, foundOther, foundCount, printedCount, pendingPrints, policyWaitTimer, fields }
 
 function DesktopPdfDirectory() {
   try {
@@ -1119,7 +1123,14 @@ async function DeleteDesktopPdfFile(filePath, logTag = "[DesktopPdfWatch]") {
 function StopDesktopPdfWatch() {
   if (!DesktopPdfWatch) return;
   if (DesktopPdfWatch.timer) clearInterval(DesktopPdfWatch.timer);
+  if (DesktopPdfWatch.policyWaitTimer) clearTimeout(DesktopPdfWatch.policyWaitTimer);
+  // Walk-in invoices still held for the policy must not be dropped when the
+  // watch ends (the worker may save and close the form seconds after the
+  // downloads): hand them to the print queue now. There is no watch left to
+  // count them, so the queue just prints and deletes them.
+  const held = DesktopPdfWatch.pendingPrints;
   DesktopPdfWatch = null;
+  if (held && held.length) EnqueueWalkInPrints(held, null);
 }
 
 // Give up loading a document for printing after this long (did-finish-load
@@ -1450,9 +1461,10 @@ async function ScanDesktopPdfsOnce() {
     const filePath = path.join(dir, entry.name);
 
     // The policy PDF ("BG_02_ FI<policy>.pdf") is auto-attached like every
-    // other PDF, but it is never auto-printed in email mode: only the
-    // remaining PDF gets a paper copy.
-    const isPolicyPdf = /^BG_02_\s*FI/i.test(entry.name);
+    // other PDF, but it is never auto-printed for an email card: there only the
+    // invoice (the payment slip) gets a paper copy. `/^BG_02_\s*FI/i` lives in
+    // pdfFields.js as policyPdfName so this and the field reader cannot drift.
+    const isPolicyPdf = policyPdfName(entry.name);
 
     let stat;
     try {
@@ -1508,21 +1520,17 @@ async function ScanDesktopPdfsOnce() {
 
     if (isWalkIn) {
       // Walk-ins are print-only: nothing is attached to the form. Every PDF
-      // downloaded for the visit gets a paper copy, and the Desktop file is
-      // kept until that print has settled (see the print queue below), so the
-      // source is still there if the print fails. The queue deletes it in every
-      // outcome - printed, cancelled or failed - so nothing is left behind.
-      enqueueDesktopPrint(base64, entry.name, {
+      // downloaded for the visit gets a paper copy - the policy first, the
+      // invoice after it, however the two arrived (QueueWalkInPrint) - and the
+      // Desktop file is kept until that print has settled (see the print queue
+      // below), so the source is still there if the print fails. The queue
+      // deletes it in every outcome - printed, cancelled or failed - so
+      // nothing is left behind.
+      QueueWalkInPrint(watch, {
+        base64,
+        filename: entry.name,
         filePath,
-        deleteAfterPrint: true,
-        onSettled: () => {
-          // Only count a print for the watcher that queued it: the form may
-          // have been closed and reopened (starting a new walk-in watch) while
-          // an older print job was still being handed to the printer.
-          if (watch !== DesktopPdfWatch || watch.mode !== "walkin") return;
-          watch.printedCount += 1;
-          if (watch.printedCount >= 2) StopDesktopPdfWatch();
-        },
+        isPolicy: isPolicyPdf,
       });
 
       // Both downloads are in hand: stop polling so unrelated PDFs saved to
@@ -1554,7 +1562,8 @@ async function ScanDesktopPdfsOnce() {
     // delete retries instead of leaving the file on the Desktop.
     await DeleteDesktopPdfFile(filePath);
 
-    // Only the non-policy PDF is printed automatically.
+    // An email card only prints invoices: the policy PDF is attached and
+    // uploaded, never auto-printed, so only the payment slip gets a paper copy.
     if (!isPolicyPdf) {
       enqueueDesktopPrint(base64, entry.name);
     }
@@ -1564,6 +1573,99 @@ async function ScanDesktopPdfsOnce() {
       break;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Walk-in print order
+// ---------------------------------------------------------------------------
+// A walk-in gets two paper copies: the policy ("BG_02_ FI<policy>.pdf") and the
+// invoice (the payment slip, named after the upload id). The policy must always
+// be the first sheet printed, but the tool downloads the two files in no
+// guaranteed order and the queue starts a job as soon as it is handed one - so
+// an invoice that arrives first is held here until the policy PDF is queued (or
+// WalkInPolicyWaitMs passes), and only then handed to the queue after it.
+//
+// Holding an invoice cannot lose it: its Desktop file is left untouched until
+// the job is queued, and a watch that ends while an invoice is still held (the
+// worker saved and closed the form) flushes it from StopDesktopPdfWatch.
+const WalkInPolicyWaitMs = 15 * 1000;
+
+// Queue one PDF downloaded for a walk-in, policy first. `job` is
+// { base64, filename, filePath, isPolicy }.
+function QueueWalkInPrint(watch, job) {
+  if (!watch || !job || !job.base64) return;
+
+  // The policy goes straight into the queue: it is first by definition. An
+  // invoice that has been waiting for it may follow now.
+  if (job.isPolicy) {
+    enqueueDesktopPrint(job.base64, job.filename, {
+      filePath: job.filePath,
+      deleteAfterPrint: true,
+      onSettled: () => CountWalkInPrint(watch),
+    });
+    FlushWalkInPrints(watch);
+    return;
+  }
+
+  watch.pendingPrints.push(job);
+
+  // The policy is already in hand (queued, printing or printed): the invoice
+  // can be queued after it.
+  if (watch.foundPolicy) {
+    FlushWalkInPrints(watch);
+    return;
+  }
+
+  // The policy may still be downloading: give it until WalkInPolicyWaitMs
+  // before printing the invoice on its own, so a missing policy can only delay
+  // the copy, never lose it.
+  if (watch.policyWaitTimer) return;
+  watch.policyWaitTimer = setTimeout(() => {
+    watch.policyWaitTimer = null;
+    if (watch !== DesktopPdfWatch) return;
+    if (!watch.foundPolicy) {
+      console.warn(
+        `[DesktopPdfWatch] The policy PDF did not arrive within ` +
+          `${WalkInPolicyWaitMs / 1000}s; printing the invoice without it.`
+      );
+    }
+    FlushWalkInPrints(watch);
+  }, WalkInPolicyWaitMs);
+}
+
+// Hand every held walk-in print to the queue, policy first.
+function FlushWalkInPrints(watch) {
+  if (!watch || !watch.pendingPrints || !watch.pendingPrints.length) return;
+  if (watch.policyWaitTimer) {
+    clearTimeout(watch.policyWaitTimer);
+    watch.policyWaitTimer = null;
+  }
+  EnqueueWalkInPrints(watch.pendingPrints.splice(0), watch);
+}
+
+// Queue walk-in jobs in print order (desktopPdfPrintOrder puts the policy
+// first). `watch` is null when the watch that collected the jobs is already
+// gone - the copies are still printed and their Desktop files deleted, there is
+// simply nothing left to count them for.
+function EnqueueWalkInPrints(jobs, watch) {
+  for (const job of desktopPdfPrintOrder(jobs)) {
+    enqueueDesktopPrint(job.base64, job.filename, {
+      filePath: job.filePath,
+      deleteAfterPrint: true,
+      onSettled: watch ? () => CountWalkInPrint(watch) : null,
+    });
+  }
+}
+
+// Count one finished paper copy (printed, cancelled or failed) for the walk-in
+// that queued it and stop the watcher once both copies are done. Only a print
+// for the watch that queued it counts: the form may have been closed and
+// reopened (a new walk-in watch) while an older job was still being handed to
+// the printer.
+function CountWalkInPrint(watch) {
+  if (watch !== DesktopPdfWatch || watch.mode !== "walkin") return;
+  watch.printedCount += 1;
+  if (watch.printedCount >= 2) StopDesktopPdfWatch();
 }
 
 // ---------------------------------------------------------------------------
@@ -1937,6 +2039,10 @@ ipcMain.handle("StartDesktopPdfWatch", (event, sinceMs, options) => {
     foundOther: false,
     foundCount: 0,
     printedCount: 0,
+    // Walk-in paper copies waiting for the policy PDF and the timer that
+    // releases them if it never arrives (see QueueWalkInPrint).
+    pendingPrints: [],
+    policyWaitTimer: null,
     // Values read out of the PDFs for the add-insurance form; each is sent to
     // the renderer once, the first time it is found (see SendDesktopPdfFields).
     fields: {},

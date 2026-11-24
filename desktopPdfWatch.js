@@ -1,5 +1,6 @@
 "use strict";
-// Which Desktop PDFs belong to the insurance form that is open right now.
+// Which Desktop PDFs belong to the insurance form that is open right now, and
+// the order their paper copies are printed in.
 //
 // While a worker processes a policy, an external tool downloads the policy PDFs
 // to the Desktop (see the Desktop PDF watcher in main.js). Everything else on
@@ -24,6 +25,11 @@
 //
 // No Electron or fs access (the caller passes stat results), so the rules can be
 // tested with plain Node (see Test/desktopPdfWatch.test.cjs).
+
+// Which downloaded PDF is the policy (the "BG_02_ FI<policy>.pdf" file) is the
+// same rule pdfFields.js reads the policy number with; reusing it keeps the
+// print order and the field reader from disagreeing about the files.
+import { policyPdfName } from "./pdfFields.js";
 
 // The moment a PDF was created, falling back to its modification time on
 // filesystems that report no usable creation time (birthtime 0).
@@ -69,4 +75,29 @@ export function desktopPdfBelongsToForm(watch, filePath, identity) {
     return true;
   }
   return Number(identity.createdMs) >= Number(watch.sinceMs);
+}
+
+// The order the paper copies of one insurance are printed in: the policy
+// ("BG_02_ FI<policy>.pdf") always first, the invoice/payment slip (the file
+// named after the upload id) after it. The external tool downloads the two PDFs
+// one after the other, in no guaranteed order, and the print queue prints a
+// file as soon as it has both - so the caller sorts its jobs with this before
+// handing them over, and the policy is the first sheet out of the printer
+// whichever of the two was downloaded first.
+//
+// Jobs keep their relative order within each group (only the policy is moved to
+// the front), so the remaining documents of a visit are never reordered.
+// `policyPdfName` is the same rule pdfFields.js uses to read the policy number,
+// so the two can never disagree about which file is the policy.
+//
+//   desktopPdfPrintOrder([{ filename: "8a15af00.pdf" }, { filename: "BG_02_ FI1.pdf" }])
+//     -> [{ filename: "BG_02_ FI1.pdf" }, { filename: "8a15af00.pdf" }]
+export function desktopPdfPrintOrder(jobs) {
+  const policy = [];
+  const others = [];
+  for (const job of jobs || []) {
+    if (job && policyPdfName(job.filename)) policy.push(job);
+    else others.push(job);
+  }
+  return policy.concat(others);
 }

@@ -41,6 +41,7 @@ function eq(actual, expected, label) {
     desktopPdfBelongsToForm,
     desktopPdfCreatedMs,
     desktopPdfIdentity,
+    desktopPdfPrintOrder,
   } = rules;
 
   const CLICK = 1_700_000_000_000; // the moment the form was opened
@@ -153,6 +154,37 @@ function eq(actual, expected, label) {
   check("a file that was never handled is not reported as handled", () => {
     eq(desktopPdfAlreadyHandled(undefined, { size: 1, createdMs: CLICK }), false, "never seen");
     eq(desktopPdfAlreadyHandled({ size: 1, createdMs: CLICK }, null), false, "no identity");
+  });
+
+  // --- print order ----------------------------------------------------------
+
+  // The policy ("BG_02_ FI<policy>.pdf") always prints before the invoice /
+  // payment slip, however the two downloads reached the Desktop.
+  const invoice = { filename: "8a15af00-4c7b-4e2a-9f11.pdf" };
+  const policy = { filename: "BG_02_ FI26192158.pdf" };
+
+  check("the policy prints before the invoice when the invoice arrived first", () => {
+    eq(desktopPdfPrintOrder([invoice, policy]), [policy, invoice], "invoice first");
+  });
+
+  check("the policy prints before the invoice when it already arrived first", () => {
+    eq(desktopPdfPrintOrder([policy, invoice]), [policy, invoice], "policy first");
+  });
+
+  check("the policy name is recognised with and without the space", () => {
+    const tight = { filename: "BG_02_FI26192159.pdf" };
+    eq(desktopPdfPrintOrder([invoice, policy, tight]), [policy, tight, invoice], "both shapes");
+  });
+
+  check("documents that are not policies keep their order after the policy", () => {
+    const a = { filename: "a.pdf" };
+    const b = { filename: "b.pdf" };
+    eq(desktopPdfPrintOrder([a, policy, b]), [policy, a, b], "stable order");
+  });
+
+  check("an empty print set has no policy to move", () => {
+    eq(desktopPdfPrintOrder([]), [], "empty");
+    eq(desktopPdfPrintOrder(null), [], "none");
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

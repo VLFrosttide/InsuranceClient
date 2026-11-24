@@ -326,6 +326,17 @@ function pagePdf({ content, pageResources = "/Font << /F1 5 0 R >>", compressed 
     );
   });
 
+  await check("every field handed to the form is complete and has no spaces", () => {
+    // The plate is printed in groups and the file name carries spaces: the form
+    // must receive the whole numbers joined up, never a piece between spaces.
+    const bytes = pagePdf({ content: "BT /F1 9 Tf (34 HEP 488 175973 175973) Tj ET" });
+    eq(
+      pdfFields(bytes, "BG_02_ FI 26 192 158.pdf"),
+      { policyNumber: "26192158", carNumber: "34HEP488", blancNumber: null },
+      "spaced groups"
+    );
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

@@ -44,8 +44,9 @@ contextBridge.exposeInMainWorld("bridge", {
 
   // Desktop PDF watcher: while a policy is being processed, the worker's tools
   // download the two policy PDFs to the Desktop. The main process polls the
-  // Desktop and either streams the new PDFs back here (email policies) or
-  // prints them both and deletes them (walk-in insurances).
+  // Desktop and either streams the new PDFs back here (email policies, where
+  // only the invoice is printed) or prints them both - the policy file first,
+  // then the invoice - and deletes them (walk-in insurances).
   // options: { mode: "email" | "walkin" }
   StartDesktopPdfWatch: (sinceMs, options) =>
     ipcRenderer.invoke("StartDesktopPdfWatch", sinceMs, options),

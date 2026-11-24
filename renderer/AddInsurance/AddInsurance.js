@@ -568,29 +568,24 @@ function clearPendingEmail() {
 }
 
 // ---------------------------------------------------------------------------
-// Blank-number autofill & paste trimming
+// Number-field autofill & paste trimming
 // ---------------------------------------------------------------------------
+// The number fields are filled from the policy PDFs only: the values the main
+// process reads out of each PDF's file name and contents (see pdfFields.js and
+// applyPdfFields below). Nothing is read out of the broker's email any more -
+// its subject and body are free-form prose, so the numbers taken from them were
+// easy to get wrong, and the PDFs carry the same numbers in full.
 
-// When the form is opened for a broker email, look through the email's subject
-// and body and pre-fill the blank-number field with the first 6-digit number
-// and the car-number field with the first 8-character alphanumeric car number
-// (both helpers live in numberField.js).
-function autofillEmailNumbers() {
-  if (!PendingEmail) return;
-  const text = [PendingEmail.subject, PendingEmail.body].filter(Boolean).join("\n");
-
-  autoFillNumber("BlancNumberInput", extractBlankNumber(text));
-  autoFillNumber("CarNumberInput", extractCarNumber(text));
-}
-
-// Values the form wrote into a number field by itself - from the email text, a
-// PDF's file name or a PDF's contents - per input id. A later, better source
-// (the policy PDFs, which arrive after the page has loaded) may replace an
-// automatic value, while anything the worker has typed is never overwritten.
+// Values the form wrote into a number field by itself - from a PDF's file name
+// or a PDF's contents - per input id. A later, better source (the policy PDFs,
+// which arrive after the page has loaded) may replace an automatic value, while
+// anything the worker has typed is never overwritten.
 const autoFilledNumbers = new Map();
 
 // Write one number into a field unless the field already holds something the
-// worker typed. Returns true when the value is now in the field.
+// worker typed. The whole value is written: only whitespace is removed, never
+// part of the number ("54 ZS 584" lands as "54ZS584"). Returns true when the
+// value is now in the field.
 function autoFillNumber(id, value) {
   const text = stripWhitespace(value);
   if (!text) return false;
@@ -1624,9 +1619,10 @@ function startDesktopPdfWatch() {
     console.error("[DesktopPdfWatch] Failed to read the start time:", err);
   }
 
-  // Email policies attach the downloaded PDFs to the form. Walk-in insurances
-  // have no return email or attachment area: the main process simply prints
-  // both files and deletes each one once its print has finished.
+  // Email policies attach the downloaded PDFs to the form and print only the
+  // invoice (never the policy file). Walk-in insurances have no return email or
+  // attachment area: the main process simply prints both files - the policy
+  // first, then the invoice - and deletes each one once its print has finished.
   if (OpenedFromEmail) {
     window.bridge.OnDesktopPdfFound((file) => attachDesktopPdf([file]));
   }
@@ -2978,8 +2974,8 @@ function setupCertificateMode() {
 }
 
 trimOnPaste(document.getElementById("PolicyNumberInput"));
+trimOnPaste(document.getElementById("CarNumberInput"));
 trimOnPaste(document.getElementById("BlancNumberInput"));
-autofillEmailNumbers();
 
 configureWalkInMode();
 renderEmailSide();

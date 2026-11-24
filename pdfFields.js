@@ -694,6 +694,16 @@ export function stickerNumberFromText(text) {
   return candidates.size === 1 ? best.value : null;
 }
 
+// Every value handed to the form is one complete number with no whitespace in
+// it. The documents print numbers in groups ("34 HEP 488", "26 192 158") and a
+// file name may carry stray spaces; a form field must hold the whole value
+// joined together - never a piece of it and never anything separated by spaces.
+function fieldValue(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/\s+/g, "");
+  return text || null;
+}
+
 // Everything the form can be pre-filled with from one downloaded PDF. The
 // policy number comes from the policy PDF's file name (or the printed text),
 // the blank number from the sticker PDF, and the car number from whichever of
@@ -717,15 +727,17 @@ export function pdfFields(buffer, filename) {
 
   if (isPolicyPdf) {
     return {
-      policyNumber: policyNumberFromFilename(filename) || policyNumberFromText(text),
-      carNumber,
+      policyNumber: fieldValue(
+        policyNumberFromFilename(filename) || policyNumberFromText(text)
+      ),
+      carNumber: fieldValue(carNumber),
       blancNumber: null,
     };
   }
   return {
-    policyNumber: policyNumberFromText(text),
-    carNumber,
-    blancNumber: stickerNumberFromText(text),
+    policyNumber: fieldValue(policyNumberFromText(text)),
+    carNumber: fieldValue(carNumber),
+    blancNumber: fieldValue(stickerNumberFromText(text)),
   };
 }
 
