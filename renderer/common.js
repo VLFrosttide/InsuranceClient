@@ -84,6 +84,68 @@ const I18N = {
     "nav.diagnostics": "Diagnostics",
     settingsSaved: "Setting saved",
 
+    // Admin > Profits. The Bulins prices and the per-policy profits stay on the
+    // admin's PC: they live in localStorage and only the report is computed
+    // from the policies the server already returns.
+    "nav.profits": "Profits",
+    "profits.localOnly":
+      "Calculated on this computer only - the prices below are never uploaded to the server.",
+    "profits.settings": "Bulins price and profit",
+    "profits.settingsHint":
+      "Per policy: Bulins payment = Bulins price - profit. Press Calculate to refresh the report and save the inputs on this computer.",
+    "profits.bulinsTable": "Bulins price (per policy)",
+    "profits.profitTable": "Profit (per policy)",
+    "profits.type": "Vehicle type",
+    "profits.otherType": "Other",
+    "profits.otherDuration": "Other",
+    "profits.emptyHint":
+      "Leave a cell empty to leave those policies out of the Bulins payment.",
+    "profits.saved": "Saved on this computer",
+    "profits.unsaved": "Not saved - press Calculate",
+    "profits.calculate": "Calculate",
+    "profits.reset": "Clear all prices",
+    "profits.resetConfirm":
+      "Clear every Bulins price and profit entered on this computer? The report starts from zero.",
+    "profits.period": "Period",
+    "profits.day": "Day",
+    "profits.month": "Month",
+    "profits.custom": "Custom",
+    "profits.today": "Today",
+    "profits.thisMonth": "This month",
+    "profits.previousPeriod": "Previous period",
+    "profits.nextPeriod": "Next period",
+    "profits.from": "From",
+    "profits.to": "To",
+    "profits.days": "days",
+    "profits.totalIncome": "Total income",
+    "profits.totalIncomeHint":
+      "The price of every counted policy, without the annulled and deleted ones.",
+    "profits.bulinsPayment": "Bulins payment",
+    "profits.bulinsPaymentHint":
+      "Bulins price minus profit, for every counted policy.",
+    "profits.profit": "Profit",
+    "profits.profitHint": "Total income minus the Bulins payment.",
+    "profits.policies": "Policies",
+    "profits.policiesHint":
+      "Annulled and deleted policies are not counted.",
+    "profits.unpriced":
+      "{n} counted policies have no Bulins price for their type and duration: their income is counted as profit.",
+    "profits.otherCurrency":
+      "{n} policies in the period are in another currency and are not included - switch the currency above to report them.",
+    "profits.dailyReport": "Daily report",
+    "profits.monthlyReport": "Monthly report",
+    "profits.statistics": "Statistics",
+    "profits.byType": "By vehicle type",
+    "profits.byDuration": "By duration",
+    "profits.margin": "Margin",
+    "profits.bestDay": "Best day",
+    "profits.bestMonth": "Best month",
+    "profits.sellingDays": "Days with sales",
+    "profits.avgProfitPerPolicy": "Average profit per policy",
+    "profits.avgIncomePerPolicy": "Average income per policy",
+    "profits.avgProfitPerDay": "Average profit per selling day",
+    "profits.refresh": "Refresh",
+
     // Admin > Diagnostics: the failed requests recorded on every client PC.
     "diag.title": "Client diagnostics",
     "diag.hint":
@@ -991,6 +1053,68 @@ const I18N = {
     "nav.reconcile": "Дневен отчет",
     "nav.diagnostics": "Диагностика",
     settingsSaved: "Настройката е запазена",
+
+    // Админ > Печалби. Цените на Булинс и печалбите остават на компютъра на
+    // админа: пазят се в localStorage и само отчетът се изчислява от
+    // полиците, които сървърът и без това връща.
+    "nav.profits": "Печалби",
+    "profits.localOnly":
+      "Изчислява се само на този компютър - цените по-долу никога не се качват на сървъра.",
+    "profits.settings": "Цена на Булинс и печалба",
+    "profits.settingsHint":
+      "За всяка полица: плащане към Булинс = цена на Булинс - печалба. Натиснете Изчисли, за да се обнови отчетът и да се запазят стойностите на този компютър.",
+    "profits.bulinsTable": "Цена на Булинс (за полица)",
+    "profits.profitTable": "Печалба (за полица)",
+    "profits.type": "Вид превозно средство",
+    "profits.otherType": "Други",
+    "profits.otherDuration": "Друга",
+    "profits.emptyHint":
+      "Празна клетка означава, че тези полици не участват в плащането към Булинс.",
+    "profits.saved": "Запазено на този компютър",
+    "profits.unsaved": "Не е запазено - натиснете Изчисли",
+    "profits.calculate": "Изчисли",
+    "profits.reset": "Изчисти всички цени",
+    "profits.resetConfirm":
+      "Да се изчистят ли всички въведени цени на Булинс и печалби на този компютър? Отчетът ще започне от нула.",
+    "profits.period": "Период",
+    "profits.day": "Ден",
+    "profits.month": "Месец",
+    "profits.custom": "По избор",
+    "profits.today": "Днес",
+    "profits.thisMonth": "Този месец",
+    "profits.previousPeriod": "Предишен период",
+    "profits.nextPeriod": "Следващ период",
+    "profits.from": "От",
+    "profits.to": "До",
+    "profits.days": "дни",
+    "profits.totalIncome": "Общ приход",
+    "profits.totalIncomeHint":
+      "Цената на всяка отчетена полица, без анулираните и изтритите.",
+    "profits.bulinsPayment": "Плащане към Булинс",
+    "profits.bulinsPaymentHint":
+      "Цена на Булинс минус печалба, за всяка отчетена полица.",
+    "profits.profit": "Печалба",
+    "profits.profitHint": "Общ приход минус плащането към Булинс.",
+    "profits.policies": "Полици",
+    "profits.policiesHint":
+      "Анулираните и изтритите полици не се броят.",
+    "profits.unpriced":
+      "{n} отчетени полици нямат цена на Булинс за своя вид и продължителност: приходът им се брои като печалба.",
+    "profits.otherCurrency":
+      "{n} полици в периода са в друга валута и не са включени - сменете валутата по-горе, за да ги отчетете.",
+    "profits.dailyReport": "Дневен отчет",
+    "profits.monthlyReport": "Месечен отчет",
+    "profits.statistics": "Статистика",
+    "profits.byType": "По вид превозно средство",
+    "profits.byDuration": "По продължителност",
+    "profits.margin": "Марж",
+    "profits.bestDay": "Най-добър ден",
+    "profits.bestMonth": "Най-добър месец",
+    "profits.sellingDays": "Дни с продажби",
+    "profits.avgProfitPerPolicy": "Средна печалба на полица",
+    "profits.avgIncomePerPolicy": "Среден приход на полица",
+    "profits.avgProfitPerDay": "Средна печалба на ден с продажби",
+    "profits.refresh": "Опресни",
 
     // Админ > Диагностика: неуспешните заявки, записани на всеки клиент.
     "diag.title": "Клиентска диагностика",

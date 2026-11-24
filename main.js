@@ -1132,9 +1132,75 @@ const PrintRenderDelayMs = 500;
 // Give up waiting for webContents.print() to finish after this long. On some
 // Electron versions printing a loaded PDF never fires the print callback, which
 // would otherwise leave the print promise (and the queue) hanging and the
-// "Print" window open forever. Generous because the native dialog is
-// interactive; the timer only fires when nothing settles the print in time.
+// "Print" window open forever. Generous because it only applies when the
+// fallback dialog is shown (a silent print uses PrintSilentHandoffMs); the
+// timer only fires when nothing settles the print in time.
 const PrintResultTimeoutMs = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Silent printing
+// ---------------------------------------------------------------------------
+// Every paper copy is printed without the native print dialog. The workers use
+// one printer with its own settings and never pick copies, a tray or a page
+// size; a copy that did not come out is simply printed again with the Print
+// button (which now prints silently too). webContents.print() prints straight
+// to that printer when it is given `silent: true`; the dialog is opened only
+// when the app cannot print silently (see PrintOptionsFor below), so a job can
+// never disappear without a trace.
+//
+// Electron 34 does not always report the result of a silently printed PDF
+// (electron/electron#47272: the paper comes out, the callback never runs), so
+// a silent job that reports nothing is treated as sent after a short hand-off
+// instead of waiting the interactive timeout - otherwise the print window
+// would stay on screen for five minutes after every policy.
+const PrintSilent = true;
+const PrintSilentHandoffMs = 10 * 1000;
+
+// The options for one print. An empty object means "show the native dialog",
+// which is the fallback when the system has no printer the app can use.
+async function PrintOptionsFor(webContents, logTag) {
+  if (!PrintSilent) return {};
+  if (typeof webContents.getPrintersAsync !== "function") return {};
+
+  let printers = [];
+  try {
+    const listed = await webContents.getPrintersAsync();
+    printers = Array.isArray(listed) ? listed : [];
+  } catch (err) {
+    console.error(`${logTag} Could not list the printers; showing the print dialog.`, err);
+    return {};
+  }
+
+  const defaultPrinter = printers.find((printer) => printer.isDefault);
+  // Without a default printer Windows has no opinion, so only a single printer
+  // is unambiguous; with several, let the worker pick one in the dialog.
+  const target = defaultPrinter || (printers.length === 1 ? printers[0] : null);
+  if (!target) {
+    console.warn(`${logTag} No default printer; showing the print dialog.`);
+    return {};
+  }
+
+  // "Microsoft Print to PDF", "Microsoft XPS Document Writer", OneNote and fax
+  // devices ask for a file name or a phone number, which a silent job cannot
+  // supply: its document would be dropped. Fall back to the dialog for those.
+  if (/pdf|xps|onenote|fax/i.test(`${target.name} ${target.displayName}`)) {
+    console.warn(
+      `${logTag} The default printer "${target.displayName}" needs the print dialog; ` +
+        `showing it.`
+    );
+    return {};
+  }
+
+  console.log(`${logTag} Printing silently to "${target.displayName}".`);
+  // deviceName is the OS name ("Brother_QL_820NWB"), not the printable one
+  // ("Brother QL-820NWB"); it is what Chromium matches the driver against.
+  const deviceName = target.name || target.displayName;
+  if (!deviceName) {
+    console.warn(`${logTag} The printer has no usable name; showing the print dialog.`);
+    return {};
+  }
+  return { silent: true, deviceName };
+}
 
 // ---------------------------------------------------------------------------
 // Blank-page ("white paper") protection
@@ -1312,11 +1378,12 @@ async function WaitForImageDecode(webContents) {
 let DesktopPdfScanning = false;
 
 // Read the fields out of a downloaded PDF and push whatever is new to the form.
-// Each PDF only carries some of them (the policy PDF: policy and car number,
-// the other: blank number), so the values are collected on the watcher and each
-// field is sent once - a later file never overwrites a value already found.
-// Anything that goes wrong here is logged and ignored: the upload and the print
-// must never depend on the form being fillable.
+// Each PDF only carries some of them (the policy number and the blank number
+// are split between the two, while the car number may be printed on either), so
+// the values are collected on the watcher and each field is sent once - a later
+// file never overwrites a value already found. Anything that goes wrong here is
+// logged and ignored: the upload and the print must never depend on the form
+// being fillable.
 function SendDesktopPdfFields(watch, filename, bytes) {
   if (!watch || !bytes) return;
   if (!watch.fields) watch.fields = {};
@@ -1435,7 +1502,8 @@ async function ScanDesktopPdfsOnce() {
     // Pre-fill the add-insurance form from the PDF that just arrived, in both
     // modes (an email policy and a walk-in carry the same two PDFs). The
     // policy number comes from the policy PDF's file name, the car number from
-    // that PDF's text and the blank number from the other PDF's text.
+    // whichever PDF prints it (three times, see pdfFields.js) and the blank
+    // number from the other PDF's text.
     SendDesktopPdfFields(watch, entry.name, bytes);
 
     if (isWalkIn) {
@@ -1450,7 +1518,7 @@ async function ScanDesktopPdfsOnce() {
         onSettled: () => {
           // Only count a print for the watcher that queued it: the form may
           // have been closed and reopened (starting a new walk-in watch) while
-          // an older print dialog was still open.
+          // an older print job was still being handed to the printer.
           if (watch !== DesktopPdfWatch || watch.mode !== "walkin") return;
           watch.printedCount += 1;
           if (watch.printedCount >= 2) StopDesktopPdfWatch();
@@ -1501,13 +1569,13 @@ async function ScanDesktopPdfsOnce() {
 // ---------------------------------------------------------------------------
 // Desktop PDF print queue
 // ---------------------------------------------------------------------------
-// Printing a paper copy is decoupled from the Desktop scan so the native print
-// dialog — which blocks until the worker responds — can never stall the upload
-// of the next PDF or wedge the watcher. PDFs are printed one at a time in the
-// background. Each job is attempted exactly once: once the user has interacted
-// with the dialog (printed or cancelled) — or the print has failed — the dialog
-// is never re-opened automatically, so the print window cannot pop up again
-// after the user is already done with it.
+// Printing a paper copy is decoupled from the Desktop scan so preparing and
+// handing a job to the printer can never stall the upload of the next PDF or
+// wedge the watcher. PDFs are printed one at a time in the background, and each
+// job is attempted exactly once: if it fails (or the fallback dialog is
+// dismissed) the job is never retried on its own, so the print window cannot
+// pop up again after the worker has already moved on. A missing copy is
+// reprinted on demand with the Print button.
 let DesktopPrintQueue = []; // { base64, filename, filePath, deleteAfterPrint, onSettled }
 let DesktopPrintRunning = false;
 
@@ -1553,11 +1621,11 @@ async function drainDesktopPrintQueue() {
         result = { ok: false, error: String((err && err.message) || err) };
       }
 
-      // The paper copy is finished one way or another: it printed, the user
-      // dismissed the dialog, or it failed. Do NOT re-open the print dialog on
-      // its own — that made the dialog reappear even after the user had already
-      // clicked Print (and after the physical page had finished). Log the
-      // outcome and move on to the next queued PDF instead.
+      // The paper copy is finished one way or another: it printed, it was
+      // handed to the printer and never reported back, or it failed. Do NOT
+      // retry on its own — that used to bring the print window back after the
+      // worker had already moved on. Log the outcome and continue with the next
+      // queued PDF instead.
       if (!result || !result.ok) {
         if (result && result.cancelled) {
           console.log(`[DesktopPdfWatch] Printing of "${job.filename}" was cancelled.`);
@@ -1601,7 +1669,9 @@ async function drainDesktopPrintQueue() {
 // Print a document (usually a PDF, but any file Chromium can render) to the
 // system printer. Mirrors printImageDataUrl: the bytes are written to a temp
 // file, loaded in a visible window and handed to webContents.print(), which
-// opens the native print dialog.
+// prints silently to the printer chosen in PrintOptionsFor - no dialog, so the
+// worker never has to confirm anything. A copy that did not come out is simply
+// printed again with the Print button.
 //
 // Blank pages happen when print() is issued before Chromium's PDF viewer has
 // actually loaded the document, so the print waits for the viewer's readiness
@@ -1647,11 +1717,16 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
       // A real, visible window: Chromium renders the PDF viewer on screen, which
       // avoids the blank-page issues seen with hidden windows. Background
       // throttling is disabled so a window that loses focus (or is occluded)
-      // keeps rendering while the print is being prepared.
+      // keeps rendering while the print is being prepared. It is created hidden
+      // and then shown without activation: printing is silent, so the window
+      // must never take the keyboard focus away from whatever the worker is
+      // typing, and it is kept out of the taskbar.
       printWin = new BrowserWindow({
         width: 900,
         height: 700,
         center: true,
+        show: false,
+        skipTaskbar: true,
         title: "Print",
         webPreferences: {
           sandbox: true,
@@ -1665,18 +1740,15 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
       return;
     }
 
-    // Bring the print window (and the native print dialog it will open) to the
-    // foreground so it is immediately visible and targetable instead of popping
-    // up behind the main window without focus.
-    printWin.show();
-    printWin.focus();
-    printWin.webContents.focus();
+    // Shown, but without activation (see above). It stays up only while the
+    // document is prepared and handed to the printer.
+    printWin.showInactive();
 
     // Closing the print window by hand settles the job at once. Without this
-    // the queue only noticed when the 5-minute result timeout fired, so a
-    // walk-in PDF the worker closed the window on stayed on the Desktop for
-    // minutes - and forever if the app was closed first. (finish() closes the
-    // window itself; `settled` keeps this handler from running twice.)
+    // the queue only noticed when the result timeout fired, so a walk-in PDF
+    // the worker closed the window on stayed on the Desktop for minutes - and
+    // forever if the app was closed first. (finish() closes the window itself;
+    // `settled` keeps this handler from running twice.)
     printWin.on("closed", () => {
       if (settled) return;
       console.log(`${logTag} Print window for "${filename}" was closed.`);
@@ -1748,17 +1820,37 @@ function PrintDocument(base64, filename, ext = ".pdf", logTag = "[DesktopPdfWatc
             );
           }
 
-          // Focus again right before the native print dialog opens so it (and
-          // the dialog) sits in the foreground rather than behind other windows.
-          printWin.focus();
-          printWin.webContents.focus();
-          // Fail-safe: if print() never reports back (some Electron versions
-          // skip the callback when printing a PDF), settle and clean up rather
-          // than leaving the promise hanging and the window open forever.
+          const printOptions = await PrintOptionsFor(printWin.webContents, logTag);
+          if (settled) return;
+          // A silent print opens no dialog, so nothing has to be brought to the
+          // foreground. Only the fallback dialog does - it must not end up
+          // behind the main window.
+          if (printOptions.silent !== true) {
+            printWin.focus();
+            printWin.webContents.focus();
+          }
+          // Fail-safe: if print() never reports back (Electron 34 skips the
+          // callback for a silently printed PDF, electron/electron#47272),
+          // settle and clean up rather than leaving the promise hanging and the
+          // window open forever.
+          const silent = printOptions.silent === true;
           printTimer = setTimeout(() => {
+            if (silent) {
+              // No dialog is open, so nothing is waiting for the worker. The
+              // document had already been handed to the spooler when this timer
+              // was started, and the blank-page check above refused an empty
+              // one, so an unreported silent job counts as sent. A paper copy
+              // that did not come out is printed again with the Print button.
+              console.warn(
+                `${logTag} No print result reported for "${filename}"; ` +
+                  `the job was already handed to the printer.`
+              );
+              finish({ ok: true, unconfirmed: true });
+              return;
+            }
             finish({ ok: false, error: "Timed out waiting for the print dialog." });
-          }, PrintResultTimeoutMs);
-          const result = printWin.webContents.print({}, (success, failureReason) => {
+          }, silent ? PrintSilentHandoffMs : PrintResultTimeoutMs);
+          const result = printWin.webContents.print(printOptions, (success, failureReason) => {
             if (settled) return;
             if (success) {
               console.log(`${logTag} "${filename}" sent to printer.`);
@@ -1962,9 +2054,11 @@ const SetupBulins = () => {
   ipcMain.on("BulinsViewCloseRequest", () => bulins.close());
 };
 
-// Print an image (data URL) by loading it in a visible window and invoking the
-// system print dialog. Used by the "printable picture" feature and by the
-// per-file "Print" button for image attachments.
+// Print an image (data URL) by loading it in a visible window and sending it to
+// the printer silently (see PrintOptionsFor). Used by the "printable picture"
+// feature and by the per-file "Print" button for image attachments - the button
+// stays the way to get another copy, and it does not ask for confirmation
+// either.
 //
 // Resolves with `{ ok: true }` on success, or
 // `{ ok: false, error, cancelled }` on failure/cancellation so the caller can
@@ -1981,6 +2075,8 @@ function printImageDataUrl(dataUrl) {
       width: 900,
       height: 700,
       center: true,
+      show: false,
+      skipTaskbar: true,
       title: "Print",
       // Background throttling off: an unfocused/occluded print window must keep
       // rendering the page while the print is prepared, or the output is blank.
@@ -1995,12 +2091,10 @@ function printImageDataUrl(dataUrl) {
     return Promise.resolve({ ok: false, error: "Failed to open the print window." });
   }
 
-  // Bring the print window (and the native print dialog it will open) to the
-  // foreground so it is immediately visible and targetable instead of popping
-  // up behind the main window without focus.
-  printWin.show();
-  printWin.focus();
-  printWin.webContents.focus();
+  // Shown without activation: the print is silent, so the window must not take
+  // the keyboard focus (or a taskbar slot) away from the worker. It stays up
+  // only while the image is prepared and handed to the printer.
+  printWin.showInactive();
 
   return new Promise((resolve) => {
     let tempFile = "";
@@ -2077,16 +2171,31 @@ function printImageDataUrl(dataUrl) {
             console.warn("[PrintImage] Could not verify the print output; printing anyway.");
           }
 
-          // Focus again right before the native print dialog opens so it (and
-          // the dialog) sits in the foreground rather than behind other windows.
-          printWin.focus();
-          printWin.webContents.focus();
+          const printOptions = await PrintOptionsFor(printWin.webContents, "[PrintImage]");
+          if (settled) return;
+          // Only the fallback dialog needs to be brought to the foreground; a
+          // silent print opens no dialog at all.
+          if (printOptions.silent !== true) {
+            printWin.focus();
+            printWin.webContents.focus();
+          }
           // Fail-safe: if print() never reports back, settle and clean up rather
           // than leaving a lingering print window behind.
+          const silent = printOptions.silent === true;
           printTimer = setTimeout(() => {
+            if (silent) {
+              // Nothing is waiting for the worker: the image was already handed
+              // to the spooler, so an unreported silent job counts as sent. It
+              // can be printed again from the viewer/attachment Print button.
+              console.warn(
+                "[PrintImage] No print result reported; the job was already handed to the printer."
+              );
+              finish({ ok: true, unconfirmed: true });
+              return;
+            }
             finish({ ok: false, error: "Timed out waiting for the print dialog." });
-          }, PrintResultTimeoutMs);
-          const result = printWin.webContents.print({}, (success, failureReason) => {
+          }, silent ? PrintSilentHandoffMs : PrintResultTimeoutMs);
+          const result = printWin.webContents.print(printOptions, (success, failureReason) => {
             if (settled) return;
             if (success) {
               console.log("[PrintImage] Print job completed successfully.");
@@ -2145,8 +2254,8 @@ function printImageDataUrl(dataUrl) {
     // The document is written to a temp file and loaded with loadFile() instead
     // of navigating to a giant `data:` URL. Chromium caps navigation URLs at
     // 2 MB (url::kMaxURLChars), so a large base64 image used to make loadURL()
-    // fail silently and the print dialog never appeared — the print button
-    // looked like it did nothing. loadFile() has no such limit, and the embedded
+    // fail silently and the print never started — the print button looked like
+    // it did nothing. loadFile() has no such limit, and the embedded
     // <img src="data:..."> is fetched as a subresource (exactly like the
     // on-screen viewer already does), so large images now print correctly.
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8" />

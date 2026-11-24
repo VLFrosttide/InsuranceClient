@@ -4202,7 +4202,9 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   // Admins get a row of buttons to switch between branches without needing to
   // log out/in with a different branch selected. The active branch is
-  // highlighted; clicking another branch reloads the view for it.
+  // highlighted; clicking another branch reloads the view for it. The buttons
+  // sit on the left of the header row that also holds the day picker (built
+  // further down, once the shown day is known).
   const branchSelector = el("div", null, { class: "branch-selector" });
   if (isAdmin && allBranchNames.length > 1) {
     for (const name of allBranchNames) {
@@ -5265,11 +5267,17 @@ async function currentCashView(overrideBranch, overrideDate) {
   // focusable, so the label follows the input inside it (like passwordField).
   dateNav.focusTarget = dateInput.focusTarget || dateInput;
 
-  const dateRow = el("div", null, { class: "row filter-row" });
+  // The branch buttons and the day picker share one line under the heading: the
+  // branches stay on the left and the picked day (with its one-day steps) sits
+  // on the right. The picker is still rendered before every ledger list below,
+  // so it governs all of them (the handed-over cash included).
+  const dateRow = el("div", null, {
+    class: "row filter-row cash-header-row",
+  });
+  if (branchSelector.children.length > 0) dateRow.appendChild(branchSelector);
   dateRow.appendChild(field(t("date"), dateNav));
 
   const topNodes = [heading];
-  if (branchSelector.children.length > 0) topNodes.push(branchSelector);
 
   // Proactive check for last night: if yesterday had cash/card/broker activity
   // but no End shift was recorded, the day is still open. This is exactly the
@@ -5537,12 +5545,12 @@ async function currentCashView(overrideBranch, overrideDate) {
 
   Content.replaceChildren(
     ...topNodes,
+    // The branch buttons and the day picker share the row under the heading;
+    // every ledger list below still follows the picked day.
+    dateRow,
     cardsRow,
     el("p", t("currentCashHint"), { class: "muted" }),
     actions,
-    // Every ledger row list comes after the day picker, so the picker governs
-    // all of them (the handed-over cash included).
-    dateRow,
     // The combined Transactions table is the FIRST table on the page: it is
     // the day's full money ledger (walk-ins, broker payments and the drawer).
     transactionsSection,
@@ -9647,6 +9655,977 @@ async function adminDiagnostics() {
 
 // __DIAG_UI_END__
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Profits (admin)
+//
+// The Bulins prices and the per-policy profit are typed by an admin and kept
+// ONLY on this computer (localStorage). Nothing here is ever sent to the
+// server: the report is computed from the insurance rows the app already reads
+// (/admin/insurances) plus these local inputs.
+//
+// Per counted policy (annulled and soft-deleted ones are left out):
+//   Bulins payment = Bulins price (type + duration) - profit (type + duration)
+//   Profit         = the policy's Price - Bulins payment
+// so the report only describes money the company actually kept.
+// ---------------------------------------------------------------------------
+const PROFIT_SETTINGS_KEY = "profitSettings.v1";
+// The report's vehicle types. "Other" collects every stored value the tariffs
+// do not know (a legacy free-text type), and the "other" duration does the same
+// for any duration that is not one of the three standard ones.
+const PROFIT_TYPES = ["Auto", "Motor", "Bus", "Trailer", "Other"];
+const PROFIT_DURATION_KEYS = ["15", "30", "90", "other"];
+
+// The insurance rows are read once and reused while the tab is open; the
+// Refresh button drops the cache so a policy sold in another window shows up.
+const PROFIT_INSURANCE_TTL_MS = 2 * 60 * 1000;
+let profitInsurancesCache = null;
+let profitInsurancesCacheAt = 0;
+
+// The local inputs and the period are kept outside the DOM, so switching tabs
+// and coming back restores both.
+let profitSettingsCache = null;
+let profitPeriodState = null;
+let profitSettingsOpen = null;
+// True while the grids hold values the admin has not saved yet: typing only
+// changes the working copy, Calculate is what saves it (and refreshes the
+// report).
+let profitSettingsDirty = false;
+
+// Empty grid: one cell per vehicle type and duration. The values are the
+// strings exactly as typed (an empty cell means "not filled in yet").
+function profitEmptyGrid() {
+  const grid = {};
+  for (const type of PROFIT_TYPES) {
+    grid[type] = {};
+    for (const key of PROFIT_DURATION_KEYS) grid[type][key] = "";
+  }
+  return grid;
+}
+
+function profitDefaultSettings() {
+  return {
+    currency: "EUR",
+    bulins: profitEmptyGrid(),
+    profit: profitEmptyGrid(),
+  };
+}
+
+// A number typed into a profit input, or a stored decimal price. Accepts a
+// comma as the decimal separator and ignores spaces and a currency sign, so
+// " 40,50 € " reads as 40.5. An empty or unreadable value is NaN, which is how
+// "this cell was never filled in" is told apart from a real 0.
+function profitNumber(value) {
+  if (value === undefined || value === null) return NaN;
+  const text = String(value).trim().replace(/[€\s]/g, "").replace(",", ".");
+  if (!text) return NaN;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function profitRound(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+function profitTypeLabel(type) {
+  const key = {
+    Auto: "vehicle.Automobile",
+    Motor: "vehicle.Motor",
+    Bus: "vehicle.Bus",
+    Trailer: "vehicle.Trailer",
+  }[type];
+  return t(key || "profits.otherType");
+}
+
+function profitDurationLabel(key) {
+  return key === "15" || key === "30" || key === "90"
+    ? t(`duration.${key}`)
+    : t("profits.otherDuration");
+}
+
+// Stored Otomobil value -> one of PROFIT_TYPES. Reuses the tariff mapping, so
+// "Automobile", "Otomobil", "автомобил" and "Auto" all mean the same type.
+function profitPolicyType(otomobil) {
+  const key = pricingVehicleKey(otomobil);
+  return key && PROFIT_TYPES.includes(key) ? key : "Other";
+}
+
+// Stored duration (days) -> grid column.
+function profitDurationKey(duration) {
+  const days = Number(duration);
+  if (days === 15 || days === 30 || days === 90) return String(days);
+  return "other";
+}
+
+// The calendar day of a stored DATETIME ("YYYY-MM-DD HH:mm:ss"), an ISO string
+// or a Date. The day is read as it was written (the client's wall clock), like
+// every other date in the app.
+function profitDayOf(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? "" : localDateString(value);
+  }
+  const match = String(value === undefined || value === null ? "" : value)
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : "";
+}
+
+function profitLoadSettings() {
+  const settings = profitDefaultSettings();
+  let raw = null;
+  try {
+    raw = localStorage.getItem(PROFIT_SETTINGS_KEY);
+  } catch {
+    return settings;
+  }
+  if (!raw) return settings;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return settings;
+  }
+  if (!parsed || typeof parsed !== "object") return settings;
+  const currency = String(parsed.currency || "").toUpperCase();
+  if (currency === "EUR" || currency === "TRY") settings.currency = currency;
+  for (const table of ["bulins", "profit"]) {
+    const source = parsed[table];
+    if (!source || typeof source !== "object") continue;
+    for (const type of PROFIT_TYPES) {
+      const row = source[type];
+      if (!row || typeof row !== "object") continue;
+      for (const key of PROFIT_DURATION_KEYS) {
+        if (row[key] === undefined || row[key] === null) continue;
+        // Keep the typed text, so a comma typed by the admin stays visible.
+        settings[table][type][key] = String(row[key]);
+      }
+    }
+  }
+  return settings;
+}
+
+// Store the inputs on this computer. They are never uploaded anywhere.
+function profitSaveSettings(settings) {
+  try {
+    localStorage.setItem(PROFIT_SETTINGS_KEY, JSON.stringify(settings));
+    return true;
+  } catch (err) {
+    console.error("Failed to save the profit inputs:", err);
+    return false;
+  }
+}
+
+function profitSettingsHasValues(settings) {
+  if (!settings) return false;
+  for (const table of ["bulins", "profit"]) {
+    const grid = settings[table];
+    if (!grid) continue;
+    for (const type of PROFIT_TYPES) {
+      const row = grid[type];
+      if (!row) continue;
+      for (const key of PROFIT_DURATION_KEYS) {
+        if (String(row[key] === undefined ? "" : row[key]).trim() !== "") {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// One policy's contribution to the report.
+function profitPolicyAmounts(policy, settings) {
+  const price = profitNumber(policy ? policy.Price : "");
+  const income = Number.isFinite(price) ? price : 0;
+  const type = profitPolicyType(policy ? policy.Otomobil : "");
+  const durationKey = profitDurationKey(policy ? policy.Duration : "");
+  const cell = (table) => {
+    const grid = settings ? settings[table] : null;
+    const row = grid ? grid[type] : null;
+    return row ? row[durationKey] : "";
+  };
+  const bulinsPrice = profitNumber(cell("bulins"));
+  const profitShare = profitNumber(cell("profit"));
+  const priced = Number.isFinite(bulinsPrice);
+  // An unfilled Bulins price leaves the policy out of the Bulins payment (its
+  // income is then counted as profit) and is reported as "unpriced".
+  const bulins = priced
+    ? bulinsPrice - (Number.isFinite(profitShare) ? profitShare : 0)
+    : 0;
+  return {
+    type,
+    durationKey,
+    priced,
+    income,
+    bulins,
+    profit: income - bulins,
+  };
+}
+
+function profitEmptyTotals() {
+  return { policies: 0, income: 0, bulins: 0, profit: 0, unpriced: 0 };
+}
+
+function profitAddTotals(totals, amounts) {
+  totals.policies += 1;
+  totals.income += amounts.income;
+  totals.bulins += amounts.bulins;
+  totals.profit += amounts.profit;
+  if (!amounts.priced) totals.unpriced += 1;
+  return totals;
+}
+
+function profitFinalTotals(totals) {
+  return {
+    policies: totals.policies,
+    income: profitRound(totals.income),
+    bulins: profitRound(totals.bulins),
+    profit: profitRound(totals.profit),
+    unpriced: totals.unpriced,
+  };
+}
+
+// Bucket helper: one totals row per key (a day, a month, a type, a duration).
+function profitBucket(map, key, amounts) {
+  let bucket = map.get(key);
+  if (!bucket) {
+    bucket = profitEmptyTotals();
+    map.set(key, bucket);
+  }
+  profitAddTotals(bucket, amounts);
+  return bucket;
+}
+
+function profitBest(rows, key) {
+  let best = null;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!best || Number(row[key]) > Number(best[key])) best = row;
+  }
+  return best;
+}
+
+function profitMargin(profit, income) {
+  const total = Number(income);
+  if (!Number.isFinite(total) || total === 0) return "";
+  const value = Math.round((Number(profit) / total) * 1000) / 10;
+  return Number.isFinite(value) ? `${value}%` : "";
+}
+
+// The whole report for one period, computed in the browser from the insurance
+// rows and the local inputs. Nothing is written back to the server.
+function profitReport(insurances, settings, from, to) {
+  const currency = String(
+    settings && settings.currency ? settings.currency : "EUR"
+  ).toUpperCase();
+  const fromDay = profitDayOf(from);
+  const toDay = profitDayOf(to) || fromDay;
+  // The pickers always send From <= To, but a reversed pair is still read in
+  // the order that describes a real period.
+  const start = fromDay && toDay && fromDay > toDay ? toDay : fromDay;
+  const end = fromDay && toDay && fromDay > toDay ? fromDay : toDay;
+
+  const report = {
+    currency,
+    from: start,
+    to: end,
+    totals: profitEmptyTotals(),
+    days: [],
+    months: [],
+    types: [],
+    durations: [],
+    bestDay: null,
+    bestMonth: null,
+    // Policies of the period in another currency: they are left out of every
+    // figure above, so the view can say how many there are.
+    otherCurrency: 0,
+  };
+
+  const dayBuckets = new Map();
+  const monthBuckets = new Map();
+  const typeBuckets = new Map();
+  const durationBuckets = new Map();
+
+  for (const policy of Array.isArray(insurances) ? insurances : []) {
+    if (!policy) continue;
+    // Deleted and annulled policies are not money the company kept.
+    if (Number(policy.Deleted) === 1) continue;
+    if (Number(policy.Annulled) === 1) continue;
+    const day = profitDayOf(policy.CreationDate);
+    if (!day) continue;
+    if (start && day < start) continue;
+    if (end && day > end) continue;
+    const policyCurrency = String(policy.CurrencyType || "EUR").toUpperCase();
+    if (policyCurrency !== currency) {
+      report.otherCurrency += 1;
+      continue;
+    }
+
+    const amounts = profitPolicyAmounts(policy, settings);
+    profitAddTotals(report.totals, amounts);
+    profitBucket(dayBuckets, day, amounts);
+    profitBucket(monthBuckets, day.slice(0, 7), amounts);
+    profitBucket(typeBuckets, amounts.type, amounts);
+    profitBucket(durationBuckets, amounts.durationKey, amounts);
+  }
+
+  report.totals = profitFinalTotals(report.totals);
+  report.days = Array.from(dayBuckets.keys())
+    .sort()
+    .map((date) => ({ date, ...profitFinalTotals(dayBuckets.get(date)) }));
+  report.months = Array.from(monthBuckets.keys())
+    .sort()
+    .map((month) => ({ month, ...profitFinalTotals(monthBuckets.get(month)) }));
+  report.types = PROFIT_TYPES.filter((type) => typeBuckets.has(type)).map(
+    (type) => ({ type, ...profitFinalTotals(typeBuckets.get(type)) })
+  );
+  report.durations = PROFIT_DURATION_KEYS.filter((key) =>
+    durationBuckets.has(key)
+  ).map((key) => ({
+    duration: key,
+    ...profitFinalTotals(durationBuckets.get(key)),
+  }));
+  report.bestDay = profitBest(report.days, "profit");
+  report.bestMonth = profitBest(report.months, "profit");
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// Profits: period helpers
+// ---------------------------------------------------------------------------
+function profitMonthStart(iso) {
+  const day = profitDayOf(iso);
+  return day ? `${day.slice(0, 7)}-01` : "";
+}
+
+function profitMonthEnd(iso) {
+  const day = profitDayOf(iso);
+  if (!day) return "";
+  // Day 0 of the NEXT month is the last day of this one.
+  return localDateString(
+    new Date(Number(day.slice(0, 4)), Number(day.slice(5, 7)), 0)
+  );
+}
+
+function profitShiftDays(iso, days) {
+  const day = profitDayOf(iso);
+  if (!day) return localDateString();
+  const [y, m, d] = day.split("-").map(Number);
+  return localDateString(new Date(y, m - 1, d + Number(days || 0)));
+}
+
+// Calendar days in [from, to], at least 1.
+function profitDaysBetween(fromIso, toIso) {
+  const from = profitDayOf(fromIso);
+  const to = profitDayOf(toIso);
+  if (!from || !to) return 1;
+  const a = new Date(
+    Number(from.slice(0, 4)),
+    Number(from.slice(5, 7)) - 1,
+    Number(from.slice(8, 10))
+  );
+  const b = new Date(
+    Number(to.slice(0, 4)),
+    Number(to.slice(5, 7)) - 1,
+    Number(to.slice(8, 10))
+  );
+  return Math.max(
+    1,
+    Math.round((b.getTime() - a.getTime()) / 86400000) + 1
+  );
+}
+
+function profitShiftMonth(iso, delta) {
+  const day = profitMonthStart(iso) || profitMonthStart(localDateString());
+  const months =
+    Number(day.slice(0, 4)) * 12 + Number(day.slice(5, 7)) - 1 + Number(delta || 0);
+  const year = Math.floor(months / 12);
+  const month = ((months % 12) + 12) % 12;
+  return `${year}-${String(month + 1).padStart(2, "0")}-01`;
+}
+
+// Whether a period is one day, one whole calendar month or something else.
+function profitRangeMode(fromIso, toIso) {
+  const from = profitDayOf(fromIso);
+  const to = profitDayOf(toIso) || from;
+  if (!from) return "custom";
+  if (from === to) return "day";
+  if (from === profitMonthStart(from) && to === profitMonthEnd(from)) {
+    return "month";
+  }
+  return "custom";
+}
+
+// The period a step button moves to: a day by one day, a whole month by one
+// month, any other period by its own length (so paging keeps the range size).
+function profitShiftRange(fromIso, toIso, direction) {
+  const step = direction < 0 ? -1 : 1;
+  const from = profitDayOf(fromIso) || localDateString();
+  const to = profitDayOf(toIso) || from;
+  if (from === to) {
+    const day = step < 0 ? previousLocalDate(from) : nextLocalDate(from);
+    return { from: day, to: day };
+  }
+  if (profitRangeMode(from, to) === "month") {
+    const month = profitShiftMonth(from, step);
+    return { from: month, to: profitMonthEnd(month) };
+  }
+  const span = profitDaysBetween(from, to) * step;
+  return { from: profitShiftDays(from, span), to: profitShiftDays(to, span) };
+}
+
+// A fresh-enough copy of every live insurance. The endpoint is admin-only and
+// the Profits tab is part of the admin navigation.
+async function profitInsuranceRows(force) {
+  const now = Date.now();
+  if (
+    !force &&
+    profitInsurancesCache &&
+    now - profitInsurancesCacheAt < PROFIT_INSURANCE_TTL_MS
+  ) {
+    return profitInsurancesCache;
+  }
+  const data = await api("/admin/insurances");
+  const rows = Array.isArray(data && data.insurances) ? data.insurances : [];
+  profitInsurancesCache = rows;
+  profitInsurancesCacheAt = Date.now();
+  return rows;
+}
+
+// One editable grid (the Bulins prices or the profits). `onValue(type,
+// duration, text)` runs on every keystroke and only stores the text; `onEnter`
+// runs the calculation when Enter is pressed in a cell.
+function profitSettingsTable(title, grid, onValue, onEnter) {
+  const block = el("div", null, { class: "profit-settings-block" });
+  block.appendChild(el("h4", title));
+
+  const table = el("table", null, { class: "profit-input-table" });
+  const thead = el("thead");
+  const head = el("tr");
+  head.appendChild(el("th", t("profits.type")));
+  for (const key of PROFIT_DURATION_KEYS) {
+    head.appendChild(el("th", profitDurationLabel(key)));
+  }
+  thead.appendChild(head);
+  table.appendChild(thead);
+
+  const tbody = el("tbody");
+  for (const type of PROFIT_TYPES) {
+    const row = el("tr");
+    row.appendChild(el("th", profitTypeLabel(type), { scope: "row" }));
+    for (const key of PROFIT_DURATION_KEYS) {
+      const value = grid && grid[type] ? grid[type][key] : "";
+      const cellInput = input("text", value === undefined ? "" : value);
+      cellInput.className = "profit-input";
+      cellInput.inputMode = "decimal";
+      cellInput.autocomplete = "off";
+      cellInput.setAttribute(
+        "aria-label",
+        `${profitTypeLabel(type)} · ${profitDurationLabel(key)}`
+      );
+      cellInput.addEventListener("input", () =>
+        onValue(type, key, cellInput.value)
+      );
+      // Enter runs the calculation without leaving the cell.
+      cellInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (typeof onEnter === "function") onEnter();
+      });
+      const cell = el("td");
+      cell.appendChild(cellInput);
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  block.appendChild(table);
+  return block;
+}
+
+// The statistics half of the report: best day/month, averages and the two
+// breakdown tables (by vehicle type and by duration).
+function profitStatisticsNodes(report) {
+  const currency = report.currency;
+  const amount = (value) => `${money(value)} ${currency}`;
+  const nodes = [];
+  const days = profitDaysBetween(report.from, report.to);
+
+  nodes.push(el("h3", t("profits.statistics")));
+  const stats = el("div", null, { class: "stat-grid" });
+  const stat = (label, value) => {
+    const box = el("div", null, { class: "stat-card" });
+    box.appendChild(el("h3", label));
+    box.appendChild(el("p", value));
+    stats.appendChild(box);
+  };
+  stat(
+    t("profits.bestDay"),
+    report.bestDay
+      ? `${formatDateOnly(report.bestDay.date)} · ${amount(report.bestDay.profit)}`
+      : t("noData")
+  );
+  stat(
+    t("profits.bestMonth"),
+    report.bestMonth
+      ? `${dateFieldMonthLabel(`${report.bestMonth.month}-01`)} · ${amount(
+          report.bestMonth.profit
+        )}`
+      : t("noData")
+  );
+  stat(t("profits.sellingDays"), `${report.days.length} / ${days}`);
+  stat(
+    t("profits.avgProfitPerPolicy"),
+    amount(
+      report.totals.policies
+        ? profitRound(report.totals.profit / report.totals.policies)
+        : 0
+    )
+  );
+  stat(
+    t("profits.avgIncomePerPolicy"),
+    amount(
+      report.totals.policies
+        ? profitRound(report.totals.income / report.totals.policies)
+        : 0
+    )
+  );
+  stat(
+    t("profits.avgProfitPerDay"),
+    amount(
+      report.days.length
+        ? profitRound(report.totals.profit / report.days.length)
+        : 0
+    )
+  );
+  nodes.push(stats);
+
+  const moneyColumn = (key, label) => ({
+    key,
+    label: `${label} (${currency})`,
+    format: (value) => money(value),
+  });
+  const breakdownColumns = (labelKey) => [
+    { key: "label", label: t(labelKey) },
+    { key: "policies", label: t("profits.policies") },
+    moneyColumn("income", t("profits.totalIncome")),
+    moneyColumn("bulins", t("profits.bulinsPayment")),
+    moneyColumn("profit", t("profits.profit")),
+    { key: "margin", label: t("profits.margin") },
+  ];
+  const withMargin = (rows) =>
+    rows.map((row) => ({
+      ...row,
+      margin: profitMargin(row.profit, row.income),
+    }));
+
+  nodes.push(el("h3", t("profits.byType")));
+  nodes.push(
+    renderTable(
+      withMargin(
+        report.types.map((row) => ({
+          ...row,
+          label: profitTypeLabel(row.type),
+        }))
+      ),
+      breakdownColumns("profits.type")
+    )
+  );
+
+  nodes.push(el("h3", t("profits.byDuration")));
+  nodes.push(
+    renderTable(
+      withMargin(
+        report.durations.map((row) => ({
+          ...row,
+          label: profitDurationLabel(row.duration),
+        }))
+      ),
+      breakdownColumns("profits.byDuration")
+    )
+  );
+
+  return nodes;
+}
+
+// The report itself: summary cards, the daily and monthly tables and the
+// statistics. Every figure comes from the local inputs + the fetched policies.
+function profitReportNodes(report) {
+  const currency = report.currency;
+  const amount = (value) => `${money(value)} ${currency}`;
+  const nodes = [];
+
+  const cards = el("div", null, { class: "stat-grid" });
+  const card = (label, value, hint) => {
+    const attrs = { class: "stat-card" };
+    if (hint) attrs.title = hint;
+    const box = el("div", null, attrs);
+    box.appendChild(el("h3", label));
+    box.appendChild(el("p", value, { class: "big" }));
+    cards.appendChild(box);
+  };
+  card(
+    t("profits.totalIncome"),
+    amount(report.totals.income),
+    t("profits.totalIncomeHint")
+  );
+  card(
+    t("profits.bulinsPayment"),
+    amount(report.totals.bulins),
+    t("profits.bulinsPaymentHint")
+  );
+  card(t("profits.profit"), amount(report.totals.profit), t("profits.profitHint"));
+  card(
+    t("profits.policies"),
+    String(report.totals.policies),
+    t("profits.policiesHint")
+  );
+  nodes.push(cards);
+
+  const days = profitDaysBetween(report.from, report.to);
+  const range =
+    `${formatDateOnly(report.from)} – ${formatDateOnly(report.to)}` +
+    ` · ${days} ${t("profits.days")}`;
+  nodes.push(
+    el("p", `${t("profits.period")}: ${range}`, {
+      class: "muted profit-period-line",
+    })
+  );
+  if (report.totals.unpriced > 0) {
+    nodes.push(
+      el("p", fmt(t("profits.unpriced"), { n: report.totals.unpriced }), {
+        class: "profit-warning",
+      })
+    );
+  }
+  if (report.otherCurrency > 0) {
+    nodes.push(
+      el("p", fmt(t("profits.otherCurrency"), { n: report.otherCurrency }), {
+        class: "muted profit-period-line",
+      })
+    );
+  }
+
+  const moneyColumn = (key, label) => ({
+    key,
+    label: `${label} (${currency})`,
+    format: (value) => money(value),
+  });
+  const warnUnpriced = (row) => (Number(row.unpriced) > 0 ? "warn-row" : "");
+
+  nodes.push(el("h3", t("profits.dailyReport")));
+  nodes.push(
+    renderTable(
+      report.days,
+      [
+        {
+          key: "date",
+          label: t("date"),
+          format: (value) => formatDateOnly(value),
+        },
+        { key: "policies", label: t("profits.policies") },
+        moneyColumn("income", t("profits.totalIncome")),
+        moneyColumn("bulins", t("profits.bulinsPayment")),
+        moneyColumn("profit", t("profits.profit")),
+      ],
+      null,
+      warnUnpriced
+    )
+  );
+
+  nodes.push(el("h3", t("profits.monthlyReport")));
+  nodes.push(
+    renderTable(
+      report.months,
+      [
+        {
+          key: "month",
+          label: t("profits.month"),
+          format: (value) => dateFieldMonthLabel(`${value}-01`),
+        },
+        { key: "policies", label: t("profits.policies") },
+        moneyColumn("income", t("profits.totalIncome")),
+        moneyColumn("bulins", t("profits.bulinsPayment")),
+        moneyColumn("profit", t("profits.profit")),
+      ],
+      null,
+      warnUnpriced
+    )
+  );
+
+  nodes.push(...profitStatisticsNodes(report));
+  return nodes;
+}
+
+// The Profits tab. Everything is computed here, in this window: the server only
+// supplies the insurance rows it always supplies, and the Bulins prices/profits
+// never leave localStorage.
+async function profitsView() {
+  const today = localDateString();
+  const settings =
+    profitSettingsCache || (profitSettingsCache = profitLoadSettings());
+  if (!profitPeriodState) {
+    profitPeriodState = { from: today, to: today };
+  }
+  const period = profitPeriodState;
+
+  // ---- header: title + the period controls on the top right
+  const titleBox = el("div", null, { class: "profit-heading-title" });
+  titleBox.appendChild(el("h2", t("nav.profits")));
+  titleBox.appendChild(el("p", t("profits.localOnly"), { class: "muted" }));
+
+  const periodBox = el("div", null, { class: "profit-period" });
+  const fromInput = input("date", period.from);
+  const toInput = input("date", period.to);
+
+  // Switching the period throws the view away and rebuilds it (like the
+  // Current cash day picker), so every figure is rendered from one period.
+  const go = (next) => {
+    profitPeriodState = { from: next.from, to: next.to };
+    profitsView().catch((err) => toast(err.message, "error"));
+  };
+
+  fromInput.addEventListener("change", () => {
+    let from = fromInput.value || period.from;
+    let to = toInput.value || from;
+    if (profitRangeMode(period.from, period.to) === "day") to = from;
+    if (from && to && to < from) to = from;
+    go({ from, to });
+  });
+  toInput.addEventListener("change", () => {
+    let to = toInput.value || period.to;
+    let from = fromInput.value || period.from;
+    if (from && to && to < from) from = to;
+    go({ from, to });
+  });
+
+  // One step button on each side of the two pickers: a day period moves one
+  // day, a whole month moves one month, any other period keeps its length.
+  const step = (direction) => {
+    const next = profitShiftRange(
+      fromInput.value || period.from,
+      toInput.value || period.to,
+      direction
+    );
+    go(next);
+  };
+  const previousBtn = el("button", "‹", {
+    type: "button",
+    class: "secondary date-step",
+    title: t("profits.previousPeriod"),
+  });
+  previousBtn.setAttribute("aria-label", previousBtn.title);
+  previousBtn.addEventListener("click", () => step(-1));
+  const nextBtn = el("button", "›", {
+    type: "button",
+    class: "secondary date-step",
+    title: t("profits.nextPeriod"),
+  });
+  nextBtn.setAttribute("aria-label", nextBtn.title);
+  nextBtn.addEventListener("click", () => step(1));
+
+  const dateNav = el("div", null, { class: "profit-date-nav" });
+  dateNav.appendChild(previousBtn);
+  dateNav.appendChild(field(t("profits.from"), fromInput));
+  dateNav.appendChild(field(t("profits.to"), toInput));
+  dateNav.appendChild(nextBtn);
+
+  const activeMode = profitRangeMode(period.from, period.to);
+  const modeRow = el("div", null, { class: "profit-period-modes" });
+  for (const def of [
+    { mode: "day", label: t("profits.day") },
+    { mode: "month", label: t("profits.month") },
+    { mode: "custom", label: t("profits.custom") },
+  ]) {
+    const isActive = def.mode === activeMode;
+    const btn = el("button", def.label, {
+      type: "button",
+      class: isActive ? "branch-btn active" : "branch-btn",
+      "aria-pressed": isActive ? "true" : "false",
+    });
+    btn.addEventListener("click", () => {
+      const ref = fromInput.value || period.from || today;
+      if (def.mode === "day") return go({ from: ref, to: ref });
+      if (def.mode === "month") {
+        return go({ from: profitMonthStart(ref), to: profitMonthEnd(ref) });
+      }
+      go({
+        from: fromInput.value || ref,
+        to: toInput.value || fromInput.value || ref,
+      });
+    });
+    modeRow.appendChild(btn);
+  }
+
+  const todayBtn = el("button", t("profits.today"), {
+    type: "button",
+    class: "secondary small",
+  });
+  todayBtn.addEventListener("click", () => go({ from: today, to: today }));
+  const monthBtn = el("button", t("profits.thisMonth"), {
+    type: "button",
+    class: "secondary small",
+  });
+  monthBtn.addEventListener("click", () =>
+    go({ from: profitMonthStart(today), to: profitMonthEnd(today) })
+  );
+  const refreshBtn = el("button", t("profits.refresh"), {
+    type: "button",
+    class: "secondary small",
+  });
+  refreshBtn.addEventListener("click", () => {
+    profitInsurancesCache = null;
+    profitInsurancesCacheAt = 0;
+    profitsView().catch((err) => toast(err.message, "error"));
+  });
+
+  const presets = el("div", null, { class: "profit-period-presets" });
+  presets.appendChild(todayBtn);
+  presets.appendChild(monthBtn);
+  presets.appendChild(refreshBtn);
+
+  periodBox.appendChild(modeRow);
+  periodBox.appendChild(dateNav);
+  periodBox.appendChild(presets);
+
+  const headingRow = el("div", null, { class: "profit-heading-row" });
+  headingRow.appendChild(titleBox);
+  headingRow.appendChild(periodBox);
+
+  // ---- the policies the report is computed from. A failed read must not hide
+  // the local inputs: the admin can still fill them in and retry with Refresh.
+  let insurances = null;
+  let loadError = null;
+  try {
+    insurances = await profitInsuranceRows();
+  } catch (err) {
+    loadError = err;
+  }
+
+  // ---- report (recomputed only when Calculate runs)
+  const reportHost = el("div", null, { class: "profit-report" });
+  function renderReport() {
+    if (!insurances) {
+      reportHost.replaceChildren(
+        el(
+          "p",
+          `${t("errorPrefix")}: ${translateError(
+            loadError && loadError.message ? loadError.message : ""
+          )}`,
+          { class: "muted" }
+        )
+      );
+      return;
+    }
+    const from = fromInput.value || period.from;
+    const to = toInput.value || from;
+    reportHost.replaceChildren(
+      ...profitReportNodes(profitReport(insurances, settings, from, to))
+    );
+  }
+
+  // ---- the local inputs (never uploaded)
+  const settingsCard = el("details", null, { class: "profit-settings-card" });
+  settingsCard.open =
+    profitSettingsOpen === null
+      ? !profitSettingsHasValues(settings)
+      : profitSettingsOpen;
+  settingsCard.addEventListener("toggle", () => {
+    profitSettingsOpen = settingsCard.open;
+  });
+  const settingsSummary = el("summary");
+  settingsSummary.appendChild(el("h3", t("profits.settings")));
+  settingsCard.appendChild(settingsSummary);
+
+  const settingsBody = el("div", null, { class: "profit-settings-body" });
+  settingsBody.appendChild(el("p", t("profits.settingsHint"), { class: "muted" }));
+
+  const toolbar = el("div", null, { class: "profit-settings-toolbar" });
+  const currencySelect = select(
+    [
+      { label: "EUR", value: "EUR" },
+      { label: "TRY", value: "TRY" },
+    ],
+    settings.currency
+  );
+  currencySelect.addEventListener("change", () => {
+    settings.currency = currencySelect.value;
+    markDirty();
+  });
+  toolbar.appendChild(field(t("currency"), currencySelect));
+  const saveStatus = el(
+    "span",
+    t(profitSettingsDirty ? "profits.unsaved" : "profits.saved"),
+    { class: "muted profit-save-status" }
+  );
+  toolbar.appendChild(saveStatus);
+  toolbar.appendChild(el("div", null, { class: "spacer" }));
+
+  const calculateBtn = el("button", t("profits.calculate"), { type: "button" });
+  calculateBtn.addEventListener("click", runCalculation);
+  toolbar.appendChild(calculateBtn);
+
+  const resetBtn = el("button", t("profits.reset"), {
+    type: "button",
+    class: "danger",
+  });
+  resetBtn.addEventListener("click", async () => {
+    const confirmed = await appConfirm(t("profits.resetConfirm"), {
+      danger: true,
+    });
+    if (!confirmed) return;
+    settings.bulins = profitEmptyGrid();
+    settings.profit = profitEmptyGrid();
+    profitSaveSettings(settings);
+    profitSettingsDirty = false;
+    profitSettingsOpen = true;
+    profitsView().catch((err) => toast(err.message, "error"));
+  });
+  toolbar.appendChild(resetBtn);
+  settingsBody.appendChild(toolbar);
+
+  // Typing only changes the working copy. Nothing is written to localStorage
+  // until Calculate (or Enter in a cell) runs - and that is also the only
+  // moment the report is recomputed.
+  function markDirty() {
+    profitSettingsDirty = true;
+    saveStatus.textContent = t("profits.unsaved");
+  }
+  function runCalculation() {
+    const saved = profitSaveSettings(settings);
+    profitSettingsDirty = !saved;
+    saveStatus.textContent = t(saved ? "profits.saved" : "profits.unsaved");
+    renderReport();
+  }
+  function storeValue(table, type, key, value) {
+    settings[table][type][key] = value;
+    markDirty();
+  }
+
+  const settingsTables = el("div", null, { class: "profit-settings-tables" });
+  settingsTables.appendChild(
+    profitSettingsTable(
+      t("profits.bulinsTable"),
+      settings.bulins,
+      (type, key, value) => storeValue("bulins", type, key, value),
+      runCalculation
+    )
+  );
+  settingsTables.appendChild(
+    profitSettingsTable(
+      t("profits.profitTable"),
+      settings.profit,
+      (type, key, value) => storeValue("profit", type, key, value),
+      runCalculation
+    )
+  );
+  settingsBody.appendChild(settingsTables);
+  settingsBody.appendChild(el("p", t("profits.emptyHint"), { class: "muted" }));
+  settingsCard.appendChild(settingsBody);
+
+  Content.replaceChildren(headingRow, settingsCard, reportHost);
+  renderReport();
+}
+
 // Navigation setup
 // ---------------------------------------------------------------------------
 const NAV_DEFS = {
@@ -9658,6 +10637,10 @@ const NAV_DEFS = {
     { key: "nav.branches", load: adminBranches },
     { key: "nav.insurancesByDate", load: adminInsurancesByDate },
     { key: "nav.currentCash", load: currentCashView },
+    // Profits: the Bulins prices/profits are typed by the admin and kept on
+    // this computer only (see profitsView); the tab is admin-only because it
+    // reads /admin/insurances.
+    { key: "nav.profits", load: profitsView },
     // No separate Card tab: the branch's card balance, its reset history and
     // the walk-in card insurances behind it are all on the Current cash screen.
     { key: "nav.brokers", load: brokersView },

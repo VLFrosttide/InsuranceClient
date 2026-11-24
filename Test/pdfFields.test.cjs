@@ -230,6 +230,26 @@ function pagePdf({ content, pageResources = "/Font << /F1 5 0 R >>", compressed 
     eq(carNumberFromText(""), null, "empty");
   });
 
+  await check("a plate drawn in groups is joined", () => {
+    eq(carNumberFromText("Турция 34 HEP 488 ... 34 HEP 488"), "34HEP488", "spaced");
+    eq(carNumberFromText("CA 1234 AB"), "CA1234AB", "Bulgarian groups");
+    eq(carNumberFromText("34-HEP-488"), "34HEP488", "hyphenated");
+  });
+
+  await check("an IBAN fragment joined from groups is not a plate", () => {
+    const text = "IBAN: BG93 UBBS 8002 1013 6927 19\nIBAN: BG93 UBBS 8002 1013 6927 19";
+    eq(carNumberFromText(text), null, "IBAN groups");
+  });
+
+  await check("a single occurrence is refused when a repeated value is required", () => {
+    eq(carNumberFromText("plate 34HEP488", { requireRepeat: true }), null, "once");
+    eq(
+      carNumberFromText("34HEP488 ... 34HEP488", { requireRepeat: true }),
+      "34HEP488",
+      "repeated"
+    );
+  });
+
   // --- blank (sticker) number ----------------------------------------------
 
   await check("the repeated 6-digit value under Стикер is the blank number", () => {
@@ -281,6 +301,28 @@ function pagePdf({ content, pageResources = "/Font << /F1 5 0 R >>", compressed 
       pdfFields(bytes, "8a15af00-0007-432b-826f-ec20ecc434d2.pdf"),
       { policyNumber: "26192158", carNumber: null, blancNumber: "175973" },
       "sticker pdf"
+    );
+  });
+
+  await check("the sticker PDF also gives the car number when it repeats", () => {
+    const bytes = pagePdf({
+      content: "BT /F1 9 Tf (STICKER BG/02/FI26192158 175973 175973 34HEP488 34HEP488) Tj ET",
+    });
+    eq(
+      pdfFields(bytes, "8a15af00-0007-432b-826f-ec20ecc434d2.pdf"),
+      { policyNumber: "26192158", carNumber: "34HEP488", blancNumber: "175973" },
+      "sticker pdf with plate"
+    );
+  });
+
+  await check("a one-off 8-character code on the sticker PDF is not a car number", () => {
+    const bytes = pagePdf({
+      content: "BT /F1 9 Tf (STICKER BG/02/FI26192158 175973 175973 AB12CD34) Tj ET",
+    });
+    eq(
+      pdfFields(bytes, "8a15af00-0007-432b-826f-ec20ecc434d2.pdf"),
+      { policyNumber: "26192158", carNumber: null, blancNumber: "175973" },
+      "single code"
     );
   });
 

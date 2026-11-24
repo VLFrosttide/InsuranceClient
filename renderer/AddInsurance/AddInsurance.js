@@ -1418,8 +1418,9 @@ function renderDroppedFiles() {
     li.appendChild(el("span", f.filename, { class: "file-name" }));
     li.appendChild(el("span", fileSizeLabel(f.size), { class: "file-size" }));
 
-    // Manual print button: opens the native print dialog for this one file so
-    // the worker can print a paper copy on demand.
+    // Manual print button: prints this one file again (silently, see
+    // PrintOptionsFor in main.js) so the worker can ask for another paper copy
+    // without touching the form.
     const printBtn = el("button", t("add.printFile"), {
       class: "secondary",
       type: "button",
@@ -1442,8 +1443,8 @@ function renderDroppedFiles() {
   }
 }
 
-// Open the native print dialog for a single attached file so the worker can
-// manually print a paper copy on demand.
+// Print a single attached file again, in case its paper copy did not come out.
+// The print itself is silent (no dialog); the worker only clicks the button.
 async function printAttachment(file) {
   if (!file || !file.base64) return;
   if (window.bridge && typeof window.bridge.PrintAttachment === "function") {
@@ -1569,9 +1570,10 @@ function prefillPolicyNumberFromFilename(filename) {
 }
 
 // Fill the form from the values the main process read out of the two policy
-// PDFs (see pdfFields.js): the policy and car numbers from the policy PDF and
-// the blank number from the sticker PDF. Each field arrives as soon as its PDF
-// has been downloaded, in email and walk-in mode alike.
+// PDFs (see pdfFields.js): the policy number from the policy PDF's file name,
+// the car number from whichever PDF prints it, and the blank number from the
+// sticker PDF. Each field arrives as soon as its PDF has been downloaded, in
+// email and walk-in mode alike.
 function applyPdfFields(fields) {
   if (!fields) return;
   autoFillNumber("PolicyNumberInput", fields.policyNumber);
@@ -1865,9 +1867,9 @@ function zoomViewer(delta, anchor) {
   applyViewerScale(anchor);
 }
 
-// Guard against rapid/duplicate clicks: the native print dialog takes a moment
-// (~0.5s render delay + file load) to appear, so an impatient second click used
-// to open a second print window and dialog stacked on top of the first.
+// Guard against rapid/duplicate clicks: printing takes a moment (~0.5s render
+// delay + file load), so an impatient second click used to open a second print
+// window stacked on top of the first.
 let viewerPrinting = false;
 
 async function printViewerImage() {

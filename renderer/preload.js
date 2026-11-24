@@ -34,8 +34,9 @@ contextBridge.exposeInMainWorld("bridge", {
   OpenAttachmentExternal: (file) => {
     ipcRenderer.send("OpenAttachmentExternal", file);
   },
-  // Open the native print dialog for a single attached file (image or PDF) so
-  // the worker can manually print a paper copy on demand.
+  // Print a single attached file (image or PDF). The print is silent - no
+  // dialog to confirm - so the worker can print a paper copy on demand by just
+  // clicking the button.
   // file: { filename, mimeType, base64 }
   PrintAttachment: (file) => {
     return ipcRenderer.invoke("PrintAttachment", file);

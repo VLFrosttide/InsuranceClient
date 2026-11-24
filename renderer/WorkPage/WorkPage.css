@@ -417,12 +417,14 @@ tr.row-numeric-reason td {
   opacity: 0.75;
 }
 
-/* Branch selector (Current cash): a row of buttons instead of a dropdown. */
+/* Branch selector (Current cash): a row of buttons instead of a dropdown. It
+   sits on the left of the cash header row (see .cash-header-row), which
+   provides the spacing around it, so it carries no margin of its own. */
 .branch-selector {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 10px 0 14px;
+  margin: 0;
 }
 .branch-btn {
   background: #3a4250; /* matches button.secondary */
@@ -452,6 +454,18 @@ tr.row-numeric-reason td {
 }
 .filter-row .field {
   min-width: 180px;
+}
+
+/* Current cash: the branch buttons and the day picker share one line under the
+   heading - the branches stay on the left, the picked day sits on the right.
+   The field's auto margin keeps the picker on the right edge even when the
+   branches are few (or absent, for a worker). */
+.cash-header-row {
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.cash-header-row .field {
+  margin-left: auto;
 }
 
 /* Current cash day picker: a one-day step button on each side, so the history
@@ -1580,5 +1594,128 @@ input[type="file"].hidden {
 }
 .fix-shift form {
   margin-top: 12px;
+}
+
+/* ---------------------------------------------------------------------------
+   Profits (admin): the local Bulins price/profit grids, the period controls on
+   the top right and the report below them.
+   --------------------------------------------------------------------------- */
+.profit-heading-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.profit-heading-title h2 {
+  margin: 0;
+}
+.profit-heading-title p {
+  margin: 4px 0 0;
+  max-width: 520px;
+  font-size: 13px;
+}
+.profit-period {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.profit-period-modes,
+.profit-period-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.profit-date-nav {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.profit-date-nav .field {
+  min-width: 130px;
+}
+.profit-date-nav .date-field {
+  width: 100%;
+}
+.profit-date-nav button.date-step {
+  align-self: flex-end;
+  padding: 0 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.profit-settings-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.profit-settings-card > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+.profit-settings-card > summary h3 {
+  display: inline;
+  margin: 0;
+}
+.profit-settings-card[open] > summary {
+  margin-bottom: 10px;
+}
+.profit-settings-body > p {
+  margin: 0 0 10px;
+}
+.profit-settings-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.profit-settings-toolbar .field {
+  min-width: 120px;
+}
+.profit-save-status {
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+.profit-settings-tables {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 20px;
+}
+.profit-settings-block h4 {
+  margin: 0 0 8px;
+}
+.profit-input-table {
+  width: 100%;
+}
+.profit-input-table th,
+.profit-input-table td {
+  padding: 4px 6px;
+}
+.profit-input-table tbody th {
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.profit-input-table input.profit-input {
+  width: 100%;
+  min-width: 68px;
+  padding: 6px 8px;
+  text-align: right;
+}
+.profit-report h3 {
+  margin-top: 24px;
+}
+.profit-period-line {
+  margin: -6px 0 12px;
+  font-size: 13px;
+}
+.profit-warning {
+  margin: -4px 0 14px;
+  color: #e0a64a;
 }
 

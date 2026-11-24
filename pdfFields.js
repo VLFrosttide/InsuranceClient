@@ -8,7 +8,8 @@
 // The add-insurance form is pre-filled from them:
 //   - policy number: the "FI<policy>" part of the policy PDF's file name
 //     (no PDF reading needed - the name already carries it),
-//   - car (registration) number: found in the policy PDF's text,
+//   - car (registration) number: the 8-character token that mixes letters and
+//     digits and repeats, read from whichever of the two PDFs carries it,
 //   - blank number: "Стикер" in the other PDF followed by a 6-digit value.
 //
 // The PDFs are printed from this app, so they can also be read back here. The
@@ -596,28 +597,68 @@ function latinPlate(token) {
 // (the city, the make) are never a plate.
 //
 // Every field is printed three times on these PDFs (the policy plus its two
-// copies), so the token that occurs most often wins; that keeps a one-off
-// 8-character word elsewhere on the page from being picked instead.
+// copies), so the token that repeats wins: that keeps a one-off 8-character
+// word elsewhere on the page from being picked instead. A value that appears
+// only once is used only when it is the sole candidate (a document that prints
+// the field once), and never when the caller asks for a repeated value.
+//
+// The plate is sometimes drawn in groups ("34 HEP 488", "CA 1234 AB") instead
+// of as one token; those groups are joined first, but only when the result has
+// a plate shape, so an IBAN fragment joined the same way ("BG93 UBBS") cannot
+// pass for a registration number.
 //
 //   carNumberFromText("Турция 34CGR718 2026 ... 34CGR718 ... 34CGR718") -> "34CGR718"
 //   carNumberFromText("policy 26192158")                                -> null
-export function carNumberFromText(text) {
+const PLATE_GROUP_SHAPES = [
+  /^\d{2}[A-Z]{2,3}\d{3,4}$/, // 34HEP488 / 34 HEP 488 (Turkish)
+  /^[A-Z]{1,2}\d{4}[A-Z]{2}$/, // CA1234AB / CA 1234 AB (Bulgarian)
+];
+
+export function carNumberFromText(text, options) {
+  const requireRepeat = Boolean(options && options.requireRepeat);
+  const source = String(text || "");
   const candidates = new Map();
-  const tokenPattern = /(?<![\p{L}\p{N}])[\p{L}\p{N}]{8}(?![\p{L}\p{N}])/gu;
-  for (const match of String(text || "").matchAll(tokenPattern)) {
-    const plate = latinPlate(match[0]);
-    if (!/^[A-Za-z0-9]{8}$/.test(plate)) continue;
-    if (!/[0-9]/.test(plate) || !/[A-Za-z]/.test(plate)) continue;
+
+  const record = (raw, joined) => {
+    const plate = latinPlate(raw).toUpperCase();
+    if (!/^[A-Z0-9]{8}$/.test(plate)) return;
+    if (!/[0-9]/.test(plate) || !/[A-Z]/.test(plate)) return;
+    // A value joined from groups must look like a real plate; anything else
+    // ("BG93 UBBS" from an IBAN) is dropped no matter how often it repeats.
+    if (joined && !PLATE_GROUP_SHAPES.some((shape) => shape.test(plate))) return;
     const seen = candidates.get(plate);
     if (seen) seen.count += 1;
     else candidates.set(plate, { value: plate, count: 1 });
+  };
+
+  // The plate as one token: "34HEP488".
+  const tokenPattern = /(?<![\p{L}\p{N}])[\p{L}\p{N}]{8}(?![\p{L}\p{N}])/gu;
+  for (const match of source.matchAll(tokenPattern)) record(match[0], false);
+
+  // The plate in up to three groups: "34 HEP 488", "34-HEP-488". The text is
+  // split on whitespace and hyphens first, then every two or three neighbouring
+  // groups are tried, so a group that starts one word earlier ("Турция 34 HEP")
+  // cannot swallow the real one.
+  const groups = source.split(/[\s\u00a0-]+/).filter(Boolean);
+  for (let i = 0; i < groups.length; i += 1) {
+    for (let take = 2; take <= 3 && i + take <= groups.length; take += 1) {
+      const parts = groups.slice(i, i + take);
+      if (parts.some((part) => !/^[\p{L}\p{N}]+$/u.test(part))) continue;
+      const value = parts.join("");
+      if (value.length !== 8) continue;
+      record(value, true);
+    }
   }
+
   let best = null;
   for (const candidate of candidates.values()) {
     // ">" keeps the first of two equally frequent tokens.
     if (!best || candidate.count > best.count) best = candidate;
   }
-  return best ? best.value : null;
+  if (!best) return null;
+  if (best.count >= 2) return best.value;
+  if (requireRepeat) return null;
+  return candidates.size === 1 ? best.value : null;
 }
 
 // The blank (бланка) number is printed as "Стикер" followed by a 6-digit value,
@@ -654,9 +695,12 @@ export function stickerNumberFromText(text) {
 }
 
 // Everything the form can be pre-filled with from one downloaded PDF. The
-// policy PDF carries the policy and car numbers, the other one the blank, so
-// the file name decides which fields are read (the same test the Desktop
-// watcher uses to choose what to print).
+// policy number comes from the policy PDF's file name (or the printed text),
+// the blank number from the sticker PDF, and the car number from whichever of
+// the two PDFs carries it: some products print it on the policy document, the
+// other file on others, so both are read. The sticker document only gives a car
+// number when the value repeats (the plate is printed three times), so a random
+// 8-character code on the payment slip cannot win over the real plate.
 export function pdfFields(buffer, filename) {
   let text = "";
   try {
@@ -666,16 +710,21 @@ export function pdfFields(buffer, filename) {
     text = "";
   }
 
-  if (policyPdfName(filename)) {
+  const isPolicyPdf = policyPdfName(filename);
+  const carNumber = isPolicyPdf
+    ? carNumberFromText(text)
+    : carNumberFromText(text, { requireRepeat: true });
+
+  if (isPolicyPdf) {
     return {
       policyNumber: policyNumberFromFilename(filename) || policyNumberFromText(text),
-      carNumber: carNumberFromText(text),
+      carNumber,
       blancNumber: null,
     };
   }
   return {
     policyNumber: policyNumberFromText(text),
-    carNumber: null,
+    carNumber,
     blancNumber: stickerNumberFromText(text),
   };
 }
