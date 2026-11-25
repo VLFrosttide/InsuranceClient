@@ -3,14 +3,17 @@
 // Node test for the results screen of the "Reconcile daily report" tab
 // (reconRenderResults in renderer/WorkPage/WorkPage.js).
 //
-// The screen has to keep three promises:
+// The screen has to keep four promises:
 //   1. the rows missing from the database and the insurances missing from the
 //      file are listed in SEPARATE tables (each with its own row count), never
 //      mixed into one list;
 //   2. every summary card that counts a table is a shortcut to it - click or
 //      Enter/Space scrolls to that section;
 //   3. an empty side is still shown, with its "no data" line, so the screen
-//      always has the same three sections.
+//      always has the same three sections;
+//   4. the duration, starting date, blanc and policy columns sort (by day
+//      count and by real date, not by the "3M"/dd-mm-yyyy text), and no other
+//      column does.
 //
 // The function lives in WorkPage.js, so it is lifted out of the real file and
 // run in a vm against a minimal DOM - like the other WorkPage tests.
@@ -25,7 +28,7 @@ const WORKPAGE = path.join(ROOT, "renderer", "WorkPage");
 const src = fs
   .readFileSync(path.join(WORKPAGE, "WorkPage.js"), "utf8")
   .replace(/\r\n/g, "\n");
-const START = "function reconRenderResults(result) {";
+const START = "const reconTableSort = {";
 const END = "\n// The last reconciled report, kept in memory.";
 const start = src.indexOf(START);
 const end = start < 0 ? -1 : src.indexOf(END, start);
@@ -51,6 +54,18 @@ if (tableStart < 0 || tableEnd < 0) {
   process.exit(1);
 }
 const tableBlock = src.slice(tableStart, tableEnd);
+
+// sortableTable()/sortTableRows()/tableSortValue(): also part of the same file
+// and DOM-light, so the real sorting is used rather than a stand-in.
+const SORT_START = "function tableSortValue(row, column) {";
+const SORT_END = "\n// A collapsible table section";
+const sortStart = src.indexOf(SORT_START);
+const sortEnd = sortStart < 0 ? -1 : src.indexOf(SORT_END, sortStart);
+if (sortStart < 0 || sortEnd < 0) {
+  console.error("Could not locate sortableTable in WorkPage.js (moved?)");
+  process.exit(1);
+}
+const sortBlock = src.slice(sortStart, sortEnd);
 
 // --- minimal DOM ------------------------------------------------------------
 class FakeNode {
@@ -166,12 +181,19 @@ vm.runInContext(
   { filename: "WorkPage.js#renderTable" }
 );
 vm.runInContext(
-  block + "\nglobalThis.reconRenderResults = reconRenderResults;",
+  sortBlock + "\nglobalThis.sortableTable = sortableTable;",
+  CTX,
+  { filename: "WorkPage.js#sortableTable" }
+);
+vm.runInContext(
+  block +
+    "\nglobalThis.reconRenderResults = reconRenderResults;" +
+    "\nglobalThis.reconTableSort = reconTableSort;",
   CTX,
   { filename: "WorkPage.js#reconcileResults" }
 );
 
-const { reconRenderResults } = CTX;
+const { reconRenderResults, reconTableSort } = CTX;
 
 // --- tiny assert helpers ----------------------------------------------------
 let passed = 0;
@@ -516,6 +538,229 @@ check("the card figures are the row counts", () => {
     "1"
   );
   eq(cardByLabel(view, "reconcile.mismatches").children[1].textContent, "1");
+});
+
+// --- sorting -----------------------------------------------------------------
+// Three rows on each side, deliberately out of order, so a click has something
+// to reorder. The values repeat the real shapes: file rows carry the parsed
+// keys, database insurances the raw columns, mismatches { file, db } cells.
+const sortReport = {
+  fileRowCount: 3,
+  matched: 0,
+  missingFromDb: [
+    {
+      rowNo: 12,
+      policy: "26167003",
+      blank: "100003",
+      car: "C3",
+      fromRaw: "07.10.2026",
+      fromKey: "2026-10-07",
+      durationRaw: "15D",
+      durationDays: 15,
+      priceRaw: "10",
+    },
+    {
+      rowNo: 10,
+      policy: "26167001",
+      blank: "100001",
+      car: "C1",
+      fromRaw: "05.10.2026",
+      fromKey: "2026-10-05",
+      durationRaw: "3M",
+      durationDays: 90,
+      priceRaw: "30",
+    },
+    {
+      rowNo: 11,
+      policy: "26167002",
+      blank: "100002",
+      car: "C2",
+      fromRaw: "06.10.2026",
+      fromKey: "2026-10-06",
+      durationRaw: "1M",
+      durationDays: 30,
+      priceRaw: "20",
+    },
+  ],
+  missingFromFile: [
+    {
+      PolicyNumber: "26168003",
+      BlancNumber: "200003",
+      CarNumber: "D3",
+      StartDate: "2026-10-07",
+      Duration: 15,
+      Price: "10",
+    },
+    {
+      PolicyNumber: "26168001",
+      BlancNumber: "200001",
+      CarNumber: "D1",
+      StartDate: "2026-10-05",
+      Duration: 90,
+      Price: "30",
+    },
+    {
+      PolicyNumber: "26168002",
+      BlancNumber: "200002",
+      CarNumber: "D2",
+      StartDate: "2026-10-06",
+      Duration: 30,
+      Price: "20",
+    },
+  ],
+  mismatches: [
+    [12, "26167003", "100003", "07-10-2026", "15D"],
+    [10, "26167001", "100001", "05-10-2026", "3M"],
+    [11, "26167002", "100002", "06-10-2026", "1M"],
+  ].map(([rowNo, policy, blank, from, duration]) => ({
+    rowNo,
+    policy: { file: policy, db: policy, mismatch: false },
+    blank: { file: blank, db: blank, mismatch: false },
+    from: { file: from, db: from, mismatch: false },
+    to: { file: "", db: "", mismatch: false },
+    car: { file: "", db: "", mismatch: false },
+    duration: { file: duration, db: duration, mismatch: false },
+    price: { file: "", db: "", mismatch: false },
+  })),
+  creationFrom: "2026-10-05",
+  creationTo: "2026-10-07",
+  broker: "",
+};
+
+// Every check starts from "no column sorted", so one click always means
+// descending and the checks do not depend on each other.
+function freshSortView() {
+  for (const state of Object.values(reconTableSort)) {
+    state.key = null;
+    state.dir = "desc";
+  }
+  return reconRenderResults(sortReport);
+}
+
+const thByLabel = (section, label) =>
+  find(section, (n) => n.tagName === "TH" && n.textContent.startsWith(label))[0];
+const clickHeader = (section, label) =>
+  thByLabel(section, label).dispatch("click");
+const bodyRows = (section) =>
+  find(section, (n) => n.tagName === "TR").filter((tr) =>
+    tr.children.some((c) => c.tagName === "TD")
+  );
+const cellTexts = (section, index) =>
+  bodyRows(section).map(
+    (tr) => tr.children.filter((c) => c.tagName === "TD")[index].textContent
+  );
+
+const SORTABLE_LABELS = [
+  "reconcile.col.policy",
+  "reconcile.col.blank",
+  "reconcile.col.from",
+  "reconcile.col.duration",
+];
+
+check("only duration, starting date, blanc and policy are sortable", () => {
+  const view = freshSortView();
+  for (const id of [
+    "recon-missing-db",
+    "recon-missing-file",
+    "recon-mismatches",
+  ]) {
+    const section = byId(view, id);
+    const sortable = find(
+      section,
+      (n) => n.tagName === "TH" && n.className.split(/\s+/).includes("sortable")
+    ).map((n) => n.textContent);
+    eq(sortable, SORTABLE_LABELS, "sortable headers of " + id);
+    // The file row number, valid-until, car and price keep the report order.
+    for (const plain of [
+      "reconcile.row",
+      "reconcile.col.to",
+      "reconcile.col.car",
+      "reconcile.col.price",
+    ]) {
+      const th = thByLabel(section, plain);
+      if (!th) continue;
+      ok(
+        !th.className.split(/\s+/).includes("sortable"),
+        `${plain} is not sortable in ${id}`
+      );
+    }
+  }
+});
+
+check("the duration header sorts by the day count, not the 3M/15D text", () => {
+  const view = freshSortView();
+  const section = byId(view, "recon-missing-db");
+  clickHeader(section, "reconcile.col.duration");
+  // 3M = 90 days, 1M = 30, 15D = 15: the first click puts the longest first.
+  eq(cellTexts(section, 6), ["3M", "1M", "15D"], "descending by days");
+  ok(
+    thByLabel(section, "reconcile.col.duration").textContent.endsWith("▼"),
+    "the active column shows its direction"
+  );
+  clickHeader(section, "reconcile.col.duration");
+  eq(cellTexts(section, 6), ["15D", "1M", "3M"], "ascending by days");
+  ok(
+    thByLabel(section, "reconcile.col.duration").textContent.endsWith("▲"),
+    "the arrow flips"
+  );
+});
+
+check("the starting date sorts by date, not the dd-mm-yyyy text", () => {
+  const view = freshSortView();
+  const section = byId(view, "recon-missing-db");
+  clickHeader(section, "reconcile.col.from");
+  eq(
+    cellTexts(section, 3),
+    ["07-10-2026", "06-10-2026", "05-10-2026"],
+    "newest first"
+  );
+  clickHeader(section, "reconcile.col.from");
+  eq(
+    cellTexts(section, 3),
+    ["05-10-2026", "06-10-2026", "07-10-2026"],
+    "oldest first"
+  );
+});
+
+check("policy and blanc sort on the database side as well", () => {
+  const view = freshSortView();
+  const section = byId(view, "recon-missing-file");
+  clickHeader(section, "reconcile.col.policy");
+  eq(
+    cellTexts(section, 0),
+    ["26168003", "26168002", "26168001"],
+    "policy desc"
+  );
+  // Switching column starts descending again.
+  clickHeader(section, "reconcile.col.blank");
+  eq(cellTexts(section, 1), ["200003", "200002", "200001"], "blanc desc");
+  clickHeader(section, "reconcile.col.blank");
+  eq(cellTexts(section, 1), ["200001", "200002", "200003"], "blanc asc");
+});
+
+check("the mismatch table sorts by its file values", () => {
+  const view = freshSortView();
+  const section = byId(view, "recon-mismatches");
+  clickHeader(section, "reconcile.col.duration");
+  eq(cellTexts(section, 6), ["3M", "1M", "15D"], "mismatch durations");
+  clickHeader(section, "reconcile.col.from");
+  eq(
+    cellTexts(section, 3),
+    ["07-10-2026", "06-10-2026", "05-10-2026"],
+    "mismatch dates"
+  );
+});
+
+check("a rebuilt screen keeps the chosen order", () => {
+  freshSortView();
+  const first = byId(reconRenderResults(sortReport), "recon-missing-db");
+  clickHeader(first, "reconcile.col.duration");
+  eq(cellTexts(first, 6), ["3M", "1M", "15D"], "sorted on the first build");
+  // Back from another tab: the tab rebuilds the results from the cache, and
+  // the order has to survive that.
+  const rebuilt = byId(reconRenderResults(sortReport), "recon-missing-db");
+  eq(cellTexts(rebuilt, 6), ["3M", "1M", "15D"], "order survives the rebuild");
+  eq(reconTableSort.missingDb.key, "duration", "the state is the table's own");
 });
 
 // --- empty sides -------------------------------------------------------------

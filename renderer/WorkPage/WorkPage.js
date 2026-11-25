@@ -8486,6 +8486,61 @@ async function reconcileReport(rows, options) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sorting the reconcile result tables
+//
+// Only four columns are sortable - the duration, the starting (valid-from)
+// date, the blanc and the policy number - the fields an operator scans by eye.
+// The file row number, valid-until, car and price keep the report's own order.
+//
+// The sort state lives outside the render, so switching to another tab and
+// back (the report is restored from the cache and its tables rebuilt) keeps
+// the order the user left, the same way the Current cash tables do
+// (cashTableSort).
+const reconTableSort = {
+  missingDb: { key: null, dir: "desc" },
+  missingFile: { key: null, dir: "desc" },
+  mismatches: { key: null, dir: "desc" },
+};
+const RECON_SORTABLE_FIELDS = ["policy", "blank", "from", "duration"];
+
+// The value a result column sorts by. What is on screen is not always what
+// should be compared: dates are shown dd-mm-yyyy and terms as "3M"/"15D", so
+// the ISO date and the day count behind them are used instead - otherwise
+// "15D" would sort after "3M" and 05-10-2026 before 03-01-2027.
+function reconSortValue(key, value) {
+  if (key === "from") return reconFileDate(value);
+  if (key === "duration") return reconTermDays(value);
+  return value;
+}
+
+// One column of a result table. The four sortable fields get a sort value and
+// a clickable header; every other column is marked `sortable: false` so its
+// header stays plain. `read` pulls the displayed value out of a row (a mismatch
+// row keeps each field as a { file, db, mismatch } cell, the two "missing"
+// tables hold plain values) and `extra` adds what a table needs (format, …).
+function reconResultColumn(col, read, extra) {
+  const column = {
+    key: col.key,
+    label: t(col.label),
+    ...extra,
+    sortable: RECON_SORTABLE_FIELDS.includes(col.key),
+  };
+  if (!column.sortable) return column;
+  column.sortValue = (item) => reconSortValue(col.key, read(item));
+  // Dates compare as their ISO text; a duration sorts as a day count and the
+  // policy/blanc numbers keep the helper's numeric-or-text handling.
+  if (col.key === "from") column.sortType = "text";
+  return column;
+}
+
+// The columns of the two "missing" tables, in RECON_COLUMNS order.
+function reconResultColumns() {
+  return RECON_COLUMNS.map((col) =>
+    reconResultColumn(col, (row) => row[col.key])
+  );
+}
+
 function reconRenderResults(result) {
   const wrap = el("div", null, { class: "recon-results" });
 
@@ -8577,9 +8632,14 @@ function reconRenderResults(result) {
     );
   }
 
-  const buildSection = (section, title, items, columns, rowClass) => {
+  const buildSection = (section, title, items, columns, rowClass, sort) => {
     section.appendChild(el("h3", `${title} (${items.length})`));
-    section.appendChild(renderTable(items, columns, null, rowClass));
+    // A sortable table: only the four columns reconResultColumn marks sortable
+    // react to a header click, and the chosen order is kept in reconTableSort
+    // so a rebuilt screen (back from another tab) shows the same order.
+    section.appendChild(
+      sortableTable(items, columns, null, rowClass, undefined, { sort })
+    );
   };
 
   // --- Policies in the file that the database does not have ---------------
@@ -8598,10 +8658,11 @@ function reconRenderResults(result) {
     t("reconcile.missingFromDb"),
     missingDbRows,
     [
-      { key: "rowNo", label: t("reconcile.row") },
-      ...RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
+      { key: "rowNo", label: t("reconcile.row"), sortable: false },
+      ...reconResultColumns(),
     ],
-    () => "row-missing"
+    () => "row-missing",
+    reconTableSort.missingDb
   );
 
   // --- Insurances in the database that the file does not list -------------
@@ -8621,8 +8682,9 @@ function reconRenderResults(result) {
     missingFileSection,
     t("reconcile.missingFromFile"),
     missingFileRows,
-    RECON_COLUMNS.map((c) => ({ key: c.key, label: t(c.label) })),
-    () => "row-missing"
+    reconResultColumns(),
+    () => "row-missing",
+    reconTableSort.missingFile
   );
 
   // --- Partial data mismatches (mismatching cells in dark red) ------------
@@ -8636,32 +8698,38 @@ function reconRenderResults(result) {
       result.fileFields,
       col.key
     );
-    return {
-      key: col.key,
-      label: t(col.label),
-      format: (v) => {
-        const cell = v || {};
-        return cell.mismatch && !off
-          ? `${t("reconcile.fileValue")}: ${cell.file || "—"}\n${t(
-              "reconcile.dbValue"
-            )}: ${cell.db || "—"}`
-          : cell.file;
-      },
-      cellClass: (item) => {
-        const cell = item[col.key] || {};
-        if (off || cell.ignored) return "cell-ignored";
-        return cell.mismatch ? "cell-mismatch" : "";
-      },
-    };
+    return reconResultColumn(
+      col,
+      // A mismatch row keeps each field as a { file, db, mismatch } cell; the
+      // sort follows the file's value, which is what the table leads with.
+      (item) => (item[col.key] || {}).file,
+      {
+        format: (v) => {
+          const cell = v || {};
+          return cell.mismatch && !off
+            ? `${t("reconcile.fileValue")}: ${cell.file || "—"}\n${t(
+                "reconcile.dbValue"
+              )}: ${cell.db || "—"}`
+            : cell.file;
+        },
+        cellClass: (item) => {
+          const cell = item[col.key] || {};
+          if (off || cell.ignored) return "cell-ignored";
+          return cell.mismatch ? "cell-mismatch" : "";
+        },
+      }
+    );
   };
   buildSection(
     mismatchSection,
     t("reconcile.mismatches"),
     result.mismatches,
     [
-      { key: "rowNo", label: t("reconcile.row") },
+      { key: "rowNo", label: t("reconcile.row"), sortable: false },
       ...RECON_COLUMNS.map(mismatchCol),
-    ]
+    ],
+    undefined,
+    reconTableSort.mismatches
   );
 
   wrap.appendChild(missingDbSection);
