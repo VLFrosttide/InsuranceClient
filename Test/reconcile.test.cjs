@@ -344,11 +344,12 @@ const SAMPLE = path.join(
     eq(parsed[1].toKey, "2024-12-04");
   });
 
-  check("English header spellings are accepted for policy / blank / car", () => {
-    // Every English spelling RECON_COLUMNS advertises must really be matched,
-    // with the other two columns using the canonical Bulgarian headers so only
-    // the alias under test is exercised. Case, spaces and punctuation are
-    // normalised away, so a couple of variants are checked as well.
+  check("English and transliterated headers are accepted for policy / blank / car", () => {
+    // Every spelling RECON_COLUMNS advertises must really be matched, with the
+    // other two columns using the canonical Bulgarian headers so only the alias
+    // under test is exercised. Case, spaces and punctuation are normalised away,
+    // so the reports' "No, POLITSA" / "No, BLANKA" labels and a few variants are
+    // checked as well.
     const cases = {
       policy: [
         "Policy number",
@@ -356,6 +357,12 @@ const SAMPLE = path.join(
         "Policy",
         "policy_number",
         "POLICY-NUMBER",
+        "POLITSA",
+        "No POLITSA",
+        "No, POLITSA",
+        "No. POLITSA",
+        "No ПОЛИЦА",
+        "No. ПОЛИЦА",
       ],
       blank: [
         "Blanc",
@@ -366,6 +373,11 @@ const SAMPLE = path.join(
         "Number Blanc",
         "NumberBlanc",
         "blanc number",
+        "BLANKA",
+        "No BLANKA",
+        "No, BLANKA",
+        "No БЛАНКА",
+        "No. БЛАНКА",
       ],
       car: [
         "Car number",
@@ -374,6 +386,8 @@ const SAMPLE = path.join(
         "Plate number",
         "Number Plate",
         "NumberPlate",
+        "DKN",
+        "dkn",
       ],
     };
     const canonical = {
@@ -409,6 +423,40 @@ const SAMPLE = path.join(
         eq(parsed[0].toKey, "2027-01-03", `term still derives the end date for ${where}`);
       }
     }
+  });
+
+  check("a report labelled with No, POLITSA / No, BLANKA / DKN reconciles", () => {
+    // The transliterated daily-report layout: "No, POLITSA", "No, BLANKA" (with
+    // a comma right after "No") and "DKN" instead of the Bulgarian labels.
+    const translitRows = [
+      ["No, POLITSA", "No, BLANKA", "ДАТА", "СРОК", "DKN", "ЦЕНА"],
+      ["BG/02/FI 26167659", "149988", "05.10.2026", "3M", "59ADJ391", "45,50"],
+    ];
+    const cols = reconFindColumns(translitRows);
+    eq(cols.missing, [], "the transliterated header row must be recognised");
+    eq(cols.index, {
+      policy: 0,
+      blank: 1,
+      from: 2,
+      duration: 3,
+      car: 4,
+      price: 5,
+    });
+    const parsed = reconParseFileRows(translitRows, cols.headerRow, cols.index);
+    eq(parsed.length, 1, "one data row");
+    eq(
+      [parsed[0].policy, parsed[0].blank, parsed[0].car],
+      ["26167659", "149988", "59ADJ391"]
+    );
+    const ins = {
+      PolicyNumber: "26167659",
+      BlancNumber: "149988",
+      CarNumber: "59ADJ391",
+      StartDate: "2026-10-05",
+      Duration: 90,
+      Price: "45.5",
+    };
+    eq(reconCompareRow(parsed[0], ins).count, 0, "every field agrees");
   });
 
   check("unknown file reports missing required columns", () => {

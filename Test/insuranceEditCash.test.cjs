@@ -1813,6 +1813,74 @@ async function patch(body, opts = {}) {
     eq(r.movements, [], "no movements");
   });
 
+  await check("a zero fee survives a later save of the annulled policy", async () => {
+    // The edit form always sends the fault dropdown (only an UNCHANGED fee is
+    // left out of the payload), so every later save of an annulled policy goes
+    // through the fee logic again. A fee the admin already set to 0 IS the
+    // stored fee and must be kept - not re-decided to 9/1 just because the
+    // policy is saved again (e.g. to correct its car number).
+    const r = await patch(
+      { AnnulReason: "worker", Price: 0, CarNumber: "CB1234AB" },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 25,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulFee, 0, "the fee stays 0");
+    eq(r.row.Price, 0, "the tax in Price stays 0");
+    eq(r.row.CarNumber, "CB1234AB", "the other field was still saved");
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("re-sending an unchanged zero fee keeps it at zero", async () => {
+    const r = await patch(
+      { AnnulReason: "worker", AnnulFee: 0 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 25,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulFee, 0, "the fee stays 0");
+    eq(r.movements, [], "no money moves");
+  });
+
+  await check("correcting the start date still re-decides the fee", async () => {
+    // Only an unchanged date keeps a stored fee; moving it re-decides the fee
+    // from the corrected date, which is the documented server behaviour.
+    const r = await patch(
+      { AnnulReason: "worker", StartDate: dayOffset(-1) },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 25,
+          StartDate: dayOffset(3),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulFee, 9, "the fee follows the corrected start date");
+  });
+
   await check("a negative fee is rejected on PATCH", async () => {
     const r = await patch(
       { AnnulFee: -1 },

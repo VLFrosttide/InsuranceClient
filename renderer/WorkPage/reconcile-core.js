@@ -15,8 +15,11 @@
 // The policy, sticker, car, duration and price columns also accept English
 // headers ("Policy number", "Blanc Number", "Car number", "Duration", "Price",
 // "Tarifa", … - the full list is RECON_COLUMNS), because some exports use the
-// database field names instead of the Bulgarian ones. Header matching ignores
-// case, spaces and punctuation (reconHeaderKey).
+// database field names instead of the Bulgarian ones. The reports also print
+// transliterated labels - "DKN" for ДКН, "No, POLITSA" for the policy number
+// and "No, BLANKA" for the blank - so those spellings are accepted too. Header
+// matching ignores case, spaces and punctuation (reconHeaderKey), which is why
+// "No, POLITSA", "No. POLITSA" and "No POLITSA" all mean the same header.
 //
 // Duration and price are optional: a report that does not print those columns
 // still reconciles everything else, and the missing field is reported as not
@@ -119,6 +122,14 @@ const RECON_COLUMNS = [
       "НОМЕР НА ПОЛИЦА",
       "№ ПОЛИЦА",
       "ПОЛИЦА",
+      // Transliterated labels of the daily reports: "No, POLITSA" (and "№
+      // POLITSA", which normalises to plain "POLITSA"), next to the English
+      // spellings some exports use. The mixed "No." + Cyrillic spelling is its
+      // own entry because reconNormText only maps the look-alike letters, so
+      // "ПОЛИЦА" never becomes "POLITSA".
+      "POLITSA",
+      "No POLITSA",
+      "No ПОЛИЦА",
       "Policy number",
       "PolicyNumber",
       "Policy",
@@ -134,6 +145,11 @@ const RECON_COLUMNS = [
       "№ БЛАНКА",
       "БЛАНКА",
       "НОМЕР НА БЛАНКА",
+      // Transliterated labels: "No, BLANKA" (and "№ BLANKA", which normalises
+      // to plain "BLANKA"), plus the mixed "No." + Cyrillic spelling.
+      "BLANKA",
+      "No BLANKA",
+      "No БЛАНКА",
       "Blanc",
       "Blanc Number",
       "BlancNumber",
@@ -165,6 +181,8 @@ const RECON_COLUMNS = [
     source: "CarNumber",
     headers: [
       "ДКН",
+      // Transliterated spelling of ДКН used by some exports.
+      "DKN",
       "Car number",
       "Number Car",
       "Car Plate",
