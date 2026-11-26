@@ -66,6 +66,11 @@ function slice(startMarker, endMarker) {
 }
 
 const vehicleBlock = slice("function pricingVehicleKey(", "\n// MySQL flags arrive");
+// The kind helpers decide which products belong in this (border tariff) report.
+const kindsBlock = slice(
+  'const BORDER_KIND = "border";',
+  "// Duration dropdown options (values in days)"
+);
 const profitsBlock = slice("const PROFIT_SETTINGS_KEY", "\n// Navigation setup");
 
 const CTX = {
@@ -97,7 +102,7 @@ CTX.localStorage = {
   setItem: (key, value) => store.set(key, String(value)),
   removeItem: (key) => store.delete(key),
 };
-vm.runInContext(vehicleBlock + "\n" + profitsBlock, CTX, {
+vm.runInContext(vehicleBlock + "\n" + kindsBlock + "\n" + profitsBlock, CTX, {
   filename: "WorkPage.js#profits",
 });
 
@@ -349,6 +354,36 @@ check("income sums the prices, without annulled, deleted and other currencies", 
   eq(report.totals.profit, 12);
   eq(report.totals.unpriced, 0);
   eq(report.otherCurrency, 1, "the TRY policy is counted separately");
+});
+
+check("medical and civil liability policies are left out of the tariff report", () => {
+  const report = CTX.profitReport(
+    [
+      policy({ BlancNumber: "border" }),
+      policy({ BlancNumber: "med", Kind: "medical", Price: "500.00" }),
+      policy({
+        BlancNumber: "civil",
+        Kind: "civil",
+        Price: "300.00",
+        CreationDate: "2026-11-02 11:00:00",
+      }),
+    ],
+    reportSettings(),
+    "2026-11-01",
+    "2026-11-30"
+  );
+  eq(report.otherKind, 2, "the hand-priced policies are counted separately");
+  eq(report.totals.policies, 1, "only border insurance is in the figures");
+  eq(
+    report.totals.income,
+    40,
+    "their hand-typed price is never measured against a border tariff"
+  );
+  const nodes = CTX.profitReportNodes(report);
+  ok(
+    nodes.some((node) => node.textContent === "profits.otherKind"),
+    "the excluded hand-priced policies are mentioned"
+  );
 });
 
 check("the daily report groups by calendar day", () => {

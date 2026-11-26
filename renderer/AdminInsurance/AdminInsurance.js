@@ -10,6 +10,7 @@ if (getRole() !== "1") {
 }
 
 const DurationOptions = ["15 дена", "1 месец", "3 месеца"];
+const KindInput = document.getElementById("KindInput");
 const DurationInput = document.getElementById("DurationInput");
 const AutoTypeInput = document.getElementById("AutoTypeInput");
 const StartDateInput = document.getElementById("StartDateInput");
@@ -24,6 +25,9 @@ const CashField = document.getElementById("CashField");
 const NonTurkField = document.getElementById("NonTurkField");
 const CardFeeField = document.getElementById("CardFeeField");
 const TotalPriceDisplay = document.getElementById("TotalPriceDisplay");
+const TariffPriceField = document.getElementById("TariffPriceField");
+const ManualPriceInput = document.getElementById("ManualPriceInput");
+const ManualPriceField = document.getElementById("ManualPriceField");
 const InsuranceForm = document.getElementById("InsuranceForm");
 const SubmitFormButton = document.getElementById("SubmitFormButton");
 const ClearButton = document.getElementById("ClearButton");
@@ -98,6 +102,23 @@ let brokerPricing = {}; // assigned broker's EUR pricing
 let pricingLoading = false;
 let tariffPrice = null;
 
+// Border insurance is the one product priced from the tariff grid. Medical
+// insurance and civil liability have no tariff rows: their price is typed by
+// hand (ManualPriceInput) and the grid is never consulted for them. The two fee
+// toggles (non-Turk tax, card fee) are border-tariff extras, so they do not
+// apply to a hand-priced policy either.
+const TARIFF_PRICED_KIND = "border";
+
+function selectedKind() {
+  return String(
+    (KindInput && KindInput.value) || defaultInsuranceKind || TARIFF_PRICED_KIND
+  ).trim();
+}
+
+function usesManualPrice() {
+  return selectedKind() !== TARIFF_PRICED_KIND;
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -107,6 +128,8 @@ function isBrokerMode() {
 }
 
 function currentFees() {
+  // A hand-priced product (medical / civil) has no tariff fees.
+  if (usesManualPrice()) return 0;
   if (isBrokerMode()) return 0;
   if (NonTurkInput && NonTurkInput.checked) {
     return CurrencyInput && CurrencyInput.value === "TRY"
@@ -116,10 +139,21 @@ function currentFees() {
   return 0;
 }
 
-// Price actually saved: tariff + non-Turk fee (card fee is visual-only).
+// What the policy costs before fees: the tariff row for border insurance, the
+// amount typed by the admin for medical insurance / civil liability.
+function currentBasePrice() {
+  if (!usesManualPrice()) return tariffPrice;
+  const raw = ManualPriceInput ? String(ManualPriceInput.value || "").trim() : "";
+  if (!raw) return null;
+  const n = Number(raw.replace(",", "."));
+  return Number.isFinite(n) && n >= 0 ? round2(n) : null;
+}
+
+// Price actually saved: the base price + non-Turk fee (card fee is visual-only).
 function currentTotalPrice() {
-  if (tariffPrice === null) return null;
-  return round2(tariffPrice + currentFees());
+  const base = currentBasePrice();
+  if (base === null) return null;
+  return round2(base + currentFees());
 }
 
 // Price shown on the form (adds the visual-only card fee).
@@ -141,6 +175,24 @@ function renderTotalPrice() {
       ? "…"
       : "n/a"
     : total.toFixed(2);
+}
+
+// Switch the price area between the two ways of pricing a policy: the tariff
+// output for border insurance, the hand-typed amount for medical / civil. The
+// non-Turk and card-fee toggles belong to the border product, so they are hidden
+// (and cleared) for the hand-priced kinds, which are then shown again by
+// syncBrokerMode when border insurance comes back.
+function syncKindPricing() {
+  const manual = usesManualPrice();
+  if (TariffPriceField) TariffPriceField.classList.toggle("hidden", manual);
+  if (ManualPriceField) ManualPriceField.classList.toggle("hidden", !manual);
+  if (manual) {
+    if (NonTurkInput) NonTurkInput.checked = false;
+    if (CardFeeInput) CardFeeInput.checked = false;
+  }
+  syncBrokerMode();
+  if (manual) renderTotalPrice();
+  else autofillPrice();
 }
 
 function mapVehicle(value) {
@@ -217,6 +269,105 @@ async function loadPricing() {
 }
 
 // ---------------------------------------------------------------------------
+// Kinds of insurance (border / medical / civil)
+// ---------------------------------------------------------------------------
+// The server owns the list of kinds (Requests/InsuranceKinds.js, served by
+// GET /insurance-kinds) and the rules for who may create which one. This form is
+// admin-only, so every kind the response marks as `allowed` is offered; a kind
+// added on the server therefore appears here without a client update. The
+// constants below are only the fallback used until - or if - that request cannot
+// answer, so the form still works on a cold start and offline.
+const DEFAULT_INSURANCE_KIND = "border";
+const FALLBACK_INSURANCE_KINDS = [
+  {
+    value: "border",
+    label: "Border insurance",
+    labelBg: "Гранична застраховка",
+    allowed: true,
+  },
+  {
+    value: "medical",
+    label: "Medical insurance",
+    labelBg: "Медицинска застраховка",
+    allowed: true,
+  },
+  {
+    value: "civil",
+    label: "Civil liability",
+    labelBg: "Гражданска отговорност",
+    allowed: true,
+  },
+];
+
+let insuranceKinds = FALLBACK_INSURANCE_KINDS;
+let defaultInsuranceKind = DEFAULT_INSURANCE_KIND;
+
+// The label of one kind: the client's own translation when it has one
+// (kind.border / kind.medical / kind.civil), otherwise whatever the server sent
+// with the kind, in the language on screen.
+function insuranceKindLabel(kind) {
+  const value = String((kind && kind.value) || "");
+  const translated = t("kind." + value, "");
+  if (translated) return translated;
+  if (getLang() === "bg") {
+    return kind.labelBg || kind.label || value;
+  }
+  return kind.label || kind.labelBg || value;
+}
+
+// The kinds this user may create, in the server's order.
+function allowedInsuranceKinds() {
+  return insuranceKinds.filter(
+    (kind) => kind && kind.value && kind.allowed !== false
+  );
+}
+
+// Fill the select. `allowed: false` kinds are never offered, so a future
+// admin-only-for-some-role kind cannot be picked by accident. The current
+// choice survives a reload (and a language switch), and an empty or unknown
+// choice falls back to the server's default kind, then to the first allowed one.
+function renderInsuranceKinds() {
+  if (!KindInput) return;
+  const previous = String(KindInput.value || "");
+  const kinds = allowedInsuranceKinds();
+  KindInput.replaceChildren();
+  for (const kind of kinds) {
+    const option = document.createElement("option");
+    option.value = String(kind.value);
+    option.textContent = insuranceKindLabel(kind);
+    KindInput.appendChild(option);
+  }
+  const values = kinds.map((kind) => String(kind.value));
+  if (previous && values.includes(previous)) {
+    KindInput.value = previous;
+  } else if (values.includes(defaultInsuranceKind)) {
+    KindInput.value = defaultInsuranceKind;
+  } else if (values.length) {
+    KindInput.value = values[0];
+  }
+}
+
+// Ask the server which kinds exist and which this user may create. A failure is
+// not fatal: the fallback list (and the server-side rule) still keep the form
+// honest, so it is only logged.
+async function loadInsuranceKinds() {
+  try {
+    const data = await api("/insurance-kinds");
+    const kinds = Array.isArray(data && data.kinds) ? data.kinds : [];
+    if (kinds.length) {
+      insuranceKinds = kinds;
+      const serverDefault = String(
+        (data && data.defaultKind) || DEFAULT_INSURANCE_KIND
+      );
+      defaultInsuranceKind = serverDefault || DEFAULT_INSURANCE_KIND;
+    }
+  } catch (err) {
+    console.warn("Failed to load insurance kinds:", err);
+  }
+  renderInsuranceKinds();
+}
+
+// ---------------------------------------------------------------------------
 // Payment options / currency / broker-mode visibility
 // ---------------------------------------------------------------------------
 function syncCardFeeState() {
@@ -254,8 +405,12 @@ function syncCurrencyOptions() {
 
 function syncBrokerMode() {
   const broker = isBrokerMode();
-  for (const f of [CashField, NonTurkField, CardFeeField]) {
-    if (f) f.classList.toggle("hidden", broker);
+  // The non-Turk tax and the card fee are border-tariff extras: a hand-priced
+  // policy (medical / civil) never shows them.
+  const hideFees = broker || usesManualPrice();
+  if (CashField) CashField.classList.toggle("hidden", broker);
+  for (const f of [NonTurkField, CardFeeField]) {
+    if (f) f.classList.toggle("hidden", hideFees);
   }
   if (BrokerNote) {
     BrokerNote.textContent = broker ? t("addAdmin.brokerNote") : "";
@@ -311,6 +466,7 @@ function clearForm() {
     if (el.type === "checkbox") el.checked = false;
     else el.value = "";
   }
+  if (KindInput) KindInput.value = defaultInsuranceKind;
   if (DurationInput) DurationInput.value = DurationOptions[1];
   if (AutoTypeInput) AutoTypeInput.value = "Automobile";
   if (CurrencyInput) CurrencyInput.value = "EUR";
@@ -321,10 +477,9 @@ function clearForm() {
   if (CreationDateInput) CreationDateInput.value = datetimeLocalNow();
   if (BrokerSelect) BrokerSelect.value = "";
   setMessage("", false);
-  syncBrokerMode();
-  syncCurrencyOptions();
-  syncCardFeeState();
-  autofillPrice();
+  // Picks the right price area for the (default) kind again and refreshes the
+  // broker / currency / card-fee state with it.
+  syncKindPricing();
 }
 
 InsuranceForm.addEventListener("submit", async function (e) {
@@ -389,10 +544,16 @@ InsuranceForm.addEventListener("submit", async function (e) {
 
   const totalPrice = currentTotalPrice();
   if (totalPrice === null) {
+    const manual = usesManualPrice();
     setMessage(
-      pricingLoading ? t("add.priceLoading") : t("add.priceUnavailable"),
+      manual
+        ? t("add.manualPriceRequired")
+        : pricingLoading
+        ? t("add.priceLoading")
+        : t("add.priceUnavailable"),
       true
     );
+    if (manual && ManualPriceInput) ManualPriceInput.focus();
     return;
   }
 
@@ -405,6 +566,12 @@ InsuranceForm.addEventListener("submit", async function (e) {
     Duration: FormObject.DurationInput,
     Branch: localStorage.getItem("branch") || "",
     Otomobil: FormObject.AutoTypeInput,
+    // Which product the policy is (border / medical / civil). The dropdown is
+    // built from GET /insurance-kinds; an empty select falls back to the default
+    // kind so a policy can never be saved without one.
+    Kind: String(
+      FormObject.KindInput || defaultInsuranceKind || DEFAULT_INSURANCE_KIND
+    ).trim(),
     StartDate: startDate,
     Price: totalPrice.toFixed(2),
     CurrencyType: FormObject.CurrencyInput,
@@ -484,6 +651,9 @@ if (LangButton) {
   LangButton.addEventListener("click", () => {
     toggleLang();
     syncLangButton();
+    // The kind labels are built here, not marked with data-i18n, so they have to
+    // be rebuilt in the new language.
+    renderInsuranceKinds();
     syncBrokerMode();
   });
 }
@@ -500,6 +670,8 @@ if (ClearButton) {
 }
 
 if (DurationInput) DurationInput.addEventListener("change", autofillPrice);
+// A different kind switches the price area (tariff output vs hand-typed input).
+if (KindInput) KindInput.addEventListener("change", syncKindPricing);
 if (AutoTypeInput) {
   AutoTypeInput.addEventListener("change", () => {
     autofillPrice();
@@ -535,9 +707,15 @@ function init() {
   if (CreationDateInput) CreationDateInput.value = datetimeLocalNow();
   if (DurationInput) DurationInput.value = DurationOptions[1];
   syncLangButton();
-  syncBrokerMode();
+  // Paint the (fallback) kinds at once so the select is never empty, then
+  // replace them with the server's list when it answers.
+  renderInsuranceKinds();
+  syncKindPricing();
   loadBrokers();
   loadPricing();
+  // The server's list may name another default kind; make the price area follow
+  // whatever the select ends up on.
+  loadInsuranceKinds().then(syncKindPricing);
 }
 
 init();

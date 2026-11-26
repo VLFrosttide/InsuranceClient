@@ -95,6 +95,9 @@ function checkPositive(amount, reason) {
 }
 
 const STUBS = {
+  // The real kinds module (border / medical / civil), so the create, edit and
+  // annul rules are exercised for real instead of being stubbed.
+  "./InsuranceKinds.js": require(serverFile("Requests", "InsuranceKinds.js")),
   express: new Proxy(
     {},
     {
@@ -1031,11 +1034,11 @@ async function patch(body, opts = {}) {
       inserts,
       // Column order of the real INSERT:
       //   Author, CreationDate, PolicyNumber, BlancNumber, CarNumber, Price,
-      //   CurrencyType, Duration, Broker, Branch, Otomobil, PaymentType,
+      //   CurrencyType, Duration, Broker, Branch, Otomobil, Kind, PaymentType,
       //   StartDate, BrokerId, NonTurk, CardFee
-      // so PaymentType is index 11 and CardFee index 15.
-      storedPayment: inserts.length ? inserts[0].params[11] : undefined,
-      storedCardFee: inserts.length ? inserts[0].params[15] : undefined,
+      // so PaymentType is index 12 and CardFee index 16.
+      storedPayment: inserts.length ? inserts[0].params[12] : undefined,
+      storedCardFee: inserts.length ? inserts[0].params[16] : undefined,
     };
   }
 
@@ -1163,13 +1166,13 @@ async function patch(body, opts = {}) {
       NonTurk: false,
     });
     eq(r.status, 201, "status");
-    eq(r.inserts[0].params[14], 0, "stored NonTurk");
+    eq(r.inserts[0].params[15], 0, "stored NonTurk");
   });
 
   await check("a walk-in keeps the non-Turk tax", async () => {
     const r = await create({ PaymentType: "Cash", EmailFrom: "", NonTurk: true });
     eq(r.status, 201, "status");
-    eq(r.inserts[0].params[14], 1, "stored NonTurk");
+    eq(r.inserts[0].params[15], 1, "stored NonTurk");
   });
 
   await check("an email from an unknown sender is rejected", async () => {
@@ -1228,14 +1231,19 @@ async function patch(body, opts = {}) {
   // -------------------------------------------------------------------------
   // Walk-ins record their branch as the broker.
   //
-  // With the CreationDate column in the INSERT, Broker is the 9th bound value
-  // (index 8) and BrokerId the 14th (index 13).
+  // With the CreationDate and Kind columns in the INSERT, Broker is the 9th
+  // bound value (index 8) and BrokerId the 15th (index 14).
   // -------------------------------------------------------------------------
   await check("a walk-in records its branch as the broker", async () => {
     const r = await create({ PaymentType: "Cash", EmailFrom: "" });
     eq(r.status, 201, "status");
     eq(r.inserts[0].params[8], "Офис Харманли", "stored broker");
-    eq(r.inserts[0].params[13], null, "BrokerId stays empty");
+    eq(
+      r.inserts[0].params[11],
+      "border",
+      "the worker form only sells border insurance"
+    );
+    eq(r.inserts[0].params[14], null, "BrokerId stays empty");
     eq(r.brokerDeltas, [], "no broker balance is charged");
   });
 
@@ -1253,7 +1261,7 @@ async function patch(body, opts = {}) {
     });
     eq(r.status, 201, "status");
     eq(r.inserts[0].params[8], "Euroins", "stored broker");
-    eq(r.inserts[0].params[13], 7, "BrokerId");
+    eq(r.inserts[0].params[14], 7, "BrokerId");
   });
 
   await check("moving a walk-in to another branch moves its broker too", async () => {

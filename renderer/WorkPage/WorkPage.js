@@ -2396,6 +2396,99 @@ function editFlag(value) {
   return value === true || value === 1 || value === "1";
 }
 
+// ---------------------------------------------------------------------------
+// Kinds of insurance (border / medical / civil)
+// ---------------------------------------------------------------------------
+// The list and the rules live on the server (Requests/InsuranceKinds.js, served
+// by GET /insurance-kinds). The fallback keeps the labels and the edit dropdown
+// usable until that answer arrives; a kind the client does not know is shown
+// with the server's own label.
+const BORDER_KIND = "border";
+const FALLBACK_INSURANCE_KINDS = [
+  {
+    value: "border",
+    label: "Border insurance",
+    labelBg: "Гранична застраховка",
+    allowed: true,
+  },
+  {
+    value: "medical",
+    label: "Medical insurance",
+    labelBg: "Медицинска застраховка",
+    allowed: true,
+  },
+  {
+    value: "civil",
+    label: "Civil liability",
+    labelBg: "Гражданска отговорност",
+    allowed: true,
+  },
+];
+
+let insuranceKinds = FALLBACK_INSURANCE_KINDS;
+let insuranceKindsRequest = null;
+
+// Fetch the list once per session; concurrent callers share the request. A
+// failure is not fatal - the fallback list and the shared labels still work.
+function loadInsuranceKinds() {
+  if (insuranceKindsRequest) return insuranceKindsRequest;
+  insuranceKindsRequest = api("/insurance-kinds")
+    .then((data) => {
+      const kinds = Array.isArray(data && data.kinds) ? data.kinds : [];
+      if (kinds.length) insuranceKinds = kinds;
+      return insuranceKinds;
+    })
+    .catch((err) => {
+      console.warn("Failed to load insurance kinds:", err);
+      return insuranceKinds;
+    })
+    .finally(() => {
+      insuranceKindsRequest = null;
+    });
+  return insuranceKindsRequest;
+}
+
+// The stored value of a kind. A missing or blank value is a border insurance -
+// the server's column default is the rule, so nothing is guessed here.
+function normalizeKind(value) {
+  return String(value || "").trim().toLowerCase() || BORDER_KIND;
+}
+
+// The stored kind of a policy row.
+function policyKindOf(insurance) {
+  return normalizeKind(insurance && insurance.Kind);
+}
+
+// The label of a stored kind, in the language on screen.
+function policyKindLabel(value) {
+  const stored = normalizeKind(value);
+  const translated = t("kind." + stored, "");
+  if (translated) return translated;
+  const def = insuranceKinds.find((k) => k && String(k.value) === stored);
+  if (!def) return stored;
+  return getLang() === "bg" ? def.labelBg || def.label : def.label || def.labelBg;
+}
+
+// Border insurance is priced from the tariff grid. Medical insurance and civil
+// liability have no tariff rows: their price is typed by hand (the add form and
+// the edit form both stop recalculating it).
+function kindUsesTariffs(value) {
+  return normalizeKind(value) === BORDER_KIND;
+}
+
+// Options of the edit form's kind dropdown: every kind the caller may use, plus
+// the stored one, so merely opening a policy never changes its kind.
+function editKindOptions(current) {
+  const stored = normalizeKind(current);
+  const options = insuranceKinds
+    .filter((k) => k && k.value && k.allowed !== false)
+    .map((k) => ({ label: policyKindLabel(k.value), value: String(k.value) }));
+  if (!options.some((o) => o.value === stored)) {
+    options.push({ label: policyKindLabel(stored), value: stored });
+  }
+  return options;
+}
+
 // Duration dropdown options (values in days). A stored duration that is not
 // one of the standard ones is kept as an extra option, so opening the editor
 // never changes it silently.
@@ -2489,6 +2582,13 @@ function wireEditPriceRecalc(form, insurance) {
   const durationInput = control("Duration");
   const vehicleInput = control("Otomobil");
   if (!priceInput || !durationInput || !vehicleInput) return;
+  // The kind decides whether the tariff grid applies at all. A medical or civil
+  // liability policy has no tariff rows: its price is typed by hand and must
+  // never be overwritten by a grid lookup (the Kind field exists on the dialog,
+  // but a dialog built without it (worker) still means "whatever is stored").
+  const kindInput = control("Kind");
+  const usesTariffs = () =>
+    kindInput ? kindUsesTariffs(kindInput.value) : kindUsesTariffs(insurance.Kind);
   const branchInput = control("Branch");
   // The broker picked in the form (admins only: the field exists for them). A
   // reassignment therefore recalculates from the NEW broker's tariffs instead
@@ -2545,6 +2645,11 @@ function wireEditPriceRecalc(form, insurance) {
   // hand-corrected price is kept as well. The server moves current cash / the
   // card balance by the price difference.
   function onFeesChanged() {
+    // A hand-priced policy (medical / civil) has no fees to shift.
+    if (!usesTariffs()) {
+      appliedFees = selectedFees();
+      return;
+    }
     const fees = selectedFees();
     let delta = 0;
     if (fees.nonTurk !== appliedFees.nonTurk) {
@@ -2571,6 +2676,9 @@ function wireEditPriceRecalc(form, insurance) {
   let latest = 0;
 
   async function recalc() {
+    // Medical / civil liability policies are priced by hand: leave the typed
+    // price alone whatever the vehicle type or duration says.
+    if (!usesTariffs()) return;
     const request = ++latest;
     const branch = String(
       branchInput ? branchInput.value : insurance.Branch ?? ""
@@ -2606,6 +2714,9 @@ function wireEditPriceRecalc(form, insurance) {
 
   durationInput.addEventListener("change", recalc);
   vehicleInput.addEventListener("change", recalc);
+  // Switching a policy back to border insurance prices it from the grid again;
+  // switching it to medical / civil leaves the hand-typed price untouched.
+  if (kindInput) kindInput.addEventListener("change", recalc);
   if (nonTurkInput) nonTurkInput.addEventListener("change", onFeesChanged);
   if (paymentInput) {
     paymentInput.addEventListener("change", applyCardFeeGating);
@@ -2771,6 +2882,18 @@ function openInsuranceEditor(insurance, onDone) {
     insurance.BrokerId !== "";
 
   const spec = [
+    // Which product the policy is (border / medical / civil). Only an admin may
+    // change it - the server refuses a worker's change - so a worker sees the
+    // stored value in a disabled select. A save that sends the unchanged kind is
+    // a no-op on the server.
+    {
+      key: "Kind",
+      label: t("add.kind"),
+      type: "select",
+      options: editKindOptions(insurance.Kind),
+      value: normalizeKind(insurance.Kind),
+      disabled: userRole !== "1",
+    },
     {
       key: "PolicyNumber",
       label: t("add.policyNumber"),
@@ -2888,7 +3011,12 @@ function openInsuranceEditor(insurance, onDone) {
   // server moves current cash / the card balance by the difference. Only
   // applies to walk-ins: email policies are broker-paid and the non-Turk tax
   // is a walk-in charge.
-  if (!isEmailPolicy) {
+  //
+  // Both fees are border-tariff extras: a medical or civil liability policy is
+  // priced by hand, so it gets neither field (an admin may still switch such a
+  // policy back to border, after which the price is typed again from the grid
+  // on the next edit).
+  if (!isEmailPolicy && kindUsesTariffs(insurance.Kind)) {
     spec.push({
       key: "NonTurk",
       label: t("add.nonTurk"),
@@ -7640,7 +7768,7 @@ function applyBrokerNameFilterToRows(rows, query) {
 
 
 async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insurancesByDate") {
-  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&annulled=&payment=
+  // Admin/worker filtered list: GET /insurances?author=&date=&policyNumber=&blancNumber=&carNumber=&broker=&kind=&annulled=&payment=
   // All fields are optional, but at least one must be filled in to search. Any
   // single criteria (or any combination of them) can be used.
   // The author field is intentionally empty by default so a search by, e.g.,
@@ -7688,6 +7816,18 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   );
   const annulledInput = input("checkbox");
   annulledInput.checked = Boolean(savedSearch && savedSearch.annulled);
+  // Kind of policy (border insurance / medical insurance / civil liability).
+  // The server filters on `?kind=`; an empty value means "any kind".
+  const kindInput = select(
+    [
+      { label: "", value: "" },
+      ...insuranceKinds.map((k) => ({
+        label: policyKindLabel(k.value),
+        value: String(k.value),
+      })),
+    ],
+    initial("kind")
+  );
 
   // Autocomplete for the free-text filters is attached after the inputs are
   // wrapped in their .field containers (see below): the dropdown is positioned
@@ -7705,6 +7845,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
   form.appendChild(field(t("policyNumber"), policyNumberInput));
   form.appendChild(field(t("blankNo"), blancNumberInput));
   form.appendChild(field(t("carNumber"), carNumberInput));
+  form.appendChild(field(t("add.kind"), kindInput));
   form.appendChild(field(t("payment"), paymentInput));
   // Checkboxes are the shared pill toggle (see checkboxToggle), so the caption
   // sits INSIDE the outlined pill like every other checkbox in the app instead
@@ -7847,6 +7988,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       blancNumber: blancNumberInput.value,
       carNumber: carNumberInput.value,
       payment: paymentInput.value,
+      kind: kindInput.value,
       annulled: annulledInput.checked,
       includeDeleted: Boolean(
         includeDeletedInput && includeDeletedInput.checked
@@ -7914,6 +8056,15 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
           { key: "BlancNumber", label: t("blankNo") },
           { key: "PolicyNumber", label: t("policyNumber") },
           { key: "CarNumber", label: t("carNumber") },
+          // The product the policy is (border / medical / civil). A row written
+          // before the Kind column existed is a border insurance (see
+          // policyKindOf).
+          {
+            key: "Kind",
+            label: t("add.kind"),
+            format: (_v, item) => policyKindLabel(policyKindOf(item)),
+            ...sortHeader("Kind"),
+          },
           // The policy's term, in the same shift-log shorthand the Excel export
           // uses (15D / 1M / 3M), so a row and its exported sheet always agree.
           {
@@ -8060,6 +8211,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     const blancNumber = blancNumberInput.value.trim();
     const carNumber = carNumberInput.value.trim();
     const payment = paymentInput.value;
+    const kind = String(kindInput.value || "").trim();
     const annulled = annulledInput.checked;
 
     if (
@@ -8070,6 +8222,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
       !blancNumber &&
       !carNumber &&
       !payment &&
+      !kind &&
       !annulled
     ) {
       toast(t("searchCriteriaRequired"), "error");
@@ -8093,6 +8246,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     if (blancNumber) params.set("blancNumber", blancNumber);
     if (carNumber) params.set("carNumber", carNumber);
     if (payment) params.set("payment", payment);
+    if (kind) params.set("kind", kind);
     if (annulled) params.set("annulled", "1");
     if (includeDeletedInput && includeDeletedInput.checked) {
       params.set("includeDeleted", "1");
@@ -8183,6 +8337,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     carNumberInput,
   ].forEach((inp) => inp.addEventListener("input", rememberSearch));
   paymentInput.addEventListener("change", rememberSearch);
+  kindInput.addEventListener("change", rememberSearch);
   annulledInput.addEventListener("change", rememberSearch);
   if (includeDeletedInput) {
     includeDeletedInput.addEventListener("change", rememberSearch);
@@ -8195,6 +8350,7 @@ async function adminInsurancesByDate(defaultAuthor = "", titleKey = "nav.insuran
     blancNumberInput.value = "";
     carNumberInput.value = "";
     paymentInput.value = "";
+    kindInput.value = "";
     annulledInput.checked = false;
     if (includeDeletedInput) includeDeletedInput.checked = false;
     // Clearing drops the results, so the sort order is reset with them: the
@@ -8269,6 +8425,7 @@ function insuranceExportSheet(rows, canSeePrice) {
     { label: t("blankNo"), width: 14 },
     { label: t("policyNumber"), width: 18 },
     { label: t("carNumber"), width: 14 },
+    { label: t("add.kind"), width: 22 },
     { label: t("add.duration"), width: 9 },
     { label: t("price"), width: 10 },
     { label: t("currency"), width: 9 },
@@ -8291,6 +8448,7 @@ function insuranceExportSheet(rows, canSeePrice) {
       text(r.BlancNumber),
       text(r.PolicyNumber),
       text(r.CarNumber),
+      policyKindLabel(policyKindOf(r)),
       insuranceDurationLabel(r.Duration),
       showPrice && Number.isFinite(price)
         ? { value: price, style: "money" }
@@ -10006,6 +10164,12 @@ function profitReport(insurances, settings, from, to) {
     // Policies of the period in another currency: they are left out of every
     // figure above, so the view can say how many there are.
     otherCurrency: 0,
+    // Medical insurance and civil liability policies of the period. This report
+    // is the border tariff's margin (the Bulins price list is per vehicle type
+    // and duration), and those products have no tariff rows - their price is
+    // typed by hand - so they are counted here and left out of the figures
+    // rather than being measured against a border price.
+    otherKind: 0,
   };
 
   const dayBuckets = new Map();
@@ -10022,6 +10186,11 @@ function profitReport(insurances, settings, from, to) {
     if (!day) continue;
     if (start && day < start) continue;
     if (end && day > end) continue;
+    // Only the tariff-priced product belongs in this report (see otherKind).
+    if (!kindUsesTariffs(policy.Kind)) {
+      report.otherKind += 1;
+      continue;
+    }
     const policyCurrency = String(policy.CurrencyType || "EUR").toUpperCase();
     if (policyCurrency !== currency) {
       report.otherCurrency += 1;
@@ -10368,6 +10537,13 @@ function profitReportNodes(report) {
   if (report.otherCurrency > 0) {
     nodes.push(
       el("p", fmt(t("profits.otherCurrency"), { n: report.otherCurrency }), {
+        class: "muted profit-period-line",
+      })
+    );
+  }
+  if (report.otherKind > 0) {
+    nodes.push(
+      el("p", fmt(t("profits.otherKind"), { n: report.otherKind }), {
         class: "muted profit-period-line",
       })
     );
@@ -10882,6 +11058,9 @@ async function init() {
   fetchUnreadEmails();
   initializeBrokerPricing();
   loadBrokerCodes();
+  // The kinds (border / medical / civil) label the policy tables and the edit
+  // dropdown; the fallback list covers the moment before the answer arrives.
+  loadInsuranceKinds();
   loadEnabledBranches();
 
   // The shift reminder's "Finish shift" button on the insurance form stores a

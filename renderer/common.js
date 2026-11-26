@@ -132,6 +132,8 @@ const I18N = {
       "{n} counted policies have no Bulins price for their type and duration: their income is counted as profit.",
     "profits.otherCurrency":
       "{n} policies in the period are in another currency and are not included - switch the currency above to report them.",
+    "profits.otherKind":
+      "{n} medical / civil liability policies in the period are not part of this report: they are priced by hand, not from the border tariff.",
     "profits.dailyReport": "Daily report",
     "profits.monthlyReport": "Monthly report",
     "profits.statistics": "Statistics",
@@ -724,9 +726,19 @@ const I18N = {
     "add.duration": "Duration",
     "add.branch": "Branch",
     "add.vehicleType": "Vehicle type",
+    "add.kind": "Insurance kind",
+    // The kinds (products) an insurance can be. The list itself lives on the
+    // server (Requests/InsuranceKinds.js, served by GET /insurance-kinds).
+    "kind.border": "Border insurance",
+    "kind.medical": "Medical insurance",
+    "kind.civil": "Civil liability",
     "add.startDate": "Starting date",
     "add.startDateRequired": "Starting date is required",
     "add.price": "Price",
+    "add.manualPrice": "Price (entered by hand)",
+    "add.manualPriceHint":
+      "Medical insurance and civil liability are not priced from the tariff grid - type the price in.",
+    "add.manualPriceRequired": "Type the price of this insurance",
     "add.priceUnavailable":
       "There is no tariff for this vehicle type and duration - the policy cannot be saved.",
     "add.priceLoading": "The price is still loading - try again in a moment.",
@@ -923,6 +935,9 @@ const I18N = {
     "err.emailBrokerOnly": "Email policies are paid from the broker balance only",
     "err.onlyEmailBroker": "Only email policies can be paid from a broker balance",
     "err.nonTurkWalkInOnly": "The non-Turk tax only applies to walk-in policies",
+    "err.adminOnlyKindCreate": "Only admins can create this kind of insurance",
+    "err.adminOnlyKindEdit": "Only admins can edit this kind of insurance",
+    "err.adminOnlyKindAnnul": "Only admins can annul this kind of insurance",
     "err.senderNotBroker": "The email sender is not linked to a broker",
     "err.brokerNegativeBalance":
       "Broker request rejected: the broker balance would go negative",
@@ -1102,6 +1117,8 @@ const I18N = {
       "{n} отчетени полици нямат цена на Булинс за своя вид и продължителност: приходът им се брои като печалба.",
     "profits.otherCurrency":
       "{n} полици в периода са в друга валута и не са включени - сменете валутата по-горе, за да ги отчетете.",
+    "profits.otherKind":
+      "{n} медицински / граждански застраховки в периода не участват в справката: цената им се въвежда ръчно, не по граничната тарифа.",
     "profits.dailyReport": "Дневен отчет",
     "profits.monthlyReport": "Месечен отчет",
     "profits.statistics": "Статистика",
@@ -1692,9 +1709,17 @@ const I18N = {
     "add.duration": "Срок",
     "add.branch": "Клон",
     "add.vehicleType": "Вид превозно средство",
+    "add.kind": "Вид застраховка",
+    "kind.border": "Гранична застраховка",
+    "kind.medical": "Медицинска застраховка",
+    "kind.civil": "Гражданска отговорност",
     "add.startDate": "Начална дата",
     "add.startDateRequired": "Началната дата е задължителна",
     "add.price": "Цена",
+    "add.manualPrice": "Цена (въведена ръчно)",
+    "add.manualPriceHint":
+      "Медицинските и гражданските застраховки не се таксуват по тарифа - въведете цената ръчно.",
+    "add.manualPriceRequired": "Въведете цената на тази застраховка",
     "add.priceUnavailable":
       "Няма тарифа за този вид превозно средство и срок - застраховката не може да бъде записана.",
     "add.priceLoading": "Цената още се зарежда - опитайте отново след малко.",
@@ -1895,6 +1920,12 @@ const I18N = {
     "err.emailBrokerOnly": "Имейл полиците се плащат само от баланса на брокера",
     "err.onlyEmailBroker": "Само имейл полици могат да се плащат от баланс на брокер",
     "err.nonTurkWalkInOnly": "Данъкът за чужденци важи само за полици на място",
+    "err.adminOnlyKindCreate":
+      "Само администратори могат да създават този вид застраховка",
+    "err.adminOnlyKindEdit":
+      "Само администратори могат да редактират този вид застраховка",
+    "err.adminOnlyKindAnnul":
+      "Само администратори могат да анулират този вид застраховка",
     "err.senderNotBroker": "Подателят на имейла не е свързан с брокер",
     "err.brokerNegativeBalance":
       "Заявката на брокера е отхвърлена: балансът на брокера ще стане отрицателен",
@@ -2055,6 +2086,15 @@ const SERVER_ERROR_TRANSLATIONS = {
   "Only admins can restore an annulled insurance": "err.onlyAdminRestoreAnnul",
   "Only admins can change the author of an insurance": "err.onlyAdminAuthor",
   "Only admins can change the broker of an insurance": "err.onlyAdminBroker",
+  // Medical insurance and civil liability are admin-only products
+  // (Requests/InsuranceKinds.js on the server): creating, editing and annulling
+  // one is refused for workers with these messages.
+  "Only admins can create medical insurance": "err.adminOnlyKindCreate",
+  "Only admins can create civil liability": "err.adminOnlyKindCreate",
+  "Only admins can edit medical insurance": "err.adminOnlyKindEdit",
+  "Only admins can edit civil liability": "err.adminOnlyKindEdit",
+  "Only admins can annul medical insurance": "err.adminOnlyKindAnnul",
+  "Only admins can annul civil liability": "err.adminOnlyKindAnnul",
   "Cannot change the broker of an annulled insurance":
     "err.brokerChangeAnnulled",
   "Author is required": "err.authorRequired",

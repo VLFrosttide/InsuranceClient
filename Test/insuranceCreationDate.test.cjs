@@ -40,6 +40,9 @@ const fakeRouter = {
 };
 
 const STUBS = {
+  // The real kinds module (border / medical / civil), so the create, edit and
+  // annul rules are exercised for real instead of being stubbed.
+  "./InsuranceKinds.js": require(serverFile("Requests", "InsuranceKinds.js")),
   express: new Proxy(
     {},
     {
@@ -274,12 +277,13 @@ async function create(body) {
 
   await check("the other bound values keep their positions", async () => {
     const r = await create({ TzOffset: 180 });
-    eq(r.insert.params.length, 16, "param count");
+    eq(r.insert.params.length, 17, "param count");
     eq(r.insert.params[0], "worker1", "Author");
     eq(r.insert.params[3], "7654321", "BlancNumber");
     eq(r.insert.params[8], "Офис Харманли", "Broker (the branch, for walk-ins)");
-    eq(r.insert.params[11], "Cash", "PaymentType");
-    eq(r.insert.params[15], 0, "CardFee");
+    eq(r.insert.params[11], "border", "Kind (the worker form has no selector)");
+    eq(r.insert.params[12], "Cash", "PaymentType");
+    eq(r.insert.params[16], 0, "CardFee");
   });
 
   // --- creation time computed by the client ---------------------------------

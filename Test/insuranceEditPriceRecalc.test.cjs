@@ -75,6 +75,8 @@ const CTX = {
   // workers; these tests exercise the admin (role "1") editing path.
   userRole: "1",
   t: (key, fallback) => (fallback !== undefined ? fallback : key),
+  // The kind labels fall back to the server's language-specific label.
+  getLang: () => "bg",
   buildForm: (spec) => {
     lastSpec = spec;
     const controls = {};

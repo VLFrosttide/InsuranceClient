@@ -29,6 +29,10 @@
       <form id="InsuranceForm" autocomplete="off">
         <div class="form-grid">
           <div class="field">
+            <label for="KindInput" data-i18n="add.kind">Вид застраховка</label>
+            <select id="KindInput" class="FormInput"></select>
+          </div>
+          <div class="field">
             <label for="CarNumberInput" data-i18n="add.carNumber"
               >Номер автомобил</label
             >
@@ -93,7 +97,7 @@
             >
             <input id="CreationDateInput" class="FormInput" type="datetime-local" />
           </div>
-          <div class="field">
+          <div class="field" id="TariffPriceField">
             <span class="field-label" data-i18n="add.price">Цена</span>
             <output
               id="TotalPriceDisplay"
@@ -101,6 +105,26 @@
               aria-live="polite"
               >…</output
             >
+          </div>
+          <!-- Medical insurance and civil liability are not priced from the
+               tariff grid: the admin types the amount. Shown instead of the
+               tariff output above (see syncKindPricing). -->
+          <div class="field hidden" id="ManualPriceField">
+            <label for="ManualPriceInput" data-i18n="add.manualPrice"
+              >Цена (въведена ръчно)</label
+            >
+            <input
+              id="ManualPriceInput"
+              class="FormInput ClearForm"
+              type="number"
+              min="0"
+              step="0.01"
+              inputmode="decimal"
+            />
+            <div class="field-note muted" data-i18n="add.manualPriceHint">
+              Медицинските и гражданските застраховки не се таксуват по тарифа -
+              въведете цената ръчно.
+            </div>
           </div>
           <div class="field">
             <label for="CurrencyInput" data-i18n="add.currency">Валута</label>

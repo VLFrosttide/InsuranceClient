@@ -269,6 +269,9 @@ const fakeDb = {
 };
 
 const STUBS = {
+  // The real kinds module (border / medical / civil), so the create, edit and
+  // annul rules are exercised for real instead of being stubbed.
+  "./InsuranceKinds.js": require(serverFile("Requests", "InsuranceKinds.js")),
   express: new Proxy(
     {},
     {

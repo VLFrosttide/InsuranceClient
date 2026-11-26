@@ -12,7 +12,10 @@
 //   - a broker assignment stores BrokerId + Broker name + PaymentType "Broker"
 //     and calls decreaseBrokerForInsurance with that broker and createdAt,
 //   - a walk-in (no broker) stores the branch as the broker and never charges a
-//     broker balance.
+//     broker balance,
+//   - the kind of insurance (border / medical / civil) is optional and defaults
+//     to border; an admin may create the admin-only medical and civil kinds and
+//     an unknown kind is rejected without writing anything.
 //
 // Run with:  node Test/adminInsuranceCreate.test.cjs   (or: npm test)
 
@@ -45,6 +48,9 @@ const fakeRouter = {
 };
 
 const STUBS = {
+  // The real kinds module (border / medical / civil), so the create, edit and
+  // annul rules are exercised for real instead of being stubbed.
+  "./InsuranceKinds.js": require(serverFile("Requests", "InsuranceKinds.js")),
   express: new Proxy(
     {},
     {
@@ -198,7 +204,7 @@ function ok(cond, msg) {
 
 // Column order of the INSERT:
 //   Author, CreationDate, PolicyNumber, BlancNumber, CarNumber, Price,
-//   CurrencyType, Duration, Broker, Branch, Otomobil, PaymentType,
+//   CurrencyType, Duration, Broker, Branch, Otomobil, Kind, PaymentType,
 //   StartDate, BrokerId, NonTurk, CardFee
 async function create(body, opts) {
   queries.length = 0;
@@ -254,8 +260,8 @@ async function create(body, opts) {
     const p = r.insert.params;
     eq(p[1], "2026-10-01 09:30:00", "creation date");
     eq(p[8], BROKER.Name, "broker name");
-    eq(p[11], "Broker", "payment type");
-    eq(p[13], 5, "broker id");
+    eq(p[12], "Broker", "payment type");
+    eq(p[14], 5, "broker id");
     eq(brokerCharges.length, 1, "broker charged once");
     eq(brokerCharges[0].brokerId, 5, "charged broker");
     eq(brokerCharges[0].meta.createdAt, "2026-10-01 09:30:00", "movement date");
@@ -275,10 +281,44 @@ async function create(body, opts) {
     eq(r.status, 201, "status");
     const p = r.insert.params;
     eq(p[8], "Офис Харманли", "broker column is the branch");
-    eq(p[11], "Cash", "payment type");
-    eq(p[13], null, "no broker id");
+    eq(p[12], "Cash", "payment type");
+    eq(p[14], null, "no broker id");
     eq(brokerCharges.length, 0, "no broker charge");
     eq(movements.map((m) => m.channel), ["Cash"], "cash channel");
+  });
+
+  await check("a policy created without a kind is a border insurance", async () => {
+    const r = await create({});
+    eq(r.status, 201, "status");
+    const p = r.insert.params;
+    eq(p[11], "border", "stored kind");
+    eq(r.body && r.body.kind, "border", "the answer names the kind");
+  });
+
+  await check("an admin can create medical and civil liability policies", async () => {
+    // The kind arrives as the stored value or as either label, and is stored as
+    // the value (Requests/InsuranceKinds.js).
+    const medical = await create({ Kind: "medical" });
+    eq(medical.status, 201, "medical status");
+    eq(medical.insert.params[11], "medical", "stored medical kind");
+
+    const civil = await create({ Kind: "Civil liability" });
+    eq(civil.status, 201, "civil status");
+    eq(civil.insert.params[11], "civil", "the English label is normalised");
+
+    const bgLabel = await create({ InsuranceKind: "Медицинска застраховка" });
+    eq(bgLabel.status, 201, "Bulgarian label status");
+    eq(bgLabel.insert.params[11], "medical", "the Bulgarian label is normalised");
+  });
+
+  await check("an unknown kind is rejected and nothing is written", async () => {
+    const r = await create({ Kind: "life" });
+    eq(r.status, 400, "status");
+    ok(
+      String(r.body && r.body.error).startsWith("Kind must be one of"),
+      "error message: " + (r.body && r.body.error)
+    );
+    eq(r.insert, undefined, "nothing is inserted");
   });
 
   await check("an invalid broker id is rejected", async () => {
