@@ -4366,10 +4366,12 @@ async function currentCashView(overrideBranch, overrideDate) {
   fillBalanceCard(balanceCard, daily.availableCash || {});
   leftCol.appendChild(balanceCard);
 
-  // Cash from brokers: the money brokers handed over at this branch since its
-  // last reset. It is kept apart from the cash drawer above (a broker top-up
-  // no longer increases Available cash), so it is shown to everyone, admins
-  // included.
+  // Cash from brokers: the money brokers handed over at this branch on the
+  // picked day. A top-up counts on the date and time entered when it was
+  // recorded, so a historical correction stays on its own day instead of
+  // raising today's figure. It is kept apart from the cash drawer above (a
+  // broker top-up no longer increases Available cash) and is shown to everyone,
+  // admins included.
   const brokerCashCard = el("div", null, { class: "balance-card" });
   brokerCashCard.appendChild(el("h3", t("cashFromBrokers")));
   fillBalanceCard(brokerCashCard, data.brokerCash);
@@ -5200,6 +5202,11 @@ async function currentCashView(overrideBranch, overrideDate) {
   // it was received. Top-ups recorded before broker money was separated from
   // current cash were given a branch by the server's one-time migration, so they
   // are listed here too; a top-up the migration could not match stays out.
+  //
+  // The list and the Cash from brokers card above are the SAME money: the server
+  // sums the top-ups whose own date and time fall on the picked day, so a
+  // historical correction entered later with an earlier date appears on that
+  // earlier day (never today) and the two figures always agree.
   const brokerCashTable = sortableTable(
     data.brokerCashTransactions,
     [
@@ -5485,7 +5492,10 @@ async function currentCashView(overrideBranch, overrideDate) {
   const brokerCashSection = collapsibleSection(
     t("transactionsCashFromBrokers"),
     (data.brokerCashTransactions || []).length,
-    [brokerCashTable],
+    [
+      el("p", t("brokerCashTransactionsHint"), { class: "muted" }),
+      brokerCashTable,
+    ],
     undefined,
     "brokerCash"
   );

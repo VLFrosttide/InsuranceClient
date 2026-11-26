@@ -144,10 +144,32 @@ check("the bank account is admin-only and can hand money over", () => {
   ok(flat.includes("activateCashCard( bankCard, bankSection,"), "the bank card opens the bank section");
 });
 
+check("Cash from brokers list is the same money as the card", () => {
+  ok(
+    flat.includes(
+      'el("p", t("brokerCashTransactionsHint"), { class: "muted" })'
+    ),
+    "the day's top-up list carries a hint"
+  );
+  ok(
+    flatCommon.includes("card above shows the same top-ups"),
+    "the hint says the card and the list are the same money"
+  );
+  ok(
+    flatCommon.includes("a historical correction appears on its own day"),
+    "the hint says a backdated top-up stays on its own day"
+  );
+  ok(
+    !COMMON.includes("cashFromBrokersSinceReset"),
+    "the old since-last-reset figure is gone"
+  );
+});
+
 check("the new labels exist in both languages", () => {
   for (const key of [
     "cashInsurances",
     "cashInsurancesHint",
+    "brokerCashTransactionsHint",
     "bankAccount",
     "bankAccountHint",
     "bankHandOver",

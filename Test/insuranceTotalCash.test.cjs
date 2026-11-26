@@ -347,39 +347,51 @@ async function query(sql, params = []) {
   }
   if (
     s.startsWith(
-      "SELECT COALESCE(MAX(LastMovementId), 0) AS Marker FROM broker_cash_resets"
+      "SELECT CreatedAt FROM broker_cash_resets WHERE Branch = ? AND CreatedAt < ?"
     )
   ) {
-    const rows = tables.broker_cash_resets.filter((r) => r.Branch === p[0]);
-    return [[{ Marker: rows.reduce((m, r) => Math.max(m, r.LastMovementId), 0) }]];
+    const rows = tables.broker_cash_resets
+      .filter((r) => r.Branch === p[0] && r.CreatedAt < p[1])
+      .sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt)));
+    return [rows.length ? [{ CreatedAt: rows[0].CreatedAt }] : []];
   }
-  if (s.startsWith("SELECT COALESCE(MAX(id), 0) AS LastId")) {
-    const last = tables.broker_movements.reduce((m, r) => Math.max(m, r.id), 0);
-    return [[{ LastId: last }]];
+  if (s.startsWith("SELECT COALESCE(MAX(m.id), 0) AS ThroughId")) {
+    const [branch, from, to] = p;
+    const through = tables.broker_movements
+      .filter(
+        (m) =>
+          m.Type === "increase" &&
+          m.Deleted === 0 &&
+          Number(m.Amount) > 0 &&
+          m.Branch === branch &&
+          m.CreatedAt >= from &&
+          m.CreatedAt < to
+      )
+      .reduce((max, m) => Math.max(max, Number(m.id) || 0), 0);
+    return [[{ ThroughId: through }]];
   }
   if (s.startsWith("SELECT m.Currency, ROUND(SUM(m.Amount), 2) AS Total")) {
     const totals = {};
     const isTopUp = (m) =>
       m.Type === "increase" && m.Deleted === 0 && Number(m.Amount) > 0;
-    // The daily report windows by CreatedAt (and optionally by branch).
-    if (s.includes("m.CreatedAt >= ? AND m.CreatedAt < ?")) {
-      const [from, to, only] = p;
-      for (const m of tables.broker_movements) {
-        if (!isTopUp(m) || m.Branch === null) continue;
-        if (m.CreatedAt < from || m.CreatedAt >= to) continue;
-        if (only !== undefined && m.Branch !== only) continue;
-        totals[m.Currency] = round((totals[m.Currency] || 0) + Number(m.Amount));
-      }
-      return [Object.entries(totals).map(([Currency, Total]) => ({ Currency, Total }))];
-    }
-    // The branch's live balance windows by movement id (reset marker).
-    const bounded = s.includes("AND m.id <= ?");
-    const after = Number(p[1]);
-    const through = bounded ? Number(p[2]) : Infinity;
+    // The daily report reads every branch (optionally one, passed last); a
+    // branch window passes the branch first and then its CreatedAt bounds. A
+    // movement counts by its own date - the same rule the server applies.
+    const dailyReport = s.includes("m.Branch IS NOT NULL");
+    const hasLower = s.includes("m.CreatedAt >= ?");
+    const hasUpper = s.includes("m.CreatedAt < ?");
+    const only = dailyReport ? p[2] : p[0];
+    const from = dailyReport ? p[0] : hasLower ? p[1] : "0000-00-00";
+    const to = dailyReport
+      ? p[1]
+      : hasUpper
+        ? p[2]
+        : "9999-12-31 23:59:59";
     for (const m of tables.broker_movements) {
-      if (!isTopUp(m) || m.Branch !== p[0]) continue;
-      if (m.id <= after || m.id > through) continue;
-      if (bounded && p[3] !== undefined && m.Currency !== p[3]) continue;
+      if (!isTopUp(m) || m.Branch === null) continue;
+      if (!(m.CreatedAt >= from)) continue;
+      if (!(m.CreatedAt < to)) continue;
+      if (only !== undefined && m.Branch !== only) continue;
       totals[m.Currency] = round((totals[m.Currency] || 0) + Number(m.Amount));
     }
     return [Object.entries(totals).map(([Currency, Total]) => ({ Currency, Total }))];
@@ -1308,13 +1320,14 @@ const ledger = () =>
     eq(r.code, 200, "status");
     eq(r.body.date, today, "defaults to today");
     eq(r.body.cardBalance, 70, "only the requested branch's card balance");
-    eq(seen.length, 11, "transactions + resets + cash from brokers + insurance lists queried");
+    eq(seen.length, 10, "transactions + resets + cash from brokers + insurance lists queried");
     // The day's history: cash movements, cash resets, card resets, the broker
-    // top-ups, the Cash from Brokers resets and the broker hand-overs.
+    // top-ups (the sum behind the card and the list itself), the Cash from
+    // Brokers resets and the broker hand-overs.
     const dayScoped = seen.filter(
       (q) => q.s.includes("CreatedAt < ?") && q.s.includes("Branch = ?")
     );
-    eq(dayScoped.length, 5, "one day-scoped query per branch history table");
+    eq(dayScoped.length, 6, "one day-scoped query per branch history table");
     for (const q of dayScoped) {
       eq(q.params, [BRANCH, today, CC.addDays(today, 1)], "day bounds: " + q.s);
     }
@@ -1357,16 +1370,27 @@ const ledger = () =>
       [BRANCH, today, CC.addDays(today, 1)],
       "broker insurance day bounds"
     );
-    // The branch's live Cash from Brokers: the reset marker and the top-up sum.
-    const branchScoped = seen.filter(
+    // Cash from brokers is a DAY figure: the sum of the picked day's top-ups,
+    // the same window the list below it uses. No reset marker is read - a
+    // top-up counts on the date it carries, not on the order it was entered.
+    const brokerCashQuery = seen.find(
       (q) =>
-        /broker_cash_resets|broker_balance_movements/.test(q.s) &&
-        !q.s.includes("CreatedAt >= ?")
+        /FROM broker_balance_movements/.test(q.s) &&
+        /SUM\(m\.Amount\)/.test(q.s)
     );
-    eq(branchScoped.length, 2, "cash from brokers balance + reset marker");
-    for (const q of branchScoped) {
-      eq(q.params[0], BRANCH, "branch: " + q.s);
-    }
+    ok(brokerCashQuery, "the day's cash from brokers queried");
+    eq(
+      brokerCashQuery.params,
+      [BRANCH, today, CC.addDays(today, 1)],
+      "cash from brokers day bounds"
+    );
+    eq(
+      seen.filter(
+        (q) => q.s.includes("broker_cash_resets") && !q.s.includes("CreatedAt >=")
+      ).length,
+      0,
+      "no reset marker is read"
+    );
 
     seen.length = 0;
     r = await call({ branch: BRANCH, tzOffset: "0", date: "2025-03-01" });
@@ -2046,14 +2070,42 @@ const ledger = () =>
 
     brokerTopUp(BRANCH, 100, "EUR");
 
-    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 100, TRY: 0 },
-      "the branch's cash from brokers");
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-20", "2026-10-21"),
+      { EUR: 100, TRY: 0 },
+      "the branch's cash from brokers on the day it carries"
+    );
     eq(await CC.getCurrentCash(fakeDb, BRANCH), cashBefore,
       "available cash does not move");
     eq(await CC.getTotalCash(fakeDb, BRANCH), totalBefore,
       "total cash does not move either");
-    eq(await CC.getBrokerCash(fakeDb, OTHER), { EUR: 0, TRY: 0 },
-      "another branch is not credited");
+    eq(
+      await CC.getBrokerCash(fakeDb, OTHER, "2026-10-20", "2026-10-21"),
+      { EUR: 0, TRY: 0 },
+      "another branch is not credited"
+    );
+  });
+
+  await check("a backdated top-up counts on its own day, never today", async () => {
+    resetTables();
+    // Entered now (a later id) but dated in October: a historical correction.
+    brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-31 15:41:00" });
+    brokerTopUp(BRANCH, 25, "EUR", { CreatedAt: "2026-11-26 09:00:00" });
+
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-11-26", "2026-11-27"),
+      { EUR: 25, TRY: 0 },
+      "today counts only today's top-up"
+    );
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-31", "2026-11-01"),
+      { EUR: 100, TRY: 0 },
+      "the correction stays on 31 October"
+    );
+    const rows = await CC.getBrokerCashTransactions(
+      fakeDb, BRANCH, "2026-11-26", "2026-11-27"
+    );
+    eq(rows.map((r) => r.Amount), [25], "and the day's list agrees");
   });
 
   await check("only manual top-ups of that day and branch are listed", async () => {
@@ -2078,31 +2130,59 @@ const ledger = () =>
     );
   });
 
-  await check("resetting clears Cash from Brokers and records what was kept", async () => {
+  await check("a reset records the period's top-ups and leaves older dates alone", async () => {
     resetTables();
+    // The branch cleared its broker money on 10 October: the period the reset
+    // below closes starts there.
+    tables.broker_cash_resets.push({
+      Branch: BRANCH,
+      Username: USER,
+      Currency: "EUR",
+      KeptAmount: 0,
+      LastMovementId: 0,
+      CreatedAt: "2026-10-10 23:00:00",
+    });
     brokerTopUp(BRANCH, 100, "EUR", { CreatedAt: "2026-10-20 10:00:00" });
     brokerTopUp(BRANCH, 40, "TRY", { CreatedAt: "2026-10-20 11:00:00" });
+    // A historical correction entered later with an older date: it belongs
+    // before the period, so this reset must never hand it over as kept.
+    brokerTopUp(BRANCH, 900, "EUR", { CreatedAt: "2026-10-01 09:00:00" });
     brokerTopUp(OTHER, 90, "EUR", { CreatedAt: "2026-10-20 12:00:00" });
 
     const kept = await CC.resetBrokerCash(
       fakeDb, BRANCH, USER, "2026-10-20 18:00:00"
     );
     eq(kept, { EUR: 100, TRY: 40 }, "kept amounts");
-    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 }, "balance cleared");
     eq(
-      tables.broker_cash_resets.map((r) => [
-        r.Branch, r.Currency, r.KeptAmount, r.CreatedAt,
-      ]),
+      tables.broker_cash_resets
+        .filter((r) => r.CreatedAt === "2026-10-20 18:00:00")
+        .map((r) => [r.Branch, r.Currency, r.KeptAmount, r.CreatedAt]),
       [[BRANCH, "EUR", 100, "2026-10-20 18:00:00"],
        [BRANCH, "TRY", 40, "2026-10-20 18:00:00"]],
       "resets recorded per currency"
     );
-    eq(await CC.getBrokerCash(fakeDb, OTHER), { EUR: 90, TRY: 0 },
-      "another branch keeps its money");
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-20", "2026-10-21"),
+      { EUR: 100, TRY: 40 },
+      "the day still shows the top-ups it brought in"
+    );
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-21", "2026-10-22"),
+      { EUR: 0, TRY: 0 },
+      "the next day starts empty"
+    );
+    eq(
+      await CC.getBrokerCash(fakeDb, OTHER, "2026-10-20", "2026-10-21"),
+      { EUR: 90, TRY: 0 },
+      "another branch keeps its money"
+    );
 
     brokerTopUp(BRANCH, 10, "EUR", { CreatedAt: "2026-10-21 09:00:00" });
-    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 10, TRY: 0 },
-      "a later top-up starts a new period");
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-21", "2026-10-22"),
+      { EUR: 10, TRY: 0 },
+      "a later top-up counts on its own day"
+    );
   });
 
 
@@ -2117,8 +2197,18 @@ const ledger = () =>
     eq(result.card, 30, "kept card balance");
     eq(result.brokerCash, { EUR: 50, TRY: 0 }, "kept cash from brokers");
     eq(await CC.getCurrentCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 }, "drawer cleared");
-    eq(await CC.getBrokerCash(fakeDb, BRANCH), { EUR: 0, TRY: 0 },
-      "cash from brokers cleared");
+    // Cash from brokers is a day figure: the reset hands the money over but the
+    // top-up still happened on its own day, so that day keeps showing it.
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-20", "2026-10-21"),
+      { EUR: 50, TRY: 0 },
+      "the day's top-ups stay on their day"
+    );
+    eq(
+      await CC.getBrokerCash(fakeDb, BRANCH, "2026-10-21", "2026-10-22"),
+      { EUR: 0, TRY: 0 },
+      "and nothing leaks into the next day"
+    );
   });
 
   await check("the Current cash tab lists the branch's top-ups of the day", async () => {
@@ -2131,7 +2221,7 @@ const ledger = () =>
     const call = routeCaller("/currentcash");
     const r = await call({ branch: BRANCH, date: "2026-10-20", tzOffset: "0" });
     eq(r.code, 200, "status");
-    eq(r.body.brokerCash, { EUR: 125, TRY: 50 }, "the branch's live balance");
+    eq(r.body.brokerCash, { EUR: 100, TRY: 50 }, "the picked day's top-ups");
     eq(
       r.body.brokerCashTransactions.map((t) => [t.Amount, t.Currency, t.Username]),
       [[50, "TRY", USER], [100, "EUR", USER]],

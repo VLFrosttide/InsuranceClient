@@ -510,7 +510,7 @@ const I18N = {
       "Delete transaction #{i} ({t} {a} {c} - {r})? It is kept in the database but hidden from the ledger, and its money is reversed on the drawer.",
     transactionDeleted: "Transaction deleted",
     resetConfirm:
-      "Reset this branch's current cash, card balance and cash from brokers to 0? This will record the kept amounts.",
+      "Reset this branch's current cash and card balance to 0? The cash from brokers of the period is recorded as kept and a new period starts.",
     fixShift: "Fix forgotten shift",
     fixShiftTitle: "Close a forgotten shift",
     fixShiftHint:
@@ -616,7 +616,7 @@ const I18N = {
     cardBalanceTotal: "Card balance (all branches)",
     cashFromBrokers: "Cash from brokers",
     cashFromBrokersHint:
-      "Money brokers handed over at this branch since its last reset. It is kept apart from the available cash, which no longer grows when a broker balance is increased.",
+      "Money brokers handed over at this branch on the picked day (top-ups of their balance). A top-up counts on the date and time entered when it was recorded - a historical correction stays on its own day, never on the day it was typed in.",
     unassignedBranch: "(no branch)",
 
     dailyReport: "Daily report",
@@ -666,6 +666,8 @@ const I18N = {
     totalCashFromBrokersHint:
       "Money brokers handed over on this day (broker balance top-ups). Refunds of annulled insurances are not counted.",
     transactionsCashFromBrokers: "Transactions cash from brokers",
+    brokerCashTransactionsHint:
+      "Manual broker balance top-ups received at this branch on the selected day. The \"Cash from brokers\" card above shows the same top-ups, so the two always add up to the same money; a top-up counts on the date entered when it was recorded, so a historical correction appears on its own day, not on the day it was typed in.",
 
     expenses: "Expenses",
     totalExpenses: "Total expenses",
@@ -1493,7 +1495,7 @@ const I18N = {
       "Да се изтрие ли транзакция #{i} ({t} {a} {c} - {r})? Тя ще остане в базата данни, но ще бъде скрита от регистъра, а сумата ѝ ще бъде сторнирана.",
     transactionDeleted: "Транзакцията е изтрита",
     resetConfirm:
-      "Да се нулират ли наличният кеш, балансът на картата и кешът от брокери на този клон? Ще бъдат записани задържаните суми.",
+      "Да се нулират ли наличният кеш и балансът на картата на този клон? Кешът от брокери за периода се записва като задържан и започва нов период.",
     fixShift: "Поправи забравена смяна",
     fixShiftTitle: "Затвори забравена смяна",
     fixShiftHint:
@@ -1613,7 +1615,7 @@ const I18N = {
     cardBalanceTotal: "Баланс карта (всички клонове)",
     cashFromBrokers: "Кеш от брокери",
     cashFromBrokersHint:
-      "Пари, предадени от брокери в този клон след последното нулиране. Те се отчитат отделно от наличния кеш, който вече не се увеличава при увеличаване на баланс на брокер.",
+      "Пари, предадени от брокери в този клон на избрания ден (увеличения на баланса им). Всяко увеличение се брои за датата и часа, въведени при записването му – историческа корекция остава на своя ден, а не на деня, в който е въведена.",
     unassignedBranch: "(без клон)",
 
     dailyReport: "Дневен отчет",
@@ -1663,6 +1665,8 @@ const I18N = {
     totalCashFromBrokersHint:
       "Пари, предадени от брокери на този ден (увеличения на баланс на брокер). Върнатите суми за анулирани застраховки не се броят.",
     transactionsCashFromBrokers: "Транзакции кеш от брокери",
+    brokerCashTransactionsHint:
+      "Ръчни увеличения на баланс на брокер, получени в този клон на избрания ден. Картата „Кеш от брокери“ по-горе показва същите увеличения, така че двете винаги дават една и съща сума; всяко увеличение се брои за датата, въведена при записването му, така че историческа корекция се показва на своя ден, а не на деня, в който е въведена.",
 
     expenses: "Разходи",
     totalExpenses: "Общо разходи",

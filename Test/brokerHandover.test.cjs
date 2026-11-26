@@ -288,35 +288,34 @@ const cashStubs = {
 const Cash = loadModule(serverFile("Requests", "CurrentCash.js"), cashStubs);
 
 const BRANCH = "Офис Харманли";
+const DAY = "2026-11-16";
 const cashLedger = [
   // A normal branch top-up: this IS Cash from Brokers.
-  { id: 1, BrokerId: 1, Amount: 100, Type: "increase", Branch: BRANCH, Currency: "EUR", Deleted: 0 },
+  { id: 1, BrokerId: 1, Amount: 100, Type: "increase", Branch: BRANCH, Currency: "EUR", CreatedAt: "2026-11-16 10:00:00", Deleted: 0 },
   // The owner took this one directly: it must not count.
-  { id: 2, BrokerId: 1, Amount: 500, Type: "handover", Branch: null, Currency: "EUR", Deleted: 0 },
+  { id: 2, BrokerId: 1, Amount: 500, Type: "handover", Branch: null, Currency: "EUR", CreatedAt: "2026-11-16 11:00:00", Deleted: 0 },
   // A surviving pre-split top-up without a branch is not Cash from Brokers either.
-  { id: 3, BrokerId: 2, Amount: 40, Type: "increase", Branch: null, Currency: "EUR", Deleted: 0 },
+  { id: 3, BrokerId: 2, Amount: 40, Type: "increase", Branch: null, Currency: "EUR", CreatedAt: "2026-11-16 12:00:00", Deleted: 0 },
 ];
 
 const cashFake = {
   async query(sql, params = []) {
     const s = flat(sql);
     const p = params || [];
-    if (s.startsWith("SELECT COALESCE(MAX(LastMovementId), 0) AS Marker FROM broker_cash_resets")) {
-      eq(p[0], BRANCH, "the branch is normalised and passed");
-      return [[{ Marker: 0 }]];
-    }
     if (
       s.startsWith(
         "SELECT m.Currency, ROUND(SUM(m.Amount), 2) AS Total FROM broker_balance_movements m WHERE m.Type = 'increase'"
       )
     ) {
+      const [branch, from, to] = p;
       const rows = cashLedger.filter(
         (m) =>
           m.Type === "increase" &&
           Number(m.Deleted) !== 1 &&
           Number(m.Amount) > 0 &&
-          m.Branch === p[0] &&
-          m.id > Number(p[1])
+          m.Branch === branch &&
+          m.CreatedAt >= from &&
+          m.CreatedAt < to
       );
       const byCurrency = {};
       for (const m of rows) {
@@ -535,7 +534,7 @@ const PATCH_MOVEMENT = "/brokers/:id/history/:movementId";
   });
 
   await check("Cash from Brokers counts top-ups only, never a hand-over", async () => {
-    const totals = await Cash.getBrokerCash(cashFake, BRANCH);
+    const totals = await Cash.getBrokerCash(cashFake, BRANCH, DAY, "2026-11-17");
     eq(totals, { EUR: 100, TRY: 0 }, "only the 100 EUR branch top-up");
   });
 

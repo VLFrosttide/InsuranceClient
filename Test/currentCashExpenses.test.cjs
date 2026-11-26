@@ -249,9 +249,6 @@ const row = (id, type, amount, currency, reason, recipient = null) => ({
       if (s.startsWith("SELECT i.*, b.Name AS BrokerName FROM insurance i")) {
         return [[]]; // no broker-funded policies on this day
       }
-      if (s.startsWith("SELECT COALESCE(MAX(LastMovementId), 0) AS Marker")) {
-        return [[{ Marker: 0 }]];
-      }
       if (s.startsWith("SELECT m.Currency, ROUND(SUM(m.Amount), 2) AS Total")) {
         return [[]];
       }

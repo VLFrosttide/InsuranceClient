@@ -155,29 +155,33 @@ function makeDb() {
       ];
     }
 
-    // Broker reset marker.
-    if (s.startsWith("SELECT COALESCE(MAX(LastMovementId), 0) AS Marker")) {
-      const branch = p[0];
-      const rows = db.brokerCashResets.filter((r) => r.Branch === branch);
-      const marker = rows.length
-        ? Math.max(...rows.map((r) => Number(r.LastMovementId) || 0))
-        : 0;
-      return [[{ Marker: marker }]];
+    // Broker period start: the time of the branch's last reset before the bound.
+    if (
+      s.startsWith(
+        "SELECT CreatedAt FROM broker_cash_resets WHERE Branch = ? AND CreatedAt < ?"
+      )
+    ) {
+      const [branch, before] = p;
+      const rows = db.brokerCashResets
+        .filter((r) => r.Branch === branch && r.CreatedAt < before)
+        .sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt)));
+      return [rows.length ? [{ CreatedAt: rows[0].CreatedAt }] : []];
     }
 
-    // Broker live / as-of / through.
+    // Broker live / as-of / through, all windowed by the movement's own date.
     if (s.includes("FROM broker_balance_movements m")) {
       const branch = p[0];
-      const afterId = Number(p[1]) || 0;
+      const hasLower = s.includes("m.CreatedAt >= ?");
+      const from = hasLower ? p[1] : null;
       const beforeCutoff = s.includes("m.CreatedAt < ?");
       const cut = beforeCutoff ? p[2] : null;
       const base = db.brokerMovements.filter(
         (m) =>
           m.Branch === branch &&
-          Number(m.id) > afterId &&
           m.Type === "increase" &&
           Number(m.Deleted) === 0 &&
           Number(m.Amount) > 0 &&
+          (!hasLower || m.CreatedAt >= from) &&
           (!beforeCutoff || m.CreatedAt < cut)
       );
       if (s.includes("COALESCE(MAX(m.id), 0) AS ThroughId")) {
