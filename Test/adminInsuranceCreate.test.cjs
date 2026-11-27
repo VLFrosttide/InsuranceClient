@@ -15,7 +15,10 @@
 //     broker balance,
 //   - the kind of insurance (border / medical / civil) is optional and defaults
 //     to border; an admin may create the admin-only medical and civil kinds and
-//     an unknown kind is rejected without writing anything.
+//     an unknown kind is rejected without writing anything,
+//   - a medical / civil policy may be created with blanks for the blanc, car and
+//     policy numbers (a MED-… / CIV-… reference is made up for each blank
+//     number), while border insurance still refuses a blank one.
 //
 // Run with:  node Test/adminInsuranceCreate.test.cjs   (or: npm test)
 
@@ -309,6 +312,49 @@ async function create(body, opts) {
     const bgLabel = await create({ InsuranceKind: "Медицинска застраховка" });
     eq(bgLabel.status, 201, "Bulgarian label status");
     eq(bgLabel.insert.params[11], "medical", "the Bulgarian label is normalised");
+  });
+
+  await check("medical and civil policies need no numbers - a reference is made", async () => {
+    // The admin form leaves the blanc / car / policy numbers empty for these
+    // hand-priced products. The blanc number is the primary key (and the edit /
+    // annul / delete URL), so the server makes one up, prefixed with the kind.
+    const medical = await create({
+      Kind: "medical",
+      BlancNumber: "",
+      PolicyNumber: "",
+      CarNumber: "",
+      Price: "120.00",
+    });
+    eq(medical.status, 201, "medical status");
+    const p = medical.insert.params;
+    ok(/^MED-\d{14}-[A-Z0-9]{4}$/.test(p[3]), "blanc reference: " + p[3]);
+    ok(/^MED-\d{14}-[A-Z0-9]{4}$/.test(p[2]), "policy reference: " + p[2]);
+    ok(p[2] !== p[3], "the two references differ");
+    eq(p[4], "", "no car number");
+    eq(p[5], "120.00", "the typed price is kept");
+    eq(medical.body.blancNumber, p[3], "the answer names the stored key");
+
+    const civil = await create({
+      Kind: "civil",
+      BlancNumber: "   ",
+      PolicyNumber: "",
+      CarNumber: "",
+      Price: "80.00",
+    });
+    eq(civil.status, 201, "civil status");
+    ok(/^CIV-\d{14}-[A-Z0-9]{4}$/.test(civil.insert.params[3]), "civil reference");
+  });
+
+  await check("border insurance still requires its three numbers", async () => {
+    for (const field of ["BlancNumber", "PolicyNumber", "CarNumber"]) {
+      const r = await create({ [field]: "  " });
+      eq(r.status, 400, field + " status");
+      ok(
+        String(r.body && r.body.error).startsWith(field + " is required"),
+        field + " message: " + (r.body && r.body.error)
+      );
+      eq(r.insert, undefined, field + ": nothing is inserted");
+    }
   });
 
   await check("an unknown kind is rejected and nothing is written", async () => {

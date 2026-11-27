@@ -2083,8 +2083,8 @@ function buildForm(spec, onSubmit, submitLabel) {
 // `actions` is an array (or a function returning one) of
 //   { label, class, onClick, hover?, icon? }
 // A normal action renders as a small button. One flagged `hover: true` renders
-// as an icon button (default "×") that stays invisible until the row is
-// hovered - see the row-hover-x rules in app.css.
+// as an icon button (default "×", or `icon` - the edit pencil "✎") that stays
+// invisible until the row is hovered - see the row-hover-x rules in app.css.
 //
 // `options.revealActions` additionally hides ALL of the row's action buttons
 // until the row is hovered or something inside it has the keyboard focus (the
@@ -2868,6 +2868,80 @@ async function openInsuranceEditorFor(insurance, onDone) {
   return openInsuranceEditor(insurance, onDone);
 }
 
+// ---------------------------------------------------------------------------
+// Editing the insurance behind a row of another tab
+//
+// The broker balance history, the Current cash ledger and the Reconcile
+// results all list rows that belong to a policy. Their hover "Edit insurance"
+// action corrects the POLICY (price, dates, payment type, …), never the ledger
+// row: the server keeps a policy's rows in step with the insurance (a broker
+// movement's amount is the policy's charge, a cash row's amount its price), so
+// correcting the policy is what actually changes the money.
+//
+// A row may carry only a part of the policy - a broker movement has just its
+// blanc number - so the stored insurance is re-read from the server before the
+// editor opens. That also means the modal always starts from the CURRENT
+// stored values: the editor posts every field it shows, so a stale copy could
+// undo another user's correction.
+// ---------------------------------------------------------------------------
+
+// The stored policy a row names, looked up by its blanc number. The search
+// matches blanc numbers partially, so the exact row is picked out of the answer.
+async function insuranceByBlancNumber(blancNumber) {
+  const wanted = String(blancNumber ?? "").trim();
+  if (!wanted) return null;
+  const data = await api(
+    `/insurances?blancNumber=${encodeURIComponent(wanted)}`
+  );
+  const rows = (data && data.insurances) || [];
+  return (
+    rows.find(
+      (row) => String((row && row.BlancNumber) ?? "").trim() === wanted
+    ) || null
+  );
+}
+
+// Does this row already hold a whole policy? The Current cash and Reconcile
+// tables read their rows straight from the insurance table; this is the
+// fallback used when the fresh lookup cannot be made.
+function rowCarriesPolicy(row) {
+  return Boolean(
+    row &&
+      row.BlancNumber &&
+      (row.Kind !== undefined || row.Duration !== undefined)
+  );
+}
+
+// Opens the editor of the insurance a row is tied to. `onDone` refreshes the
+// calling view after a save - the same pattern the lookup's Edit follows.
+async function openInsuranceEditorForRow(row, onDone) {
+  const blancNumber = String((row && row.BlancNumber) ?? "").trim();
+  let insurance = null;
+  if (blancNumber) {
+    try {
+      insurance = await insuranceByBlancNumber(blancNumber);
+    } catch (err) {
+      console.warn("Failed to re-read the insurance being edited:", err);
+      // A failed lookup still opens the row's own copy when it carries one,
+      // instead of blocking the edit (the same forgiving rule the edit
+      // dropdowns follow in openInsuranceEditorFor).
+      insurance = rowCarriesPolicy(row) ? row : null;
+      if (!insurance) {
+        toast(
+          `${t("errorPrefix")}: ${translateError(err && err.message)}`,
+          "error"
+        );
+        return;
+      }
+    }
+  }
+  if (!insurance) {
+    toast(t("err.insuranceNotFound"), "error");
+    return;
+  }
+  return openInsuranceEditorFor(insurance, onDone);
+}
+
 // `onDone` (optional) runs after a successful save so the calling view can
 // refresh itself — the same pattern openAnnulForm/deleteInsurance use. Editing
 // the price, the payment type, the branch or the currency also moves the money
@@ -3079,15 +3153,34 @@ function openInsuranceEditor(insurance, onDone) {
   const form = buildForm(
     spec,
     async (payload) => {
-      // Both numbers are required, exactly like on the add form. Throwing
-      // keeps the modal open and buildForm toasts the message.
+      // Border insurance keeps its blanc and car numbers required, exactly like
+      // the add form. A medical or civil liability policy is hand-priced and has
+      // no border details, so those two may be left blank there; a blank blanc
+      // keeps the stored key (BlancNumber is the policy's primary key and the
+      // URL parameter, so it can never be cleared).
+      const editedKind = "Kind" in payload ? payload.Kind : insurance.Kind;
+      const needsPolicyDetails = kindUsesTariffs(editedKind);
+      // Throwing keeps the modal open and buildForm toasts the message.
       if ("BlancNumber" in payload) {
         payload.BlancNumber = String(payload.BlancNumber ?? "").trim();
-        if (!payload.BlancNumber) throw new Error(t("add.blancNumberRequired"));
+        if (!payload.BlancNumber) {
+          if (needsPolicyDetails) throw new Error(t("add.blancNumberRequired"));
+          delete payload.BlancNumber;
+        }
       }
       if ("CarNumber" in payload) {
         payload.CarNumber = String(payload.CarNumber ?? "").trim();
-        if (!payload.CarNumber) throw new Error(t("add.carNumberRequired"));
+        if (!payload.CarNumber && needsPolicyDetails) {
+          throw new Error(t("add.carNumberRequired"));
+        }
+      }
+      if ("PolicyNumber" in payload) {
+        payload.PolicyNumber = String(payload.PolicyNumber ?? "").trim();
+        // A hand-priced policy's blank policy number keeps the reference the
+        // server made up for it, exactly like its blanc number above.
+        if (!payload.PolicyNumber && !needsPolicyDetails) {
+          delete payload.PolicyNumber;
+        }
       }
       // The "Annulled" checkbox is only shown for annulled policies, so leaving
       // it ticked (true) means "keep it annulled" - a no-op that is not sent.
@@ -5018,6 +5111,22 @@ async function currentCashView(overrideBranch, overrideDate) {
     openModal(t("bankHandOver"), form);
   }
 
+  // The hover "Edit insurance" of every policy row on this screen. The row IS
+  // the policy (the tables are read straight from the insurance table), so
+  // openInsuranceEditorForRow re-reads it and opens the editor for it. Saving
+  // rebuilds the whole screen: a price, payment type or annulment moves the
+  // cards and the other ledgers as well.
+  const policyRowActions = (policy) => [
+    {
+      label: t("editInsurance"),
+      class: "edit",
+      hover: true,
+      icon: "✎",
+      onClick: () =>
+        openInsuranceEditorForRow(policy, () => currentCashView(branch, date)),
+    },
+  ];
+
   // The day's full ledger. Policies write no cash_transactions row, so the
   // combined list adds the walk-in (cash and card) and broker-funded policies
   // to the drawer movements and the broker's manual payments.
@@ -5059,12 +5168,17 @@ async function currentCashView(overrideBranch, overrideDate) {
         sortType: "date",
       },
     ],
-    // Only a row of the drawer ledger can be edited or deleted here. A policy
-    // (walk-in or broker-funded) is corrected through its insurance, and a
-    // broker payment through the broker's history. A hand-over RETURN is a
-    // locked bookkeeping row: it is undone through the hand-over itself.
+    // A policy row (walk-in or broker-funded) is corrected through its
+    // insurance: the row's amount IS the policy's price, so the hover "Edit
+    // insurance" opens that policy. Only a row of the drawer ledger can be
+    // edited here; a broker payment is corrected through the broker's history,
+    // and a hand-over RETURN is a locked bookkeeping row (it is undone through
+    // the hand-over itself).
     (tx) => {
       const rowActions = [];
+      if (tx.Source === "insurance" && String(tx.BlancNumber ?? "").trim()) {
+        rowActions.push(...policyRowActions(tx));
+      }
       if (tx.Source !== "cash") return rowActions;
       if (String(tx.Type || "") === "handover_return") return rowActions;
       // The author edits it; an admin may also correct any hand-over (for
@@ -5269,7 +5383,9 @@ async function currentCashView(overrideBranch, overrideDate) {
         sortType: "text",
       },
     ],
-    undefined,
+    // Hover "Edit insurance": these rows are the policies behind the branch's
+    // Card balance, so they are corrected here as well.
+    policyRowActions,
     (item) => annulledRowClass(item),
     undefined,
     { sort: cashTableSort.cardInsurances }
@@ -5306,7 +5422,9 @@ async function currentCashView(overrideBranch, overrideDate) {
         sortType: "text",
       },
     ],
-    undefined,
+    // Hover "Edit insurance": these rows are the walk-in cash policies behind
+    // the Available cash card.
+    policyRowActions,
     (item) => annulledRowClass(item),
     undefined,
     { sort: cashTableSort.cashInsurances }
@@ -6169,6 +6287,37 @@ async function brokersView() {
   Content.replaceChildren(...children);
 }
 
+// Movement types the server writes FROM a policy (the sale, a price
+// correction, the annulment refund and the deletion refund). Mirrors
+// POLICY_MOVEMENT_TYPES in InsuranceServer/Requests/Brokers.js.
+const POLICY_MOVEMENT_TYPES = new Set([
+  "policy",
+  "price_change",
+  "annulment",
+  "deletion",
+]);
+
+// Is this broker movement the history of an insurance? Those rows are the ones
+// the hover "Edit insurance" action can correct: the server derives their
+// amount from the policy, so editing the ledger row is either refused or
+// leaves the money untouched. `PolicyBrokerId` is filled by the server from the
+// live insurance the row belongs to; a policy-derived type keeps working when
+// the join could not resolve it.
+function movementHasInsurance(movement) {
+  if (!movement) return false;
+  const blanc = String(movement.BlancNumber ?? "").trim();
+  if (!blanc) return false;
+  if (
+    movement.PolicyBrokerId !== null &&
+    movement.PolicyBrokerId !== undefined
+  ) {
+    return true;
+  }
+  return POLICY_MOVEMENT_TYPES.has(
+    String(movement.Type ?? "").trim().toLowerCase()
+  );
+}
+
 // Label for a broker balance movement type (policy, annulment, deletion,
 // price_change, increase, reduce, adjust). Unknown types are shown as they are.
 function movementTypeLabel(type) {
@@ -6454,39 +6603,58 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
   );
 
   // Admins can correct or remove a single movement; workers and broker
-  // clients only read the history, so the action column stays hidden for them.
-  const historyActions =
-    userRole === "1"
-      ? [
-          {
-            label: t("edit"),
-            class: "secondary",
-            onClick: (m) => brokerHistoryEditForm(broker, m, page, date, includeDeleted),
-          },
-          {
-            // The delete "X": hidden until the row is hovered.
-            label: t("deleteMovement"),
-            class: "danger",
-            hover: true,
-            onClick: async (m) => {
-              const confirmed = await appConfirm(
-                t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm"),
-                { danger: true, confirmLabel: t("delete") }
-              );
-              if (!confirmed) return;
-              try {
-                await api(`/brokers/${broker.id}/history/${m.id}`, {
-                  method: "DELETE",
-                });
-                toast(t("movementDeleted"), "success");
-                brokerHistoryView(broker, page, date, includeDeleted);
-              } catch (err) {
-                toast(err.message, "error");
-              }
-            },
-          },
-        ]
-      : undefined;
+  // clients only read the history, so the action column stays hidden for them -
+  // except for the hover "Edit insurance" below: a movement that belongs to a
+  // policy is corrected on the INSURANCE, which is what the money actually
+  // follows (see openInsuranceEditorForRow).
+  const refreshHistory = () =>
+    brokerHistoryView(broker, page, date, includeDeleted);
+  const historyActions = (m) => {
+    const rowActions = [];
+    // A policy-derived row (the sale of a policy, or a manual row an admin gave
+    // a blanc number) edits the policy itself. PolicyBrokerId is set by the
+    // server from the live insurance the row belongs to.
+    if (movementHasInsurance(m)) {
+      rowActions.push({
+        label: t("editInsurance"),
+        class: "edit",
+        hover: true,
+        icon: "✎",
+        onClick: () => openInsuranceEditorForRow(m, refreshHistory),
+      });
+    }
+    if (userRole !== "1") return rowActions;
+    rowActions.push(
+      {
+        label: t("edit"),
+        class: "secondary",
+        onClick: (m) => brokerHistoryEditForm(broker, m, page, date, includeDeleted),
+      },
+      {
+        // The delete "X": hidden until the row is hovered.
+        label: t("deleteMovement"),
+        class: "danger",
+        hover: true,
+        onClick: async (m) => {
+          const confirmed = await appConfirm(
+            t(m.Retired ? "deleteRetiredMovementConfirm" : "deleteMovementConfirm"),
+            { danger: true, confirmLabel: t("delete") }
+          );
+          if (!confirmed) return;
+          try {
+            await api(`/brokers/${broker.id}/history/${m.id}`, {
+              method: "DELETE",
+            });
+            toast(t("movementDeleted"), "success");
+            brokerHistoryView(broker, page, date, includeDeleted);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        },
+      }
+    );
+    return rowActions;
+  };
 
   // "No." column: renderTable hands a column the row itself, not its position,
   // so the numbers are looked up per row. They follow the order the table shows
@@ -8626,7 +8794,10 @@ async function reconcileReport(rows, options) {
     }
     matchedInsurances.add(best.ins);
     if (best.cmp.count === 0) matched++;
-    else mismatches.push({ rowNo: fileRow.rowNo, ...best.cmp.fields });
+    // The matched policy travels with the mismatch, so the results screen can
+    // offer its hover "Edit insurance": correcting the policy is what makes the
+    // next run of the report agree (the file is not editable).
+    else mismatches.push({ rowNo: fileRow.rowNo, ...best.cmp.fields, insurance: best.ins });
   }
 
   // Insurances that should have appeared in the report but did not: created in
@@ -8712,8 +8883,33 @@ function reconResultColumns() {
   );
 }
 
-function reconRenderResults(result) {
+function reconRenderResults(result, onInsuranceEdited) {
   const wrap = el("div", null, { class: "recon-results" });
+
+  // The hover "Edit insurance" of a result row. Only rows that name a policy of
+  // the database get one: a row missing from the database has nothing to edit,
+  // while a policy missing from the file (or a mismatching one) is corrected on
+  // the insurance itself - which is exactly what makes the next run agree.
+  // Every row of the two right-hand tables carries the matched policy in
+  // `insurance` (see reconcileReport and the mapping below); a row without it
+  // stays read-only.
+  const resultActions = (item) =>
+    item && item.insurance
+      ? [
+          {
+            label: t("editInsurance"),
+            class: "edit",
+            hover: true,
+            icon: "✎",
+            onClick: () =>
+              openInsuranceEditorForRow(item.insurance, onInsuranceEdited),
+          },
+        ]
+      : [];
+  // A table whose rows name no policy (an old cached report, a file-only list)
+  // gets no Actions column at all instead of an empty one.
+  const actionsFor = (rows) =>
+    rows.some((row) => row && row.insurance) ? resultActions : null;
 
   // One scroll target per summary card. Each table lives in its own section so
   // the card can jump straight to the rows it counts; the sticky page header
@@ -8803,13 +8999,13 @@ function reconRenderResults(result) {
     );
   }
 
-  const buildSection = (section, title, items, columns, rowClass, sort) => {
+  const buildSection = (section, title, items, columns, rowClass, sort, actions) => {
     section.appendChild(el("h3", `${title} (${items.length})`));
     // A sortable table: only the four columns reconResultColumn marks sortable
     // react to a header click, and the chosen order is kept in reconTableSort
     // so a rebuilt screen (back from another tab) shows the same order.
     section.appendChild(
-      sortableTable(items, columns, null, rowClass, undefined, { sort })
+      sortableTable(items, columns, actions || null, rowClass, undefined, { sort })
     );
   };
 
@@ -8840,6 +9036,9 @@ function reconRenderResults(result) {
   const missingFileRows = result.missingFromFile.map((ins) => {
     const db = reconDbValues(ins);
     return {
+      // The policy itself travels with the row, so its hover Edit opens THIS
+      // insurance (see resultActions).
+      insurance: ins,
       policy: db.policy,
       blank: db.blank,
       from: reconShowDate(db.fromKey),
@@ -8855,7 +9054,8 @@ function reconRenderResults(result) {
     missingFileRows,
     reconResultColumns(),
     () => "row-missing",
-    reconTableSort.missingFile
+    reconTableSort.missingFile,
+    actionsFor(missingFileRows)
   );
 
   // --- Partial data mismatches (mismatching cells in dark red) ------------
@@ -8900,7 +9100,8 @@ function reconRenderResults(result) {
       ...RECON_COLUMNS.map(mismatchCol),
     ],
     undefined,
-    reconTableSort.mismatches
+    reconTableSort.mismatches,
+    actionsFor(result.mismatches)
   );
 
   wrap.appendChild(missingDbSection);
@@ -9202,10 +9403,19 @@ async function reconcileView() {
   loadInsuranceFilterSuggestions().then(() => brokerAutocomplete.refresh());
 
   const result = el("div");
+  // An insurance corrected from a result row is re-checked against the same
+  // file, so the cells show the stored values again (and a fixed mismatch
+  // disappears): the report on screen is never left disagreeing with the
+  // database.
+  const refreshReport = () => {
+    const cached = reconcileCache;
+    if (cached && cached.file) return runReconcile(cached.file, runBtn);
+    return null;
+  };
   // Coming back to the tab shows the previous report immediately, without
   // reading the file again or fetching the insurance list.
   if (reconcileCache && reconcileCache.report) {
-    result.appendChild(reconRenderResults(reconcileCache.report));
+    result.appendChild(reconRenderResults(reconcileCache.report, refreshReport));
   }
 
   // Runs the selected file through the full pipeline: parse the first sheet,
@@ -9232,7 +9442,7 @@ async function reconcileView() {
         broker: brokerInput.value.trim(),
         report,
       };
-      result.replaceChildren(reconRenderResults(report));
+      result.replaceChildren(reconRenderResults(report, refreshReport));
     } catch (err) {
       result.replaceChildren();
       toast(err.message, "error");

@@ -1261,10 +1261,12 @@ tr.row-clickable:hover td {
   background: var(--bg-soft);
 }
 
-/* Destructive row action ("X" delete). It is invisible until its row is
-   hovered, so a long list stays readable and a destructive click is never one
-   stray click away; it also appears when it is reached with the keyboard.
-   Mirrors .email-card-x (WorkPage.css) so both "X" buttons look the same.
+/* Row action that is an icon hidden until its row is hovered: the destructive
+   "X" delete and the "Edit insurance" pencil (broker history, Current cash,
+   Reconcile results). A long list stays readable and a destructive click is
+   never one stray click away; the icon also appears when it is reached with
+   the keyboard. The "X" mirrors .email-card-x (WorkPage.css) so both "X"
+   buttons look the same.
    Selected as `button.row-hover-x` so it also overrides the generic
    `button` / `button.danger` background and padding. */
 button.row-hover-x {
@@ -1300,6 +1302,13 @@ button.row-hover-x:hover {
 button.row-hover-x.secondary:hover {
   background: rgba(63, 185, 80, 0.18);
   color: var(--success);
+}
+/* The hover "Edit insurance" (a pencil) of the broker history, the Current
+   cash ledgers and the Reconcile results follows the same reveal rule; it is
+   not destructive, so it hovers in the accent colour. */
+button.row-hover-x.edit:hover {
+  background: rgba(79, 140, 255, 0.18);
+  color: var(--accent);
 }
 
 /* Whole row of actions that stays invisible until its row is hovered (the

@@ -739,7 +739,7 @@ const I18N = {
     "add.price": "Price",
     "add.manualPrice": "Price (entered by hand)",
     "add.manualPriceHint":
-      "Medical insurance and civil liability are not priced from the tariff grid - type the price in.",
+      "Medical insurance and civil liability are not priced from the tariff grid - type the price in. The numbers and the starting date may be left empty for them.",
     "add.manualPriceRequired": "Type the price of this insurance",
     "add.priceUnavailable":
       "There is no tariff for this vehicle type and duration - the policy cannot be saved.",
@@ -1722,7 +1722,7 @@ const I18N = {
     "add.price": "Цена",
     "add.manualPrice": "Цена (въведена ръчно)",
     "add.manualPriceHint":
-      "Медицинските и гражданските застраховки не се таксуват по тарифа - въведете цената ръчно.",
+      "Медицинските и гражданските застраховки не се таксуват по тарифа - въведете цената ръчно. Номерата и началната дата могат да останат празни.",
     "add.manualPriceRequired": "Въведете цената на тази застраховка",
     "add.priceUnavailable":
       "Няма тарифа за този вид превозно средство и срок - застраховката не може да бъде записана.",

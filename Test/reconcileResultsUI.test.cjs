@@ -146,9 +146,13 @@ class FakeNode {
 }
 
 // The real `el()` from common.js: create an element, set its text and attrs.
+// `openInsuranceEditorForRow` is stubbed: the results screen only calls it when
+// a row's hover Edit is clicked, and the check below records what it was given.
+const editCalls = [];
 const CTX = {
   document: { createElement: (tag) => new FakeNode(tag) },
   console,
+  openInsuranceEditorForRow: (row, onDone) => editCalls.push({ row, onDone }),
 };
 vm.createContext(CTX);
 vm.runInContext(
@@ -356,7 +360,37 @@ check("the missing-from-file table has no file row-number column", () => {
     "reconcile.col.car",
     "reconcile.col.duration",
     "reconcile.col.price",
+    // The hover "Edit insurance" column: these rows are policies of the
+    // database, so each one can be corrected from here.
+    "actions",
   ]);
+});
+
+check("a database row edits the insurance it is tied to", () => {
+  editCalls.length = 0;
+  const fileSection = byId(view, "recon-missing-file");
+  const row = find(fileSection, (n) => n.tagName === "TR").find((tr) =>
+    tr.children.some((c) => c.tagName === "TD")
+  );
+  const actionCell = row.children[row.children.length - 1];
+  const button = find(actionCell, (n) => n.tagName === "BUTTON")[0];
+  ok(button, "the row has an action button");
+  ok(
+    button.className.split(/\s+/).includes("row-hover-x"),
+    "it is the hover icon: " + button.className
+  );
+  ok(
+    button.className.split(/\s+/).includes("edit"),
+    "styled as the edit (not the delete)"
+  );
+  eq(button.attributes.title, "editInsurance", "its tooltip names the action");
+  button.dispatch("click");
+  eq(editCalls.length, 1, "one editor is opened");
+  eq(
+    editCalls[0].row,
+    report.missingFromFile[0],
+    "the policy of THIS row is handed to the editor"
+  );
 });
 
 check("the duration and price columns are shown on both sides", () => {

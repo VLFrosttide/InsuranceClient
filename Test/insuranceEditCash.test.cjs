@@ -559,6 +559,46 @@ async function patch(body, opts = {}) {
     eq(r.updated.length, 1, "the row was still updated");
   });
 
+  await check("a medical policy may be saved without border numbers", async () => {
+    // The add form leaves the blanc / car numbers empty for a hand-priced
+    // product; the editor must not refuse the same blanks. A blank blanc keeps
+    // the stored key instead of clearing the primary key.
+    const r = await patch(
+      { Kind: "medical", BlancNumber: "", PolicyNumber: "", CarNumber: "", Price: 120 },
+      {
+        row: {
+          Kind: "medical",
+          BlancNumber: "MED-20261127141530-4F2A",
+          PolicyNumber: "MED-20261127141530-9B3C",
+          CarNumber: "",
+          BrokerId: null,
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.Kind, "medical", "kind saved");
+    eq(r.row.CarNumber, "", "the car number stays blank");
+    ok(
+      !r.updated.some((q) =>
+        q.sql.slice(0, q.sql.indexOf(" WHERE ")).includes("BlancNumber = ?")
+      ),
+      "the stored blanc number (the key) is kept"
+    );
+    ok(
+      !r.updated.some((q) =>
+        q.sql.slice(0, q.sql.indexOf(" WHERE ")).includes("PolicyNumber = ?")
+      ),
+      "the stored policy reference is kept"
+    );
+  });
+
+  await check("a border policy still refuses a blank car number", async () => {
+    const r = await patch({ CarNumber: "  " });
+    eq(r.status, 400, "status");
+    eq(r.body.error, "CarNumber is required", "message");
+    eq(r.row.CarNumber, undefined, "nothing changed");
+  });
+
   await check("switching Cash -> Card moves the money into the card balance", async () => {
     const r = await patch({ PaymentType: "Card" });
     eq(

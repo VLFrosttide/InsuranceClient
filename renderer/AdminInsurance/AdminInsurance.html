@@ -32,6 +32,10 @@
             <label for="KindInput" data-i18n="add.kind">Вид застраховка</label>
             <select id="KindInput" class="FormInput"></select>
           </div>
+          <!-- The three numbers below (car / policy / blanc) are required for
+               border insurance only: syncKindPricing clears the attribute for
+               medical insurance and civil liability, whose form may be left
+               blank (the server makes up a MED-… / CIV-… reference). -->
           <div class="field">
             <label for="CarNumberInput" data-i18n="add.carNumber"
               >Номер автомобил</label
@@ -123,7 +127,8 @@
             />
             <div class="field-note muted" data-i18n="add.manualPriceHint">
               Медицинските и гражданските застраховки не се таксуват по тарифа -
-              въведете цената ръчно.
+              въведете цената ръчно. Номерата и началната дата могат да останат
+              празни.
             </div>
           </div>
           <div class="field">

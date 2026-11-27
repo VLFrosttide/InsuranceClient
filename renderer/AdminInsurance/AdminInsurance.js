@@ -119,6 +119,32 @@ function usesManualPrice() {
   return selectedKind() !== TARIFF_PRICED_KIND;
 }
 
+// Border insurance carries the border-form details: a blanc number, a car number,
+// a policy number, a start date and the vehicle / duration. Medical insurance and
+// civil liability are priced by hand and have none of them: every field of their
+// form may be left empty, and the server makes up a reference (MED-… / CIV-…) for
+// a blank number so the policy still has its key.
+const POLICY_DETAIL_INPUTS = [
+  "CarNumberInput",
+  "PolicyNumberInput",
+  "BlancNumberInput",
+];
+
+function requiresPolicyDetails() {
+  return !usesManualPrice();
+}
+
+// Marks the number fields required (and the native browser check with them) only
+// for the kind that carries them.
+function syncPolicyDetailRequirements() {
+  const required = requiresPolicyDetails();
+  for (const id of POLICY_DETAIL_INPUTS) {
+    const input = document.getElementById(id);
+    if (input) input.required = required;
+  }
+  return required;
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -184,6 +210,9 @@ function renderTotalPrice() {
 // syncBrokerMode when border insurance comes back.
 function syncKindPricing() {
   const manual = usesManualPrice();
+  // The three numbers are required for border insurance only (see
+  // requiresPolicyDetails); the browser's own required check follows along.
+  syncPolicyDetailRequirements();
   if (TariffPriceField) TariffPriceField.classList.toggle("hidden", manual);
   if (ManualPriceField) ManualPriceField.classList.toggle("hidden", !manual);
   if (manual) {
@@ -492,6 +521,12 @@ InsuranceForm.addEventListener("submit", async function (e) {
     else FormObject[el.id] = el.value;
   }
 
+  // Border insurance is written on a blanc for a vehicle, so its three numbers
+  // are required and the policy / blanc numbers have a fixed length. A medical or
+  // civil liability policy is priced by hand and carries none of that: whatever
+  // is typed travels as-is (a blank number gets a reference made up by the
+  // server), so nothing is demanded there.
+  const needsPolicyDetails = requiresPolicyDetails();
   const requiredNumbers = [
     ["CarNumberInput", "add.carNumberRequired"],
     ["PolicyNumberInput", "add.policyNumberRequired"],
@@ -500,7 +535,7 @@ InsuranceForm.addEventListener("submit", async function (e) {
   const trimmed = {};
   for (const [id, messageKey] of requiredNumbers) {
     trimmed[id] = FormObject[id] ? String(FormObject[id]).trim() : "";
-    if (!trimmed[id]) {
+    if (needsPolicyDetails && !trimmed[id]) {
       setMessage(t(messageKey), true);
       const inputEl = document.getElementById(id);
       if (inputEl) inputEl.focus();
@@ -511,23 +546,25 @@ InsuranceForm.addEventListener("submit", async function (e) {
   const policyNumber = trimmed.PolicyNumberInput;
   const blancNumber = trimmed.BlancNumberInput;
 
-  const exactLengths = [
-    ["PolicyNumberInput", policyNumber, 8, "add.policyNumberLength"],
-    ["BlancNumberInput", blancNumber, 6, "add.blancNumberLength"],
-  ];
-  for (const [id, value, length, messageKey] of exactLengths) {
-    if (String(value).trim().length !== length) {
-      setMessage(t(messageKey), true);
-      const inputEl = document.getElementById(id);
-      if (inputEl) inputEl.focus();
-      return;
+  if (needsPolicyDetails) {
+    const exactLengths = [
+      ["PolicyNumberInput", policyNumber, 8, "add.policyNumberLength"],
+      ["BlancNumberInput", blancNumber, 6, "add.blancNumberLength"],
+    ];
+    for (const [id, value, length, messageKey] of exactLengths) {
+      if (String(value).trim().length !== length) {
+        setMessage(t(messageKey), true);
+        const inputEl = document.getElementById(id);
+        if (inputEl) inputEl.focus();
+        return;
+      }
     }
   }
 
   const startDate = FormObject.StartDateInput
     ? String(FormObject.StartDateInput).trim()
     : "";
-  if (!startDate) {
+  if (needsPolicyDetails && !startDate) {
     setMessage(t("add.startDateRequired"), true);
     if (StartDateInput) StartDateInput.focus();
     return;

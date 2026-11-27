@@ -276,6 +276,37 @@ const flat = (text) => String(text).replace(/\s+/g, " ");
     );
   });
 
+  await check("the edit dialog only demands the border numbers for border", () => {
+    ok(
+      /const editedKind = "Kind" in payload \? payload\.Kind : insurance\.Kind;/.test(
+        src
+      ),
+      "the kind being saved decides"
+    );
+    ok(
+      /const needsPolicyDetails = kindUsesTariffs\(editedKind\);/.test(src),
+      "border keeps the numbers required"
+    );
+    ok(
+      /if \(!payload\.BlancNumber\) \{\s*if \(needsPolicyDetails\) throw new Error\(t\("add\.blancNumberRequired"\)\);\s*delete payload\.BlancNumber;/.test(
+        src
+      ),
+      "a blank blanc keeps the stored key on a hand-priced policy"
+    );
+    ok(
+      /if \(!payload\.CarNumber && needsPolicyDetails\) \{\s*throw new Error\(t\("add\.carNumberRequired"\)\);/.test(
+        src
+      ),
+      "a blank car number is allowed off the border product"
+    );
+    ok(
+      /if \(!payload\.PolicyNumber && !needsPolicyDetails\) \{\s*delete payload\.PolicyNumber;/.test(
+        src
+      ),
+      "a blank policy number keeps its reference on a hand-priced policy"
+    );
+  });
+
   if (failed) {
     console.log(`\n${passed} passed, ${failed} failed`);
     process.exit(1);

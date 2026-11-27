@@ -10,7 +10,9 @@
 //   - border: tariff + non-Turk fee (card fee stays visual-only),
 //   - medical / civil: the typed amount is saved as-is (no tariff, no fees),
 //   - an empty or unreadable hand-typed amount blocks the save,
-//   - switching the kind shows the right price field and clears the fee toggles.
+//   - switching the kind shows the right price field and clears the fee toggles,
+//   - only border insurance requires the blanc / car / policy numbers; a medical
+//     or civil liability form demands none of them.
 //
 // Run with:  node Test/adminInsuranceManualPrice.test.cjs   (or: npm test)
 
@@ -57,6 +59,14 @@ function fakeField(hidden = false) {
 
 function setup() {
   const kinds = { value: "border" };
+  // The real syncKindPricing marks the three number fields required for border
+  // insurance only (medical / civil may leave every one of them blank), so the
+  // fake document answers for them.
+  const numbers = {
+    CarNumberInput: { required: true },
+    PolicyNumberInput: { required: true },
+    BlancNumberInput: { required: true },
+  };
   const els = {
     KindInput: kinds,
     ManualPriceInput: { value: "" },
@@ -76,6 +86,7 @@ function setup() {
   const CTX = {
     console: { warn: () => {}, log: () => {}, error: () => {} },
     URLSearchParams,
+    document: { getElementById: (id) => numbers[id] || null },
     localStorage: { getItem: () => null },
     getPricingCache: () => null,
     defaultInsuranceKind: "border",
@@ -97,11 +108,12 @@ function setup() {
       "\nglobalThis.__total = () => currentTotalPrice();" +
       "\nglobalThis.__display = () => currentDisplayPrice();" +
       "\nglobalThis.__fees = () => currentFees();" +
-      "\nglobalThis.__manual = () => usesManualPrice();",
+      "\nglobalThis.__manual = () => usesManualPrice();" +
+      "\nglobalThis.__details = () => requiresPolicyDetails();",
     CTX,
     { filename: "AdminInsurance.js#price" }
   );
-  return { CTX, els, state, kinds };
+  return { CTX, els, state, kinds, numbers };
 }
 
 // --- tiny assert helpers -----------------------------------------------------
@@ -220,6 +232,25 @@ function ok(cond, msg) {
     ok(!els.TariffPriceField.isHidden(), "the tariff output is back");
     ok(els.ManualPriceField.isHidden(), "the hand-typed input is hidden");
     eq(CTX.__manual(), false, "border uses the grid");
+  });
+
+  await check("only border insurance demands the numbers", () => {
+    const { CTX, kinds, numbers } = setup();
+    const required = () => Object.values(numbers).map((el) => el.required);
+    kinds.value = "border";
+    CTX.__sync();
+    eq(CTX.__details(), true, "border carries the border-form details");
+    eq(required(), [true, true, true], "all three numbers are required");
+    kinds.value = "medical";
+    eq(CTX.__details(), false, "medical has no border-form details");
+    CTX.__sync();
+    eq(required(), [false, false, false], "a medical policy demands none");
+    kinds.value = "civil";
+    CTX.__sync();
+    eq(required(), [false, false, false], "nor does civil liability");
+    kinds.value = "border";
+    CTX.__sync();
+    eq(required(), [true, true, true], "border asks for them again");
   });
 
   if (failed) {
