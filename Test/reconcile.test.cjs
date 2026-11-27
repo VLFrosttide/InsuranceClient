@@ -874,6 +874,137 @@ const SAMPLE = path.join(
     }
   });
 
+  // --- the broker portal's Excel export --------------------------------------
+  check("the portal's export headers reconcile in all three languages", () => {
+    // The website's "Export Excel" writes these header rows (i18n.js labels);
+    // its date column holds the policy's start date and its term the 15D/1M/3M
+    // shorthand, so a drop-in reconcile must line every column up.
+    const layouts = {
+      en: [
+        "Policy #", "Blanc #", "Car number", "Duration", "Price", "Currency",
+        "Valid from", "Status",
+      ],
+      bg: [
+        "Полица №", "Бланка №", "Рег. номер", "Срок", "Цена", "Валута",
+        "Валиден от", "Статус",
+      ],
+      tr: [
+        "Poliçe no", "Form no", "Plaka", "Süre", "Fiyat", "Para birimi",
+        "Geçerlilik başlangıcı", "Durum",
+      ],
+    };
+    for (const [lang, headers] of Object.entries(layouts)) {
+      const portalRows = [
+        headers,
+        ["26167659", "149988", "59ADJ391", "3M", 45, "EUR", "05.10.2026", ""],
+      ];
+      const cols = reconFindColumns(portalRows);
+      eq(cols.missing, [], `missing columns for the ${lang} export`);
+      eq(
+        cols.index,
+        { policy: 0, blank: 1, car: 2, duration: 3, price: 4, from: 6 },
+        `column map for the ${lang} export`
+      );
+      const parsed = reconParseFileRows(
+        portalRows,
+        cols.headerRow,
+        cols.index
+      );
+      eq(parsed.length, 1, `one data row for the ${lang} export`);
+      eq(
+        [parsed[0].policy, parsed[0].blank, parsed[0].car],
+        ["26167659", "149988", "59ADJ391"],
+        `parsed values for the ${lang} export`
+      );
+      // The portal writes dd.mm.yyyy and the term shorthand; both must come
+      // back as the day and day-count the database stores.
+      eq(parsed[0].fromKey, "2026-10-05", `start date for the ${lang} export`);
+      eq(parsed[0].durationDays, 90, `term for the ${lang} export`);
+      eq(parsed[0].price, 45, `price for the ${lang} export`);
+      const ins = {
+        PolicyNumber: "26167659",
+        BlancNumber: "149988",
+        CarNumber: "59ADJ391",
+        StartDate: "2026-10-05",
+        Duration: 90,
+        Price: "45.00",
+      };
+      eq(reconCompareRow(parsed[0], ins).count, 0, `matches for ${lang}`);
+    }
+  });
+
+  check("the export's total and breakdown lines are skipped", () => {
+    // The website appends the total and the per-price breakdown below the
+    // policies, all with their label in the policy column. Those rows carry no
+    // digit in the policy, blank or car column, so they are summary rows - not
+    // insurances missing from the database.
+    const portalRows = [
+      [
+        "Policy #", "Blanc #", "Car number", "Duration", "Price", "Currency",
+        "Valid from", "Status",
+      ],
+      ["26167659", "149988", "59ADJ391", "3M", 45, "EUR", "05.10.2026", ""],
+      ["26200001", "150001", "CA1234AB", "1M", 19, "EUR", "06.10.2026", ""],
+      ["Total", "", "", "", 64, "", "", ""],
+      ["Policies by price", "", "", "", "", "", "", ""],
+      ["1× 45 EUR", "", "", "", "", "", "", ""],
+      ["1× 19 EUR", "", "", "", "", "", "", ""],
+      ["Annulled policies by price", "", "", "", "", "", "", ""],
+      ["1× 9 EUR", "", "", "", "", "", "", ""],
+    ];
+    const cols = reconFindColumns(portalRows);
+    eq(cols.missing, [], "the export header row is recognised");
+    const parsed = reconParseFileRows(portalRows, cols.headerRow, cols.index);
+    eq(parsed.length, 2, "only the two policies are read");
+    eq(
+      parsed.map((r) => r.policy),
+      ["26167659", "26200001"]
+    );
+  });
+
+  check("a text-only footer row of a report is skipped too", () => {
+    // Same rule for the old layouts: a totals line without any digit in its
+    // identifying columns is not a policy.
+    const reportRows = [
+      ["НОМЕР НА ПОЛИЦА", "НОМЕР НА СТИКЕР", "ДАТА", "СРОК", "ДКН"],
+      ["BG/02/FI 26167659", "149988", "05.10.2026", "3M", "59ADJ391"],
+      ["ОБЩО", "", "", "", ""],
+    ];
+    const cols = reconFindColumns(reportRows);
+    const parsed = reconParseFileRows(reportRows, cols.headerRow, cols.index);
+    eq(parsed.length, 1, "the ОБЩО totals line is skipped");
+    eq(parsed[0].policy, "26167659");
+  });
+
+  check("the client's own insurance export is reconcilable as well", () => {
+    // The Insurances tab's "Export Excel" writes this header row (the en labels
+    // of renderer/common.js). Its money price, term shorthand and Excel date
+    // serials are exactly what the parser reads.
+    const exportRows = [
+      [
+        "No.", "Blank No.", "Policy number", "Car number", "Kind", "Duration",
+        "Price", "Currency", "Payment", "Broker", "Broker ID", "Author",
+        "Created", "Status",
+      ],
+      [1, "149988", "26167659", "59ADJ391", "Border", "3M", 45, "EUR", "Cash",
+        "Broker", "4.2", "worker", 46300, "Active"],
+    ];
+    const cols = reconFindColumns(exportRows);
+    eq(cols.missing, [], "the client's export header row is recognised");
+    eq(cols.index.policy, 2);
+    eq(cols.index.blank, 1);
+    eq(cols.index.car, 3);
+    eq(cols.index.duration, 5);
+    eq(cols.index.price, 6);
+    eq(cols.index.from, 12);
+    const parsed = reconParseFileRows(exportRows, cols.headerRow, cols.index);
+    eq(parsed.length, 1);
+    eq(parsed[0].policy, "26167659");
+    eq(parsed[0].fromKey, "2026-10-05", "Excel serial date");
+    eq(parsed[0].durationDays, 90);
+    eq(parsed[0].price, 45);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((err) => {

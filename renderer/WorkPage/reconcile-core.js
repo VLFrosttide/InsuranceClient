@@ -12,6 +12,13 @@
 //     such as "15D", "1M" or "3M". That same column is compared with the
 //     policy's Duration (in days).
 //
+// The broker portal's "Export Excel" file (a real .xlsx the website builds with
+// its xlsx.js) is accepted as well: it prints the policy's start date under a
+// "Valid from" / "Създадена" / "Oluşturuldu" header, its term as "СРОК" /
+// "Duration" / "Süre" in the same 15D/1M/3M shorthand, and its car number as
+// "ДКН" / "Car number" / "Рег. номер" / "Plaka". The total and the per-price
+// breakdown it appends below the list are skipped (see reconParseFileRows).
+//
 // The policy, sticker, car, duration and price columns also accept English
 // headers ("Policy number", "Blanc Number", "Car number", "Duration", "Price",
 // "Tarifa", … - the full list is RECON_COLUMNS), because some exports use the
@@ -102,9 +109,10 @@ function reconHeaderKey(value) {
 // column (e.g. "СРОК" with values like "15D", "1M", "3M") is used when the file
 // has no explicit "ВАЛИДЕН ДО", and is also the column the duration compare
 // reads. Declared before RECON_COLUMNS because the duration column reuses it.
+// "SÜRE" / "Süre" is the Turkish label of the broker portal's Excel export.
 const RECON_TERM_COLUMN = {
   key: "term",
-  headers: ["СРОК", "SROK", "DURATION", "ТЕРМИН", "ПЕРИОД"],
+  headers: ["СРОК", "SROK", "DURATION", "ТЕРМИН", "ПЕРИОД", "SÜRE", "Süre"],
 };
 
 const RECON_COLUMNS = [
@@ -133,6 +141,11 @@ const RECON_COLUMNS = [
       "Policy number",
       "PolicyNumber",
       "Policy",
+      // "Policy #" from the broker portal's Excel export (en) and its Turkish
+      // label ("Poliçe no").
+      "Policy #",
+      "Poliçe no",
+      "Poliçe No",
     ],
   },
   {
@@ -157,6 +170,11 @@ const RECON_COLUMNS = [
       "BlankNumber",
       "Number Blanc",
       "NumberBlanc",
+      // Labels of the broker portal's Excel export: "Blanc #" (en), "Form no"
+      // (tr). "Blank No." is the client's own insurance export.
+      "Blanc #",
+      "Form no",
+      "Blank No.",
     ],
   },
   {
@@ -164,7 +182,20 @@ const RECON_COLUMNS = [
     header: "ВАЛИДЕН ОТ",
     label: "reconcile.col.from",
     source: "StartDate",
-    headers: ["ВАЛИДЕН ОТ", "ДАТА"],
+    // The date the policy starts. Besides the daily reports' own labels this
+    // accepts the broker portal's export ("Valid from" / "Създадена" /
+    // "Oluşturuldu") and the client's own insurance export ("Created" /
+    // "Създаден"), which print the policy's date in that column.
+    headers: [
+      "ВАЛИДЕН ОТ",
+      "ДАТА",
+      "Valid from",
+      "Създадена",
+      "Създаден",
+      "Created",
+      "Geçerlilik başlangıcı",
+      "Oluşturuldu",
+    ],
   },
   {
     key: "to",
@@ -188,6 +219,11 @@ const RECON_COLUMNS = [
       "Car Plate",
       "Plate number",
       "Number Plate",
+      // The broker portal's export labels: "Рег. номер" (bg) and "Plaka" (tr);
+      // "Номер на автомобил" is the client's own insurance export.
+      "Рег. номер",
+      "Plaka",
+      "Номер на автомобил",
     ],
   },
   {
@@ -212,7 +248,7 @@ const RECON_COLUMNS = [
     // amount is compared - the currency type (the sheet's ЕВРО/ЛЕВА/… columns
     // or a "лв"/"EUR" suffix) never is.
     optional: true,
-    headers: ["ЦЕНА", "PRICE", "ТАРИФА", "TARIFA", "TARIFF"],
+    headers: ["ЦЕНА", "PRICE", "ТАРИФА", "TARIFA", "TARIFF", "Fiyat"],
   },
 ];
 
@@ -555,6 +591,19 @@ function reconFileFields(index) {
   }).map((col) => col.key);
 }
 
+// Whether a cell looks like a policy / sticker / car number. Such a number
+// always holds a digit and is printed with letters, digits, spaces and a few
+// separators ("BG/02/FI 26167659", "№ 123456", "CA 1234 AB"). The summary lines
+// a report or an export prints below its list ("Total", "ОБЩО", "10× 19 EUR")
+// have no digit at all or a character no identifier uses (the "×" of a
+// "10× 19 EUR" line), which is how reconParseFileRows tells them apart.
+const RECON_DIGIT = /\d/;
+const RECON_NOT_ID_CHAR = /[^\p{L}\p{N} .\-_/#№*]/u;
+function reconLooksLikeId(value) {
+  const text = reconCellText(value);
+  return RECON_DIGIT.test(text) && !RECON_NOT_ID_CHAR.test(text);
+}
+
 function reconParseFileRows(rows, headerRow, index) {
   const out = [];
   for (let r = headerRow + 1; r < rows.length; r++) {
@@ -575,6 +624,18 @@ function reconParseFileRows(rows, headerRow, index) {
       reconCellText(raw.blank) === "" &&
       reconCellText(raw.car) === "";
     if (empty) continue;
+
+    // The total and the per-price breakdown the broker portal's Excel export
+    // appends below the policies are such summary rows too (their label sits in
+    // the policy column, but it is no policy / sticker / car number): they must
+    // not show up as insurances missing from the database.
+    if (
+      !reconLooksLikeId(raw.policy) &&
+      !reconLooksLikeId(raw.blank) &&
+      !reconLooksLikeId(raw.car)
+    ) {
+      continue;
+    }
 
     const fromKey = reconFileDate(raw.from);
     const durationDays = reconTermDays(raw.duration);

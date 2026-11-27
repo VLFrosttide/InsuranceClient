@@ -8514,7 +8514,10 @@ function downloadInsurancesXlsx(rows, date, canSeePrice) {
 //   [СРОК] / [SROK] / [Duration]                    -> Duration (15D = 15 days, 3M = 3 months)
 //   [ЦЕНА] / [Price] / [ТАРИФА] / [Tarifa]          -> Price (amount only - the currency type is not compared)
 // (English is accepted for the policy / sticker / car / duration / price
-// columns; see the full list in RECON_COLUMNS, reconcile-core.js.)
+// columns; see the full list in RECON_COLUMNS, reconcile-core.js. The broker
+// portal's "Export Excel" file - a real .xlsx with the same columns in en/bg/tr
+// and its StartDate under "Valid from" - is read the same way, and the total /
+// per-price breakdown it prints below the list are skipped as summary rows.)
 //
 // Two report layouts are supported, since daily reports in the field use a
 // shorter header set than the one originally designed here:
