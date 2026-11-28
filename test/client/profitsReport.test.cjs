@@ -71,7 +71,14 @@ const kindsBlock = slice(
   'const BORDER_KIND = "border";',
   "// Duration dropdown options (values in days)"
 );
-const profitsBlock = slice("const PROFIT_SETTINGS_KEY", "\n// Navigation setup");
+// The Profits section runs from its local-storage key to the next admin
+// section ("Employee statistics"), which now sits between it and the navigation
+// setup. Keeping the boundary explicit means the checks below only ever count
+// this section's own API calls.
+const profitsBlock = slice(
+  "const PROFIT_SETTINGS_KEY",
+  "\n// Admin > Employee statistics"
+);
 
 const CTX = {
   // The real helpers the section calls (same code as the app, kept small).

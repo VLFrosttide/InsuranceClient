@@ -148,6 +148,66 @@ const I18N = {
     "profits.avgProfitPerDay": "Average profit per selling day",
     "profits.refresh": "Refresh",
 
+    // Admin > Employee statistics: how many insurances each employee wrote per
+    // shift (day vs night) and the averages for each. The figures come from
+    // GET /reports/shifts, so every PC shows the same numbers.
+    "nav.employeeStatistics": "Employee statistics",
+    "employeeStats.hint":
+      "How many insurances each employee created per shift, with the day and the night shift kept apart. A shift is a streak of one employee's insurances: it ends at their last insurance before a longer pause, so the end is around 19:30 / 07:30 but never exactly.",
+    "employeeStats.from": "From",
+    "employeeStats.to": "To",
+    "employeeStats.previousPeriod": "Previous period",
+    "employeeStats.nextPeriod": "Next period",
+    "employeeStats.last7": "Last 7 days",
+    "employeeStats.yesterday": "Yesterday",
+    "employeeStats.thisMonth": "This month",
+    "employeeStats.refresh": "Refresh",
+    "employeeStats.shiftHours": "Shift hours",
+    "employeeStats.shiftHoursHint":
+      "The two times only decide whether a shift counts as day or night: each streak is labelled by where most of its insurances fall. A pause longer than the minutes below ends the shift, and the next insurance starts a new one.",
+    "employeeStats.dayStart": "Day shift starts",
+    "employeeStats.nightStart": "Night shift starts",
+    "employeeStats.gap": "Shift ends after (minutes)",
+    "employeeStats.badDayHour":
+      "The day shift must start at a time of day (HH:MM).",
+    "employeeStats.badNightHour":
+      "The night shift must start at a time of day (HH:MM).",
+    "employeeStats.sameHours":
+      "The night shift must start at a different time than the day shift.",
+    "employeeStats.hourOrder":
+      "The night shift must start after the day shift - the day shift cannot cross midnight.",
+    "employeeStats.badGap":
+      "The shift end must be a whole number of minutes between 15 and 1440.",
+    "employeeStats.dayShift": "Day shift ({window})",
+    "employeeStats.nightShift": "Night shift ({window})",
+    "employeeStats.bothShifts": "Both shifts",
+    "employeeStats.policies": "Insurances",
+    "employeeStats.policiesHint":
+      "Deleted insurances are not counted; an annulled one still counts, it was written.",
+    "employeeStats.employees": "Employees",
+    "employeeStats.shifts": "Shifts",
+    "employeeStats.shiftsHint":
+      "One employee's streak of insurances. This is the base of the average per shift.",
+    "employeeStats.shiftSpan": "Shift",
+    "employeeStats.avgPerShift": "Average per shift",
+    "employeeStats.avgPerShiftHint":
+      "Insurances divided by the shifts worked.",
+    "employeeStats.avgPerWorker": "Average per employee",
+    "employeeStats.avgPerDay": "Average per day",
+    "employeeStats.avgPerWorkerDay": "Average per employee-day",
+    "employeeStats.avgPerWorkerDayHint":
+      "Insurances divided by (employees x days of the period) - the same person on the same day counts once.",
+    "employeeStats.perEmployee": "Per employee",
+    "employeeStats.perDay": "Per day",
+    "employeeStats.employee": "Employee",
+    "employeeStats.day": "Day",
+    "employeeStats.night": "Night",
+    "employeeStats.avgShiftColumn": "Avg / shift",
+    "employeeStats.avgDayColumn": "Avg / day",
+    "employeeStats.empty": "No insurance was created in this period.",
+    "employeeStats.footnote":
+      "A shift ends at the last insurance before a pause longer than the one set above, and the next insurance starts a new one. A streak is day or night by where most of its policies fall; a night that starts before the day shift is dated the previous day.",
+
     // Admin > Diagnostics: the failed requests recorded on every client PC.
     "diag.title": "Client diagnostics",
     "diag.hint":
@@ -1138,6 +1198,65 @@ const I18N = {
     "profits.avgIncomePerPolicy": "Среден приход на полица",
     "profits.avgProfitPerDay": "Средна печалба на ден с продажби",
     "profits.refresh": "Опресни",
+
+    // Админ > Статистика на служителите: колко застраховки е създал всеки
+    // служител на смяна (дневна/нощна) и средните стойности за всяка.
+    "nav.employeeStatistics": "Статистика на служителите",
+    "employeeStats.hint":
+      "Колко застраховки е създал всеки служител на смяна, с отделени дневна и нощна смяна. Смяната е поредица от застраховки на един служител: тя свършва с последната му застраховка преди по-дълга пауза, затова краят е около 19:30 / 07:30, но не точно.",
+    "employeeStats.from": "От",
+    "employeeStats.to": "До",
+    "employeeStats.previousPeriod": "Предишен период",
+    "employeeStats.nextPeriod": "Следващ период",
+    "employeeStats.last7": "Последните 7 дни",
+    "employeeStats.yesterday": "Вчера",
+    "employeeStats.thisMonth": "Този месец",
+    "employeeStats.refresh": "Обнови",
+    "employeeStats.shiftHours": "Часове на смените",
+    "employeeStats.shiftHoursHint":
+      "Двата часа само решават дали една смяна се брои за дневна или нощна: всяка поредица се определя по това къде попадат повечето ѝ застраховки. Пауза, по-дълга от минутите по-долу, приключва смяната и следващата застраховка започва нова.",
+    "employeeStats.dayStart": "Начало на дневната",
+    "employeeStats.nightStart": "Начало на нощната",
+    "employeeStats.gap": "Смяната свършва след (минути)",
+    "employeeStats.badDayHour":
+      "Дневната смяна трябва да започва в час от денонощието (ЧЧ:ММ).",
+    "employeeStats.badNightHour":
+      "Нощната смяна трябва да започва в час от денонощието (ЧЧ:ММ).",
+    "employeeStats.sameHours":
+      "Нощната смяна трябва да започва в различен час от дневната.",
+    "employeeStats.hourOrder":
+      "Нощната смяна трябва да започва след дневната - дневната не може да минава през полунощ.",
+    "employeeStats.badGap":
+      "Краят на смяната трябва да е цяло число минути между 15 и 1440.",
+    "employeeStats.dayShift": "Дневна смяна ({window})",
+    "employeeStats.nightShift": "Нощна смяна ({window})",
+    "employeeStats.bothShifts": "Двете смени",
+    "employeeStats.policies": "Застраховки",
+    "employeeStats.policiesHint":
+      "Изтритите застраховки не се броят; анулираната се брои, защото е била създадена.",
+    "employeeStats.employees": "Служители",
+    "employeeStats.shifts": "Смени",
+    "employeeStats.shiftsHint":
+      "Поредица от застраховки на един служител. Това е базата на средното на смяна.",
+    "employeeStats.shiftSpan": "Смяна",
+    "employeeStats.avgPerShift": "Средно на смяна",
+    "employeeStats.avgPerShiftHint":
+      "Застраховки, разделени на изработените смени.",
+    "employeeStats.avgPerWorker": "Средно на служител",
+    "employeeStats.avgPerDay": "Средно на ден",
+    "employeeStats.avgPerWorkerDay": "Средно на служител-ден",
+    "employeeStats.avgPerWorkerDayHint":
+      "Застраховки, разделени на (служители x дни от периода) - един и същ човек в един и същ ден се брои веднъж.",
+    "employeeStats.perEmployee": "По служители",
+    "employeeStats.perDay": "По дни",
+    "employeeStats.employee": "Служител",
+    "employeeStats.day": "Дневна",
+    "employeeStats.night": "Нощна",
+    "employeeStats.avgShiftColumn": "Средно / смяна",
+    "employeeStats.avgDayColumn": "Средно / ден",
+    "employeeStats.empty": "В този период няма създадени застраховки.",
+    "employeeStats.footnote":
+      "Смяната свършва с последната застраховка преди пауза, по-дълга от зададената по-горе, а следващата застраховка започва нова. Поредицата е дневна или нощна според това къде попадат повечето ѝ полици; нощна, започнала преди дневната, се отнася към предишния ден.",
 
     // Админ > Диагностика: неуспешните заявки, записани на всеки клиент.
     "diag.title": "Клиентска диагностика",

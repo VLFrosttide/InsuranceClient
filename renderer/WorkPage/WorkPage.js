@@ -11089,6 +11089,422 @@ async function profitsView() {
   renderReport();
 }
 
+// ---------------------------------------------------------------------------
+// Admin > Employee statistics
+//
+// How many insurances every employee wrote during each shift of a period, with
+// the day and the night shift kept apart and the averages for each. The figures
+// come from GET /reports/shifts (Requests/Reports.js in the server), which works
+// them out from the policies' creation time, so every PC shows the same numbers
+// and this tab cannot drift from the report the admins already trust.
+//
+// The shift window is the admin's choice (employeeStats-core.js): the day shift
+// runs from the "day start" hour up to the "night start" hour and the night
+// shift is the rest of the day, so it spans midnight. A policy written after
+// midnight counts in the night shift of the day it started - the same rule the
+// server applies, which is why the day/night split always adds up to the total.
+// ---------------------------------------------------------------------------
+let employeeStatsState = null;
+let employeeStatsHoursOpen = null;
+// Sort state of the three tables. Kept outside the render, so changing the
+// period or leaving the tab and coming back keeps the chosen order.
+const employeeStatsSort = {
+  rows: { key: "date", dir: "asc" },
+  employees: { key: "total", dir: "desc" },
+  days: { key: "date", dir: "asc" },
+};
+
+// The period the tab opens on: the last 7 complete days, 07:30-19:30, and a
+// shift ends after 6 hours without a new insurance.
+function employeeStatsDefaults(today) {
+  const period = employeeStatsDefaultPeriod(today);
+  return {
+    from: period.from,
+    to: period.to,
+    dayStart: EMPLOYEE_STATS_DEFAULT_DAY_START,
+    nightStart: EMPLOYEE_STATS_DEFAULT_NIGHT_START,
+    gap: EMPLOYEE_STATS_DEFAULT_GAP_MINUTES,
+  };
+}
+
+// The role of the author as a word (Admin / Worker / Client). An author whose
+// account no longer exists keeps a dash instead of a made-up role.
+function employeeStatsRoleLabel(role) {
+  if (role === null || role === undefined || role === "") return "—";
+  const label = t(`role.${role}`, "");
+  return label || String(role);
+}
+
+async function employeeStatisticsView() {
+  const today = localDateString();
+  const state =
+    employeeStatsState || (employeeStatsState = employeeStatsDefaults(today));
+
+  // Every control rebuilds the view from one state, exactly like the Profits
+  // tab: the date pickers, the presets and the shift hours can never leave two
+  // different periods on screen.
+  const reload = (next) => {
+    employeeStatsState = next;
+    return employeeStatisticsView().catch((err) => toast(err.message, "error"));
+  };
+
+  const titleBox = el("div", null, { class: "profit-heading-title" });
+  titleBox.appendChild(el("h2", t("nav.employeeStatistics")));
+  titleBox.appendChild(el("p", t("employeeStats.hint"), { class: "muted" }));
+
+  const fromInput = input("date", state.from);
+  const toInput = input("date", state.to);
+  const go = (from, to) => reload({ ...state, from, to });
+
+  fromInput.addEventListener("change", () => {
+    const from = fromInput.value || state.from;
+    let to = toInput.value || state.to;
+    if (from && to && to < from) to = from;
+    go(from, to);
+  });
+  toInput.addEventListener("change", () => {
+    let from = fromInput.value || state.from;
+    const to = toInput.value || state.to;
+    if (from && to && from > to) from = to;
+    go(from, to);
+  });
+
+  // The step buttons move the whole period by its own length, so walking back
+  // through the weeks (or days) needs one click per period.
+  const step = (direction) => {
+    const next = employeeStatsShiftPeriod(
+      fromInput.value || state.from,
+      toInput.value || state.to,
+      direction
+    );
+    go(next.from, next.to);
+  };
+  const previousBtn = el("button", "‹", {
+    type: "button",
+    class: "secondary date-step",
+    title: t("employeeStats.previousPeriod"),
+  });
+  previousBtn.setAttribute("aria-label", previousBtn.title);
+  previousBtn.addEventListener("click", () => step(-1));
+  const nextBtn = el("button", "›", {
+    type: "button",
+    class: "secondary date-step",
+    title: t("employeeStats.nextPeriod"),
+  });
+  nextBtn.setAttribute("aria-label", nextBtn.title);
+  nextBtn.addEventListener("click", () => step(1));
+
+  const dateNav = el("div", null, { class: "profit-date-nav" });
+  dateNav.appendChild(previousBtn);
+  dateNav.appendChild(field(t("employeeStats.from"), fromInput));
+  dateNav.appendChild(field(t("employeeStats.to"), toInput));
+  dateNav.appendChild(nextBtn);
+
+  const presetRow = el("div", null, { class: "profit-period-presets" });
+  const addPreset = (label, preset) => {
+    const btn = el("button", label, { type: "button", class: "secondary small" });
+    btn.addEventListener("click", () => {
+      const period = employeeStatsPeriodPreset(preset, localDateString());
+      go(period.from, period.to);
+    });
+    presetRow.appendChild(btn);
+  };
+  addPreset(t("employeeStats.last7"), "last7");
+  addPreset(t("employeeStats.yesterday"), "yesterday");
+  addPreset(t("employeeStats.thisMonth"), "month");
+  const refreshBtn = el("button", t("employeeStats.refresh"), {
+    type: "button",
+    class: "secondary small",
+  });
+  refreshBtn.addEventListener("click", () => reload({ ...state }));
+  presetRow.appendChild(refreshBtn);
+
+  const periodBox = el("div", null, { class: "profit-period" });
+  periodBox.appendChild(presetRow);
+  periodBox.appendChild(dateNav);
+
+  const headingRow = el("div", null, { class: "profit-heading-row" });
+  headingRow.appendChild(titleBox);
+  headingRow.appendChild(periodBox);
+
+  // ---- the shift window. Folded by default: 08:00-20:00 is what the crossings
+  // work, and the two hour fields are not worth a permanent row. A saved
+  // non-default window opens the card so it cannot be silently forgotten.
+  const hoursCard = el("details", null, { class: "profit-settings-card" });
+  hoursCard.open =
+    employeeStatsHoursOpen === null
+      ? state.dayStart !== EMPLOYEE_STATS_DEFAULT_DAY_START ||
+        state.nightStart !== EMPLOYEE_STATS_DEFAULT_NIGHT_START ||
+        Number(state.gap) !== EMPLOYEE_STATS_DEFAULT_GAP_MINUTES
+      : employeeStatsHoursOpen;
+  hoursCard.addEventListener("toggle", () => {
+    employeeStatsHoursOpen = hoursCard.open;
+  });
+  const hoursSummary = el("summary");
+  hoursSummary.appendChild(el("h3", t("employeeStats.shiftHours")));
+  hoursCard.appendChild(hoursSummary);
+  const hoursBody = el("div", null, { class: "profit-settings-body" });
+  hoursBody.appendChild(
+    el("p", t("employeeStats.shiftHoursHint"), { class: "muted" })
+  );
+  const hoursFields = el("div", null, { class: "profit-date-nav" });
+  const dayStartInput = input("time", state.dayStart);
+  const nightStartInput = input("time", state.nightStart);
+  const gapInput = input("number", String(state.gap));
+  gapInput.min = String(EMPLOYEE_STATS_MIN_GAP_MINUTES);
+  gapInput.max = String(EMPLOYEE_STATS_MAX_GAP_MINUTES);
+  gapInput.step = "15";
+  hoursFields.appendChild(field(t("employeeStats.dayStart"), dayStartInput));
+  hoursFields.appendChild(field(t("employeeStats.nightStart"), nightStartInput));
+  hoursFields.appendChild(field(t("employeeStats.gap"), gapInput));
+  hoursBody.appendChild(hoursFields);
+  hoursCard.appendChild(hoursBody);
+
+  // A bad time or pause is refused here, before a request is made: the report
+  // would otherwise come back as a 400 the admin has to decode.
+  const applyWindow = () => {
+    const window = employeeStatsResolveWindow(
+      dayStartInput.value,
+      nightStartInput.value,
+      gapInput.value
+    );
+    if (window.errorKey) {
+      toast(t(window.errorKey), "error");
+      dayStartInput.value = state.dayStart;
+      nightStartInput.value = state.nightStart;
+      gapInput.value = String(state.gap);
+      return;
+    }
+    reload({
+      ...state,
+      dayStart: window.dayStart,
+      nightStart: window.nightStart,
+      gap: window.gapMinutes,
+    });
+  };
+  dayStartInput.addEventListener("change", applyWindow);
+  nightStartInput.addEventListener("change", applyWindow);
+  gapInput.addEventListener("change", applyWindow);
+
+  // ---- the report. A failed read leaves the controls on screen (pick another
+  // period and try again) and says what the server answered.
+  const reportHost = el("div", null, { class: "employee-report" });
+  try {
+    const report = await api(`/reports/shifts?${employeeStatsQuery(state)}`);
+    reportHost.replaceChildren(...employeeStatisticsNodes(report, state));
+  } catch (err) {
+    reportHost.appendChild(
+      el(
+        "p",
+        `${t("errorPrefix")}: ${translateError(
+          err && err.message ? err.message : ""
+        )}`,
+        { class: "muted" }
+      )
+    );
+  }
+
+  Content.replaceChildren(headingRow, hoursCard, reportHost);
+}
+
+// The report body: totals and averages for each shift, the per-shift tables,
+// the per-employee split and the per-day totals. Every figure is the server's
+// (GET /reports/shifts), so nothing here recomputes a count and the screen can
+// never disagree with the API.
+function employeeStatisticsNodes(report, state) {
+  const nodes = [];
+  const schedule = report.schedule || {};
+  const dayWindow =
+    (schedule.day && schedule.day.window) ||
+    employeeStatsWindow(state.dayStart, state.nightStart);
+  const nightWindow =
+    (schedule.night && schedule.night.window) ||
+    employeeStatsWindow(state.nightStart, state.dayStart);
+  const summary = report.summary || { day: {}, night: {}, overall: {} };
+  const average = (value) => employeeStatsAverage(value);
+
+  nodes.push(
+    el(
+      "p",
+      `${formatDateOnly(report.from)} – ${formatDateOnly(report.to)} · ` +
+        `${report.days} ${t("days")}`,
+      { class: "muted profit-period-line" }
+    )
+  );
+
+  // The averages of one bucket (a shift, or both). "per employee-day" is only
+  // meaningful for the combined section, so it is added there.
+  const statCards = (bucket, withWorkerDay) => {
+    const grid = el("div", null, { class: "stat-grid" });
+    const card = (label, value, hint) => {
+      const attrs = { class: "stat-card" };
+      if (hint) attrs.title = hint;
+      const box = el("div", null, attrs);
+      box.appendChild(el("h3", label));
+      box.appendChild(el("p", value, { class: "big" }));
+      grid.appendChild(box);
+    };
+    card(
+      t("employeeStats.policies"),
+      String(bucket.policies || 0),
+      t("employeeStats.policiesHint")
+    );
+    card(t("employeeStats.employees"), String(bucket.workers || 0));
+    card(
+      t("employeeStats.shifts"),
+      String(bucket.shifts || 0),
+      t("employeeStats.shiftsHint")
+    );
+    card(
+      t("employeeStats.avgPerShift"),
+      average(bucket.avgPoliciesPerShift),
+      t("employeeStats.avgPerShiftHint")
+    );
+    card(t("employeeStats.avgPerWorker"), average(bucket.avgPoliciesPerWorker));
+    card(t("employeeStats.avgPerDay"), average(bucket.avgPoliciesPerDay));
+    if (withWorkerDay) {
+      card(
+        t("employeeStats.avgPerWorkerDay"),
+        average(bucket.avgPoliciesPerWorkerDay),
+        t("employeeStats.avgPerWorkerDayHint")
+      );
+    }
+    return grid;
+  };
+
+  const shiftColumns = [
+    {
+      key: "date",
+      label: t("date"),
+      sortType: "date",
+      format: (value) => formatDateOnly(value),
+    },
+    { key: "worker", label: t("employeeStats.employee") },
+    {
+      key: "role",
+      label: t("role"),
+      sortable: false,
+      format: (value) => employeeStatsRoleLabel(value),
+    },
+    {
+      // The detected shift: first insurance to last insurance (the shift ends
+      // there). Two streaks of the same day show as two rows, which is exactly
+      // what they are.
+      key: "span",
+      label: t("employeeStats.shiftSpan"),
+      sortValue: (row) => row.startedAt,
+      sortType: "text",
+      format: (value, row) =>
+        employeeStatsShiftSpan(row.startedAt, row.endedAt),
+    },
+    { key: "policies", label: t("employeeStats.policies"), sortType: "number" },
+  ];
+
+  const shiftSection = (title, shift) => {
+    nodes.push(el("h3", title));
+    nodes.push(statCards(summary[shift] || {}, false));
+    const rows = (report.rows || []).filter((row) => row.shift === shift);
+    if (rows.length) {
+      nodes.push(
+        sortableTable(rows, shiftColumns, null, null, null, {
+          sort: employeeStatsSort.rows,
+        })
+      );
+    }
+  };
+
+  shiftSection(fmt(t("employeeStats.dayShift"), { window: dayWindow }), "day");
+  shiftSection(
+    fmt(t("employeeStats.nightShift"), { window: nightWindow }),
+    "night"
+  );
+
+  nodes.push(el("h3", t("employeeStats.bothShifts")));
+  nodes.push(statCards(summary.overall || {}, true));
+
+  if (!summary.overall || Number(summary.overall.policies) === 0) {
+    nodes.push(el("p", t("employeeStats.empty"), { class: "muted" }));
+  } else {
+    nodes.push(...employeeStatisticsTableNodes(report, average));
+  }
+
+  nodes.push(
+    el("p", t("employeeStats.footnote"), { class: "muted profit-period-line" })
+  );
+  return nodes;
+}
+// The two tables of the combined section: every employee's day/night split and
+// the per-day totals (quiet days included, so a chart has no gaps).
+function employeeStatisticsTableNodes(report, average) {
+  const employeeColumns = [
+    { key: "worker", label: t("employeeStats.employee") },
+    {
+      key: "role",
+      label: t("role"),
+      sortable: false,
+      format: (value) => employeeStatsRoleLabel(value),
+    },
+    {
+      key: "day",
+      label: t("employeeStats.day"),
+      sortType: "number",
+      sortValue: (row) => row.day.policies,
+      format: (value) => String((value && value.policies) || 0),
+    },
+    {
+      key: "night",
+      label: t("employeeStats.night"),
+      sortType: "number",
+      sortValue: (row) => row.night.policies,
+      format: (value) => String((value && value.policies) || 0),
+    },
+    {
+      key: "total",
+      label: t("total"),
+      sortType: "number",
+      sortValue: (row) => row.total.policies,
+      format: (value) => String((value && value.policies) || 0),
+    },
+    {
+      key: "avgShift",
+      label: t("employeeStats.avgShiftColumn"),
+      sortType: "number",
+      sortValue: (row) => row.total.avgPoliciesPerShift,
+      format: (value, row) => average(row.total.avgPoliciesPerShift),
+    },
+    {
+      key: "avgDay",
+      label: t("employeeStats.avgDayColumn"),
+      sortType: "number",
+      sortValue: (row) => row.total.avgPoliciesPerDay,
+      format: (value, row) => average(row.total.avgPoliciesPerDay),
+    },
+  ];
+
+  const dayColumns = [
+    {
+      key: "date",
+      label: t("date"),
+      sortType: "date",
+      format: (value) => formatDateOnly(value),
+    },
+    { key: "day", label: t("employeeStats.day"), sortType: "number" },
+    { key: "night", label: t("employeeStats.night"), sortType: "number" },
+    { key: "total", label: t("total"), sortType: "number" },
+  ];
+
+  return [
+    el("h3", t("employeeStats.perEmployee")),
+    sortableTable(report.workers || [], employeeColumns, null, null, null, {
+      sort: employeeStatsSort.employees,
+    }),
+    el("h3", t("employeeStats.perDay")),
+    sortableTable(report.perDay || [], dayColumns, null, null, null, {
+      sort: employeeStatsSort.days,
+    }),
+  ];
+}
+
 // Navigation setup
 // ---------------------------------------------------------------------------
 const NAV_DEFS = {
@@ -11104,6 +11520,9 @@ const NAV_DEFS = {
     // this computer only (see profitsView); the tab is admin-only because it
     // reads /admin/insurances.
     { key: "nav.profits", load: profitsView },
+    // Employee statistics: the per-shift, per-employee report of
+    // GET /reports/shifts. Admin-only, like Profits: it covers every employee.
+    { key: "nav.employeeStatistics", load: employeeStatisticsView },
     // No separate Card tab: the branch's card balance, its reset history and
     // the walk-in card insurances behind it are all on the Current cash screen.
     { key: "nav.brokers", load: brokersView },

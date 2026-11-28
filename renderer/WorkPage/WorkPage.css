@@ -1646,6 +1646,15 @@ input[type="file"].hidden {
   line-height: 1;
 }
 
+/* ---------------------------------------------------------------------------
+   Employee statistics (admin). The tab reuses the Profits heading/period
+   classes above (same controls, same place on screen); the only thing it needs
+   of its own is the spacing of the report's section headings.
+   --------------------------------------------------------------------------- */
+.employee-report h3 {
+  margin: 22px 0 8px;
+}
+
 .profit-settings-card {
   background: var(--panel);
   border: 1px solid var(--panel-border);
