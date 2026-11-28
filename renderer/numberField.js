@@ -3,7 +3,7 @@
 // Pure, DOM-free helpers for the number fields on the add-insurance form.
 //
 // Kept in a separate classic <script> (no DOM access) so the exact same code
-// runs in the browser and in the Node test harness (Test/numberField.test.cjs),
+// runs in the browser and in the Node test harness (test/client/numberField.test.cjs),
 // following the same pattern as emailThread.js / emailAge.js.
 //
 // The numbers are read out of the policy PDFs (the Desktop watcher in main.js

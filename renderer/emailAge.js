@@ -2,7 +2,7 @@
 
 // Pure, DOM-free helpers for how long an unread email card has been waiting.
 // Kept in a separate classic <script> so the same code runs in the browser
-// and in the Node test harness (Test/emailAge.test.cjs).
+// and in the Node test harness (test/client/emailAge.test.cjs).
 
 // Cards waiting longer than this are highlighted as overdue.
 const EMAIL_OVERDUE_MS = 10 * 60 * 1000;

@@ -8,7 +8,7 @@
 //
 // Kept in a separate classic <script> so the exact same code runs in the
 // dashboard (WorkPage.js) and in the Node test harness
-// (Test/emailSearch.test.cjs).
+// (test/client/emailSearch.test.cjs).
 //
 // Matching is literal and case-insensitive: every word of the input must occur
 // somewhere in the card's text, in any order. A blank input matches everything

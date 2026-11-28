@@ -3,7 +3,7 @@
 // Pure, DOM-free helpers for the end-of-shift reminder and the admin's
 // "forgotten shift" fix. Kept in a separate classic <script> so the same code
 // runs in the browser and in the Node test harness
-// (Test/shiftReminder.test.cjs).
+// (test/client/shiftReminder.test.cjs).
 //
 // The shift day ends at local midnight. The reminder fires five minutes
 // before it, so the last chance to press "End shift" (reset the branch's

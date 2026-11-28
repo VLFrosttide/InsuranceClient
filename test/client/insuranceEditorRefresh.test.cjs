@@ -1,0 +1,486 @@
+"use strict";
+
+// Node test for the "edit an insurance" modal's refresh wiring.
+//
+// Correcting the price or the payment type of an old policy moves money on the
+// server (current cash / card balance), so the list that offered the edit has to
+// show the new values straight away instead of waiting for a manual reload.
+// openInsuranceEditor therefore
+//   - adopts the row the server returns after the PATCH (so a view rendering
+//     from its local rows shows the new price/payment type immediately), and
+//   - calls the `onDone` callback its caller passes - render() in "Insurances",
+//     runSearch() in "Insurances by date" / "My insurances".
+//
+// openInsuranceEditor lives in renderer/WorkPage/WorkPage.js, which touches the
+// DOM the moment it is loaded. So - like insuranceSort.test.cjs - this test cuts
+// that ONE function out of the REAL file and runs it in a vm with the handful of
+// helpers it uses (buildForm / openModal / closeModal / toast / t / api)
+// stubbed. The production code is what gets exercised; if the function is ever
+// moved or renamed the marker below stops matching and the test fails loudly
+// instead of silently testing nothing.
+//
+// Run with:  node test/client/insuranceEditorRefresh.test.cjs   (or: npm test)
+
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const ROOT = path.join(__dirname, "..", "..");
+const WORKPAGE_JS = path.join(ROOT, "renderer", "WorkPage", "WorkPage.js");
+
+const START_MARKER = "function openInsuranceEditor(insurance, onDone) {";
+
+const src = fs.readFileSync(WORKPAGE_JS, "utf8");
+const start = src.indexOf(START_MARKER);
+if (start < 0) {
+  console.error(
+    "Could not locate openInsuranceEditor in WorkPage.js (renamed or moved?)"
+  );
+  process.exit(1);
+}
+// Everything inside the function is indented, so the first "}" at column 0
+// after the marker is the one that closes it. (WorkPage.js uses CRLF, hence the
+// \r? in the pattern.)
+const tail = src.slice(start);
+const closing = /\r?\n\}\r?\n/.exec(tail);
+if (!closing) {
+  console.error("Could not find the end of openInsuranceEditor");
+  process.exit(1);
+}
+// The editor builds its duration / vehicle type dropdowns and wires the price
+// recalculation with the helpers declared right above it, so load those too.
+const HELPERS_MARKER = "const EDIT_DURATION_OPTIONS = ";
+const helpersStart = src.indexOf(HELPERS_MARKER);
+if (helpersStart < 0 || helpersStart > start) {
+  console.error("Could not locate the edit-price helpers above openInsuranceEditor");
+  process.exit(1);
+}
+const block =
+  src.slice(helpersStart, start) +
+  tail.slice(0, closing.index + closing[0].length);
+
+// --- fakes -------------------------------------------------------------------
+let apiCalls = [];
+let toasts = [];
+let modalTitles = [];
+let closedCount = 0;
+let doneCalls = [];
+let submitHandler = null;
+let lastSpec = null;
+// What the stubbed api() resolves/rejects with for the next save.
+let apiResponse = null;
+let apiError = null;
+// Fixed timestamp so the body assertions below stay deterministic.
+const FIXED_CREATED_AT = "2026-10-10 12:34:56";
+
+const CTX = {
+  console,
+  // The edit now stamps its own CreatedAt (the worker's local time); the test
+  // pins a fixed value so the body assertions below are deterministic.
+  localDateTimeNow: () => FIXED_CREATED_AT,
+  // The production code reads the viewer's role to hide the price field from
+  // workers; these tests exercise the admin (role "1") editing path.
+  userRole: "1",
+  t: (key) => key,
+  // The kind labels fall back to the server's language-specific label.
+  getLang: () => "bg",
+  buildForm: (spec, onSubmit, submitLabel) => {
+    lastSpec = spec;
+    submitHandler = onSubmit;
+    return { __form: true, submitLabel };
+  },
+  openModal: (title) => {
+    modalTitles.push(title);
+  },
+  closeModal: () => {
+    closedCount++;
+  },
+  toast: (message, kind) => {
+    toasts.push(`${kind}: ${message}`);
+  },
+  api: async (url, opts) => {
+    apiCalls.push({ url, opts });
+    if (apiError) throw new Error(apiError);
+    return apiResponse;
+  },
+};
+vm.createContext(CTX);
+vm.runInContext(block, CTX, { filename: "WorkPage.js#openInsuranceEditor" });
+
+if (typeof CTX.openInsuranceEditor !== "function") {
+  console.error("openInsuranceEditor did not load - block markers changed?");
+  process.exit(1);
+}
+
+// --- tiny assert helpers -----------------------------------------------------
+let passed = 0;
+let failed = 0;
+async function check(name, fn) {
+  try {
+    await fn();
+    passed++;
+    console.log("  PASS  " + name);
+  } catch (err) {
+    failed++;
+    console.log("  FAIL  " + name + "  -> " + err.message);
+  }
+}
+function eq(actual, expected, msg) {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a !== b)
+    throw new Error((msg || "values differ") + ` (got ${a}, want ${b})`);
+}
+function ok(cond, msg) {
+  if (!cond) throw new Error(msg || "expected truthy");
+}
+
+const storedRow = () => ({
+  BlancNumber: "1234567",
+  PolicyNumber: "P-001",
+  Price: "100.00",
+  CurrencyType: "EUR",
+  Duration: 365,
+  Branch: "Офис Харманли",
+  Otomobil: "Лек автомобил",
+  StartDate: "2026-10-01",
+  PaymentType: "Cash",
+  Annulled: 0,
+});
+
+// Opens the editor for a fresh row and returns everything the test needs: the
+// row itself, the captured submit handler and the recorded onDone calls.
+function open(row, response, onDone) {
+  apiCalls = [];
+  toasts = [];
+  modalTitles = [];
+  closedCount = 0;
+  doneCalls = [];
+  submitHandler = null;
+  lastSpec = null;
+  apiError = null;
+  apiResponse =
+    response === undefined
+      ? { message: "Insurance updated", insurance: { ...row } }
+      : response;
+
+  const wrapped = onDone
+    ? (data) => {
+        doneCalls.push(data);
+        onDone(data);
+      }
+    : undefined;
+  CTX.openInsuranceEditor(row, wrapped);
+  return {
+    row,
+    save: (payload) => submitHandler(payload),
+    done: () => doneCalls,
+    specValue: (key) => {
+      const entry = (lastSpec || []).find((s) => s.key === key);
+      return entry ? entry.value : undefined;
+    },
+  };
+}
+
+(async () => {
+  console.log("openInsuranceEditor — refresh wiring");
+
+  await check("the modal opens for the policy being edited", async () => {
+    const e = open(storedRow());
+    eq(modalTitles, ["editInsurance 1234567"], "modal title");
+    ok(typeof e.save === "function", "a submit handler was registered");
+  });
+
+  await check("the form is pre-filled with the stored values", async () => {
+    const e = open(storedRow());
+    eq(e.specValue("Price"), "100.00", "price");
+    eq(e.specValue("PaymentType"), "Cash", "payment type");
+    eq(e.specValue("Branch"), "Офис Харманли", "branch");
+    eq(e.specValue("CurrencyType"), "EUR", "currency");
+  });
+
+  await check("admins get the author and broker dropdowns, workers do not", async () => {
+    CTX.userRole = "1";
+    const e = open({
+      ...storedRow(),
+      Author: "worker1",
+      BrokerId: 7,
+      Broker: "Euroins",
+    });
+    const author = lastSpec.find((s) => s.key === "Author");
+    const broker = lastSpec.find((s) => s.key === "BrokerId");
+    eq(author.type, "select", "author is a dropdown");
+    eq(author.value, "worker1", "stored author selected");
+    eq(broker.type, "select", "broker is a dropdown");
+    eq(broker.value, "7", "stored broker id selected");
+    ok(
+      broker.options.some(
+        (o) => o.value === "" && o.label === "addAdmin.brokerNone"
+      ),
+      "the walk-in option is offered"
+    );
+    ok(
+      broker.options.some((o) => o.value === "7" && /Euroins/.test(o.label)),
+      "the stored broker stays selectable"
+    );
+
+    await e.save({ Author: "worker2", BrokerId: "5" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.Author, "worker2", "the new author is sent");
+    eq(body.BrokerId, "5", "the new broker is sent");
+
+    CTX.userRole = "2";
+    try {
+      open({ ...storedRow(), Author: "worker1", BrokerId: 7 });
+      eq(
+        lastSpec.some((s) => s.key === "Author"),
+        false,
+        "workers do not get the author field"
+      );
+      eq(
+        lastSpec.some((s) => s.key === "BrokerId"),
+        false,
+        "workers do not get the broker field"
+      );
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("the start date is normalised for the date input", async () => {
+    // The server may hand back a full "YYYY-MM-DD HH:MM:SS" datetime for the
+    // start date; an <input type="date"> only shows it when it is "YYYY-MM-DD".
+    // dateInputValue has to strip the time so the field is not left blank.
+    eq(open({ ...storedRow(), StartDate: "2026-10-01 00:00:00" }).specValue("StartDate"), "2026-10-01", "datetime -> date");
+    eq(open({ ...storedRow(), StartDate: "2026-10-01" }).specValue("StartDate"), "2026-10-01", "plain date is unchanged");
+    eq(open({ ...storedRow(), StartDate: null }).specValue("StartDate"), "", "missing date stays empty");
+    eq(open({ ...storedRow(), StartDate: "" }).specValue("StartDate"), "", "blank date stays empty");
+  });
+
+  await check("the form offers the blank number and the car number", async () => {
+    const e = open({ ...storedRow(), CarNumber: "CB1234AB" });
+    eq(e.specValue("BlancNumber"), "1234567", "blank number");
+    eq(e.specValue("CarNumber"), "CB1234AB", "car number");
+    const types = lastSpec
+      .filter((s) => s.key === "BlancNumber" || s.key === "CarNumber")
+      .map((s) => s.type);
+    eq(types, [undefined, undefined], "plain text inputs (not number)");
+  });
+
+  await check("a changed blank number is sent in the body, old one in the URL", async () => {
+    const row = storedRow();
+    const e = open(row, {
+      message: "Insurance updated",
+      insurance: { ...row, BlancNumber: "7654321", CarNumber: "X1" },
+    });
+    await e.save({ BlancNumber: " 7654321 ", CarNumber: " X1 " });
+    eq(apiCalls[0].url, "/insurances/1234567", "URL uses the stored number");
+    eq(
+      JSON.parse(apiCalls[0].opts.body),
+      { BlancNumber: "7654321", CarNumber: "X1", CreatedAt: FIXED_CREATED_AT },
+      "trimmed values in the body"
+    );
+    eq(e.row.BlancNumber, "7654321", "the row adopts the new blank number");
+  });
+
+  await check("an empty blank or car number is refused before any request", async () => {
+    for (const payload of [{ BlancNumber: "  " }, { CarNumber: "" }]) {
+      const e = open(storedRow());
+      let msg = null;
+      try {
+        await e.save(payload);
+      } catch (err) {
+        msg = err.message;
+      }
+      ok(msg, `save must fail for ${JSON.stringify(payload)}`);
+      eq(apiCalls.length, 0, "no request was sent");
+      eq(closedCount, 0, "the modal stays open");
+    }
+  });
+
+  await check("saving PATCHes the policy with the edited values", async () => {
+    const e = open(storedRow());
+    await e.save({ Price: 120, PaymentType: "Card" });
+    eq(apiCalls.length, 1, "one request");
+    eq(apiCalls[0].url, "/insurances/1234567", "endpoint");
+    eq(apiCalls[0].opts.method, "PATCH", "method");
+    eq(
+      JSON.parse(apiCalls[0].opts.body),
+      { Price: 120, PaymentType: "Card", CreatedAt: FIXED_CREATED_AT },
+      "body"
+    );
+  });
+
+  await check("saving adopts the row the server returns", async () => {
+    const row = storedRow();
+    const e = open(row, {
+      message: "Insurance updated",
+      insurance: { ...row, Price: "120.00", PaymentType: "Card" },
+    });
+    await e.save({ Price: 120, PaymentType: "Card" });
+    eq(e.row.Price, "120.00", "the row the table renders from has the new price");
+    eq(e.row.PaymentType, "Card", "and the new payment type");
+  });
+
+  await check("saving asks the calling view to refresh", async () => {
+    let refreshed = 0;
+    const e = open(storedRow(), undefined, () => {
+      refreshed++;
+    });
+    await e.save({ Price: 120 });
+    eq(refreshed, 1, "onDone ran once");
+    eq(e.done().length, 1, "and received the response");
+    ok(e.done()[0] && e.done()[0].insurance, "response handed to onDone");
+  });
+
+  await check("saving closes the modal and reports success", async () => {
+    const e = open(storedRow());
+    await e.save({ Price: 120 });
+    eq(closedCount, 1, "modal closed");
+    eq(toasts, ["success: insuranceUpdated"], "toast");
+  });
+
+  await check("an older server that omits the row still refreshes the view", async () => {
+    let refreshed = 0;
+    const e = open(storedRow(), { message: "Insurance updated" }, () => {
+      refreshed++;
+    });
+    await e.save({ Price: 120 });
+    eq(e.row.Price, "100.00", "the local row is left as it was");
+    eq(refreshed, 1, "so the view re-reads it from the server instead");
+  });
+
+  await check("the editor still works without a refresh callback", async () => {
+    const e = open(storedRow());
+    await e.save({ Price: 120 });
+    eq(closedCount, 1, "modal closed");
+    eq(e.done().length, 0, "nothing to call");
+  });
+
+  await check("a failed save leaves the modal open and does not refresh", async () => {
+    let refreshed = 0;
+    const e = open(storedRow(), undefined, () => {
+      refreshed++;
+    });
+    apiError = "insufficient current cash for reduction";
+    let threw = false;
+    try {
+      await e.save({ Price: 120 });
+    } catch (err) {
+      threw = true;
+      eq(
+        err.message,
+        "insufficient current cash for reduction",
+        "the server's reason must reach buildForm so it can toast it"
+      );
+    }
+    ok(threw, "the failure must propagate to buildForm");
+    eq(closedCount, 0, "the modal stays open");
+    eq(refreshed, 0, "no refresh");
+    eq(e.row.Price, "100.00", "the row is untouched");
+  });
+
+  await check("an admin editing an annulled policy sees the fault dropdown", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(e.specValue("AnnulReason"), "worker", "pre-filled fault reason");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("AnnulReason"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see or change the fault", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+      eq(e.specValue("AnnulReason"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("the price of an annulled policy is read-only", async () => {
+    // The stored Price is the annulment tax; admins change it through the Fee
+    // field, so the Price control must never be typed over.
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+    const price = lastSpec.find((s) => s.key === "Price");
+    eq(price && price.readonly, true, "admin cannot type the annulled price");
+    eq(e.specValue("AnnulFee"), 7, "the fee is the editable value");
+  });
+
+  await check("an admin editing an annulled policy sees the fee field", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+    eq(e.specValue("AnnulFee"), 7, "pre-filled stored fee");
+    const missing = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(missing.specValue("AnnulFee"), "", "empty when no fee is stored");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("AnnulFee"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see or change the fee", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 7 });
+      eq(e.specValue("AnnulFee"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("an unchanged fee is not sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ AnnulFee: "9" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("AnnulFee" in body), "unchanged fee is omitted");
+  });
+
+  await check("a changed fee is sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ AnnulFee: "5" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.AnnulFee, 5, "changed fee is sent as a number");
+  });
+
+  await check("an empty fee is omitted so the server keeps its own logic", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    await e.save({ AnnulFee: "" });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("AnnulFee" in body), "empty fee is omitted");
+  });
+
+  await check("an admin editing an annulled policy sees the annulled checkbox", async () => {
+    CTX.userRole = "1";
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+    eq(e.specValue("Annulled"), true, "annulled checkbox is ticked");
+    const active = open({ ...storedRow(), Annulled: 0 });
+    eq(active.specValue("Annulled"), undefined, "hidden on active policies");
+  });
+
+  await check("a worker editing an annulled policy cannot see the restore checkbox", async () => {
+    CTX.userRole = "2";
+    try {
+      const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker" });
+      eq(e.specValue("Annulled"), undefined, "hidden from workers");
+    } finally {
+      CTX.userRole = "1";
+    }
+  });
+
+  await check("a ticked annulled checkbox is not sent to the server", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ Annulled: true });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    ok(!("Annulled" in body), "unchanged Annulled is omitted");
+  });
+
+  await check("unticking the annulled checkbox sends Annulled: false", async () => {
+    const e = open({ ...storedRow(), Annulled: 1, AnnulReason: "worker", AnnulFee: 9 });
+    await e.save({ Annulled: false });
+    const body = JSON.parse(apiCalls[0].opts.body);
+    eq(body.Annulled, false, "restore request is sent");
+  });
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

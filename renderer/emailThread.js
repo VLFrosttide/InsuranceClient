@@ -7,7 +7,7 @@
 // Splitting them lets the UI show each email in its own visually separate box.
 //
 // Kept in a separate classic <script> (no DOM access) so the exact same code
-// runs in the browser and in the Node test harness (Test/emailThread.test.cjs).
+// runs in the browser and in the Node test harness (test/server/emailThread.test.cjs).
 
 // Header field names (lower-case, as written by mail clients in several
 // languages) mapped to the field they describe.

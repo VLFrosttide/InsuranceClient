@@ -1,4 +1,0 @@
-https://online.bulins.bg/ims/login/index.isc\
-https://online.bulins.bg/ims/Home/Index.isc
-https://online.bulins.bg/ims/tpl/BorderClientStep.isc?instype=border
-https://online.bulins.bg/ims/tpl/VehicleStep.isc

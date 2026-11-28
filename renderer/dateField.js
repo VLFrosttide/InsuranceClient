@@ -17,7 +17,7 @@
 // (HH:mm); its value stays "YYYY-MM-DDTHH:mm".
 //
 // Everything here is plain DOM/JS on purpose: the renderer files are classic
-// scripts (no bundler), and Test/dateField.test.cjs runs the pure helpers in a
+// scripts (no bundler), and test/client/dateField.test.cjs runs the pure helpers in a
 // vm.
 // ---------------------------------------------------------------------------
 

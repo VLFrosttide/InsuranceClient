@@ -14,7 +14,7 @@
 // UI shows an indeterminate (animated) bar instead: `null` means "unknown".
 //
 // Kept DOM-free so the same code runs in the browser and in the Node test
-// harness (Test/attachmentProgress.test.cjs).
+// harness (test/client/attachmentProgress.test.cjs).
 
 // Throughput used for the estimate. A 1 MB photo takes ~5 s to reach 90%,
 // which matches what a worker sees on a typical branch connection; a genuinely

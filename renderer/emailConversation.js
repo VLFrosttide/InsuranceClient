@@ -6,7 +6,7 @@
 // Kept in a separate classic <script> without DOM access so the exact same
 // code runs in the dashboard (WorkPage.js), on the add-insurance form
 // (AddInsurance.js) and in the Node test harness
-// (Test/emailConversation.test.cjs).
+// (test/client/emailConversation.test.cjs).
 //
 // Two independent maps live in localStorage:
 //

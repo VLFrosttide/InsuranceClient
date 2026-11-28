@@ -2,7 +2,7 @@
 
 // Pure, DOM-free helpers for the worker-presence board. Kept in a separate
 // classic <script> so the same code runs in the browser and in the Node test
-// harness (Test/presence.test.cjs).
+// harness (test/client/presence.test.cjs).
 
 // A worker is "afk" once no user activity (mouse, keyboard, touch, wheel) has
 // been seen for this long.

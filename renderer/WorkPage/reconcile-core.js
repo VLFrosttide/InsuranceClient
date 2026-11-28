@@ -2,7 +2,7 @@
 
 // Pure, DOM-free helpers for the "Reconcile daily report" feature. Kept in a
 // separate file so the exact same code can run in the browser (as a classic
-// <script>) and in a Node test harness (via vm). See Test/reconcile.test.js.
+// <script>) and in a Node test harness (via vm). See test/client/reconcile.test.cjs.
 //
 // Two daily-report layouts are supported:
 //   - Full layout:  НОМЕР НА ПОЛИЦА / НОМЕР НА СТИКЕР / ВАЛИДЕН ОТ / ВАЛИДЕН ДО / ДКН
