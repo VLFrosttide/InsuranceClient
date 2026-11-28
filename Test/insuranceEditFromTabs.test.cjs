@@ -347,7 +347,7 @@ function reset() {
     );
   });
 
-  await check("the broker's own rows keep the movement editor", () => {
+  await check("the broker history has only the hover insurance editor", () => {
     const viewStart = src.indexOf("function renderBrokerHistory(");
     const viewEnd = src.indexOf(
       "// Restore a previously soft-deleted broker movement",
@@ -355,12 +355,18 @@ function reset() {
     );
     const block = src.slice(viewStart, viewEnd);
     ok(
-      block.includes("brokerHistoryEditForm(broker, m, page, date, includeDeleted)"),
-      "the movement Edit still opens brokerHistoryEditForm"
+      block.includes("openInsuranceEditorForRow(m, refreshHistory)"),
+      "a policy row opens the policy editor on hover"
     );
     ok(
-      /rowActions\.push\(\s*\{\s*label: t\("edit"\)/.test(block),
-      "after the insurance edit"
+      !block.includes(
+        "brokerHistoryEditForm(broker, m, page, date, includeDeleted)"
+      ),
+      "the always-visible movement Edit is gone"
+    );
+    ok(
+      !/rowActions\.push\(\s*\{\s*label: t\("edit"\)/.test(block),
+      "no non-hover Edit button is pushed for an admin"
     );
   });
 

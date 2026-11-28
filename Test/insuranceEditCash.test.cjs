@@ -57,6 +57,9 @@ let txDepth = 0;
 // When true the cash "reduce" stub fails the way the real one does when the
 // drawer cannot fund the reversal of an old price.
 let failReduce = false;
+// When true the broker price-change stub fails like the real helper does for a
+// policy that has no live sale row to fold the delta into.
+let rejectMissingSaleRow = false;
 // The broker "negative balance allowed" setting, as returned by the stubbed
 // Brokers.js helper. Tests flip it to exercise the rejection gate.
 let allowNegativeBalance = true;
@@ -282,6 +285,13 @@ const STUBS = {
       brokerRestoreMeta.push(meta);
     },
     adjustBrokerForPriceChange: async (conn, brokerId, delta) => {
+      if (rejectMissingSaleRow) {
+        const err = new Error(
+          "This insurance has no sale row in the broker history; repair its history before changing its price"
+        );
+        err.code = "NO_SALE_MOVEMENT";
+        throw err;
+      }
       brokerDeltas.push({ brokerId, delta });
       return delta;
     },
@@ -466,6 +476,7 @@ async function patch(body, opts = {}) {
   renames.length = 0;
   txCount = 0;
   failReduce = !!opts.failReduce;
+  rejectMissingSaleRow = !!opts.rejectMissingSaleRow;
   row = { ...BASE_ROW, ...(opts.row || {}) };
 
   const res = {
@@ -492,6 +503,7 @@ async function patch(body, opts = {}) {
   );
 
   failReduce = false;
+  rejectMissingSaleRow = false;
   return {
     status: res.statusCode,
     body: res.body,
@@ -800,6 +812,23 @@ async function patch(body, opts = {}) {
   await check("a price correction re-syncs the broker's own balance", async () => {
     const r = await patch({ Price: 120 }, { row: BROKER_ROW });
     eq(r.brokerDeltas, ["20 -> broker 7"], "the broker is charged the difference");
+  });
+
+  await check("a price correction without a sale row is refused", async () => {
+    const r = await patch(
+      { Price: 120 },
+      { row: BROKER_ROW, rejectMissingSaleRow: true }
+    );
+    eq(r.status, 409, "the edit is rejected");
+    ok(
+      String(r.body && r.body.error).includes("no sale row"),
+      "the error explains the missing sale row"
+    );
+    eq(
+      r.updated.length,
+      0,
+      "the insurance row is not written (the transaction rolled back)"
+    );
   });
 
   await check("a lower price refunds the difference to the broker", async () => {
@@ -1846,6 +1875,83 @@ async function patch(body, opts = {}) {
       ["cash reduce 4 EUR @ Офис Харманли (Annul 1234567) by admin1"],
       "the 4 difference is refunded out of the drawer"
     );
+  });
+
+  await check("raising a zero fee without changing the fault takes effect", async () => {
+    const r = await patch(
+      { AnnulReason: "worker", AnnulFee: 1 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "worker",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 25,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulReason, "worker", "payer unchanged");
+    eq(r.row.AnnulFee, 1, "the fee is raised");
+    eq(r.row.Price, 1, "Price mirrors the fee");
+    eq(
+      r.movements,
+      ["cash increase 1 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the refund is 1 lower, so 1 comes back into the drawer"
+    );
+  });
+
+  await check("raising a zero fee on a broker policy charges the broker", async () => {
+    const r = await patch(
+      { AnnulReason: "broker", AnnulFee: 9 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "broker",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 100,
+          StartDate: dayOffset(-1),
+          BrokerId: 7,
+          PaymentType: "Broker",
+        },
+      }
+    );
+    eq(r.status, 200, "status");
+    eq(r.row.AnnulFee, 9, "the fee is raised");
+    eq(r.row.Price, 9, "Price mirrors the fee");
+    eq(
+      r.movements,
+      ["total/Broker increase 9 EUR @ Офис Харманли (Annul 1234567) by admin1"],
+      "the 9 fee is put back into the Broker channel"
+    );
+    eq(r.brokerRestores, ["-9 -> broker 7"], "the broker is charged the 9 fee");
+  });
+
+  await check("raising a zero fee while the fault is none is refused", async () => {
+    const r = await patch(
+      { AnnulReason: "none", AnnulFee: 9 },
+      {
+        row: {
+          Annulled: 1,
+          AnnulReason: "none",
+          AnnulFee: 0,
+          Price: 0,
+          OriginalPrice: 25,
+          StartDate: dayOffset(-1),
+          PaymentType: "Cash",
+        },
+      }
+    );
+    eq(r.status, 400, "status");
+    ok(
+      String(r.body && r.body.error).includes("no-fault"),
+      "the error explains that no fault means no fee"
+    );
+    eq(r.row.AnnulFee, 0, "the stored fee is untouched");
+    eq(r.movements, [], "no money moves");
   });
 
   await check("a worker cannot change the fee of an annulled insurance", async () => {

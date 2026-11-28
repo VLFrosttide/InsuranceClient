@@ -1017,6 +1017,10 @@ const I18N = {
     "err.movementNotDeleted": "Movement is not deleted",
     "err.failedLoadInsurances": "Failed to load insurances",
     "err.failedUpdateInsurance": "Failed to update insurance",
+    "err.insuranceNoSaleRow":
+      "This insurance has no sale row in the broker history; repair its history before changing its price",
+    "err.annulFeeNoFault":
+      "A no-fault annulment cannot have a fee; choose the broker or the worker as the payer to charge one",
     "err.failedAnnullInsurance": "Failed to annul insurance",
     "err.failedCreateInsurance": "Failed to create insurance",
     errorPrefix: "Error",
@@ -2010,6 +2014,10 @@ const I18N = {
     "err.sourceInvalid": "Източникът трябва да е 'Card' или 'Broker'",
     "err.failedLoadInsurances": "Неуспешно зареждане на застраховките",
     "err.failedUpdateInsurance": "Неуспешно обновяване на застраховката",
+    "err.insuranceNoSaleRow":
+      "Тази застраховка няма ред за продажба в историята на брокера; поправете историята, преди да промените цената",
+    "err.annulFeeNoFault":
+      "Анулиране без вина не може да има такса; изберете брокер или служител като платец, за да начислите такава",
     "err.failedAnnullInsurance": "Неуспешно анулиране на застраховката",
     "err.failedCreateInsurance": "Неуспешно създаване на застраховката",
     errorPrefix: "Грешка",
@@ -2188,6 +2196,10 @@ const SERVER_ERROR_TRANSLATIONS = {
   // Generic 500s surfaced by common worker flows.
   "Failed to fetch insurances": "err.failedLoadInsurances",
   "Failed to update insurance": "err.failedUpdateInsurance",
+  "This insurance has no sale row in the broker history; repair its history before changing its price":
+    "err.insuranceNoSaleRow",
+  "A no-fault annulment cannot have a fee; choose the broker or the worker as the payer to charge one":
+    "err.annulFeeNoFault",
   "Failed to annul insurance": "err.failedAnnullInsurance",
   "Failed to create insurance": "err.failedCreateInsurance",
 

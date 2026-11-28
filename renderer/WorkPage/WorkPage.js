@@ -6602,11 +6602,12 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     })
   );
 
-  // Admins can correct or remove a single movement; workers and broker
-  // clients only read the history, so the action column stays hidden for them -
-  // except for the hover "Edit insurance" below: a movement that belongs to a
-  // policy is corrected on the INSURANCE, which is what the money actually
-  // follows (see openInsuranceEditorForRow).
+  // Admins can remove a single movement; workers and broker clients only read
+  // the history, so the action column stays hidden for them - except for the
+  // hover "Edit insurance" above: a movement that belongs to a policy is
+  // corrected on the INSURANCE, which is what the money actually follows (see
+  // openInsuranceEditorForRow). There is deliberately no second, always-visible
+  // "Edit" on a policy row: it would open the same editor.
   const refreshHistory = () =>
     brokerHistoryView(broker, page, date, includeDeleted);
   const historyActions = (m) => {
@@ -6625,11 +6626,6 @@ function renderBrokerHistory(broker, data, page, date = "", includeDeleted = fal
     }
     if (userRole !== "1") return rowActions;
     rowActions.push(
-      {
-        label: t("edit"),
-        class: "secondary",
-        onClick: (m) => brokerHistoryEditForm(broker, m, page, date, includeDeleted),
-      },
       {
         // The delete "X": hidden until the row is hovered.
         label: t("deleteMovement"),
